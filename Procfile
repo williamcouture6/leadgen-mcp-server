@@ -1,0 +1,1 @@
+web: uvicorn src.http_api:app --host 0.0.0.0 --port $PORT
