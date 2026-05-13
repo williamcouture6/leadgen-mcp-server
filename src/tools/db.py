@@ -334,3 +334,76 @@ async def list_companies_to_enrich(limit: int = 50) -> list[dict[str, Any]]:
             "limit": str(limit),
         },
     )
+
+
+# ----------------------------------------------------------------------
+# Research (Phase 2 — WF-3)
+# ----------------------------------------------------------------------
+
+async def list_companies_to_research(
+    limit: int = 20,
+    *,
+    require_website: bool = True,
+) -> list[dict[str, Any]]:
+    """Companies sans research_json. On exige par défaut un website : pas de site =
+    pas assez de matière pour un research utile, le coût LLM est gaspillé.
+
+    `status='disqualified'` est aussi exclu pour ne pas brûler de tokens sur des
+    leads écartés.
+    """
+    params: dict[str, str] = {
+        "select": "id,name,domain,website,city,icp_segment,industry,google_place_id,status",
+        "research_json": "is.null",
+        "google_place_id": "not.is.null",
+        "status": "neq.disqualified",
+        "order": "created_at.asc",
+        "limit": str(limit),
+    }
+    if require_website:
+        params["website"] = "not.is.null"
+    return await db.select("companies", params=params)
+
+
+async def update_company_research(
+    company_id: str,
+    research_json: dict[str, Any],
+) -> dict[str, Any]:
+    """Patch companies.research_json. N'écrase pas le status — la sourcing flow
+    le gère séparément. On met juste à jour le payload du Research Agent.
+    """
+    rows = await db.update(
+        "companies",
+        {"research_json": research_json},
+        filters={"id": f"eq.{company_id}"},
+    )
+    return {"updated": len(rows)}
+
+
+class AgentRunIn(BaseModel):
+    agent: Literal["research", "personalization", "qualification", "call_prep", "compliance"]
+    model: str
+    company_id: str | None = None
+    contact_id: str | None = None
+    campaign_id: str | None = None
+    input_payload: dict[str, Any] | None = None
+    output_payload: dict[str, Any] | None = None
+    error_text: str | None = None
+    duration_ms: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+
+
+async def record_agent_run(payload: AgentRunIn) -> dict[str, Any]:
+    """Audit trail — chaque appel d'agent laisse une trace.
+
+    Pas critique pour le pipeline (un échec d'insert ne doit pas bloquer le run).
+    L'appelant peut try/except sans risque.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    row = payload.model_dump(exclude_none=True)
+    row["started_at"] = now
+    row["finished_at"] = now
+    rows = await db.insert("agent_runs", row)
+    return {"agent_run_id": rows[0]["id"] if rows else None}

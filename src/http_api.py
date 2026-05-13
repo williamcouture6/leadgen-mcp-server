@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from .tools import db as db_tools
 from .tools import enrich as enrich_tools
 from .tools import maps as maps_tools
+from .tools import research as research_tools
 
 
 def _expected_token() -> str | None:
@@ -238,4 +239,184 @@ async def run_wf1(payload: RunWf1In) -> RunWf1Out:
         new_companies_count=new_count,
         duplicates_count=dup_count,
         error_text=error_text,
+    )
+
+
+# ---------------- Research (Phase 2 — WF-3) ----------------
+
+@app.get("/companies/to-research", dependencies=[Depends(_require_auth)])
+async def companies_to_research(
+    limit: int = 20,
+    require_website: bool = True,
+) -> list[dict[str, Any]]:
+    """Companies sans research_json. Utilisé par n8n pour visualiser le backlog."""
+    return await db_tools.list_companies_to_research(
+        limit=limit, require_website=require_website
+    )
+
+
+class ResearchCompanyByIdIn(BaseModel):
+    company_id: str
+    model: str = "claude-sonnet-4-6"
+
+
+class ResearchCompanyByIdOut(BaseModel):
+    company_id: str
+    status: str  # "ok" | "skipped_no_place_id" | "error"
+    research_json: dict[str, Any] | None = None
+    duration_ms: int | None = None
+    error_text: str | None = None
+
+
+@app.post(
+    "/research/company",
+    dependencies=[Depends(_require_auth)],
+    response_model=ResearchCompanyByIdOut,
+)
+async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchCompanyByIdOut:
+    """Research d'UNE company. Pratique pour n8n quand on veut traiter
+    company-par-company (avec retry par item)."""
+    from . import supabase_client as db
+    matches = await db.select(
+        "companies",
+        params={
+            "select": "id,google_place_id,website,name",
+            "id": f"eq.{payload.company_id}",
+            "limit": "1",
+        },
+    )
+    if not matches:
+        return ResearchCompanyByIdOut(
+            company_id=payload.company_id,
+            status="error",
+            error_text="company_not_found",
+        )
+    co = matches[0]
+    if not co.get("google_place_id"):
+        return ResearchCompanyByIdOut(
+            company_id=payload.company_id,
+            status="skipped_no_place_id",
+        )
+
+    try:
+        out = await research_tools.research_company(
+            research_tools.ResearchCompanyIn(
+                google_place_id=co["google_place_id"],
+                website=co.get("website"),
+                model=payload.model,
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        # Audit l'échec, sans bloquer
+        try:
+            await db_tools.record_agent_run(
+                db_tools.AgentRunIn(
+                    agent="research",
+                    model=payload.model,
+                    company_id=payload.company_id,
+                    error_text=repr(e),
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return ResearchCompanyByIdOut(
+            company_id=payload.company_id,
+            status="error",
+            error_text=repr(e),
+        )
+
+    await db_tools.update_company_research(payload.company_id, out.research_json)
+    try:
+        await db_tools.record_agent_run(
+            db_tools.AgentRunIn(
+                agent="research",
+                model=out.model,
+                company_id=payload.company_id,
+                input_payload={
+                    "google_place_id": co["google_place_id"],
+                    "website": co.get("website"),
+                },
+                output_payload=out.research_json,
+                duration_ms=out.duration_ms,
+                input_tokens=out.usage.input_tokens,
+                output_tokens=out.usage.output_tokens,
+                cache_read_tokens=out.usage.cache_read_input_tokens,
+                cache_creation_tokens=out.usage.cache_creation_input_tokens,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    return ResearchCompanyByIdOut(
+        company_id=payload.company_id,
+        status="ok",
+        research_json=out.research_json,
+        duration_ms=out.duration_ms,
+    )
+
+
+class RunWf3In(BaseModel):
+    """Pass complet WF-3 : prend N companies sans research_json, les traite séquentiellement.
+
+    On reste séquentiel volontairement — l'API Anthropic et Google Places ont des
+    rate limits, et un cron quotidien sur 10-20 companies tolère bien 30s par item.
+    """
+    limit: int = 10
+    model: str = "claude-sonnet-4-6"
+    require_website: bool = True
+
+
+class RunWf3Item(BaseModel):
+    company_id: str
+    name: str | None = None
+    status: str
+    duration_ms: int | None = None
+    error_text: str | None = None
+
+
+class RunWf3Out(BaseModel):
+    processed: int
+    succeeded: int
+    failed: int
+    skipped: int
+    items: list[RunWf3Item]
+
+
+@app.post("/wf3/run", dependencies=[Depends(_require_auth)], response_model=RunWf3Out)
+async def run_wf3(payload: RunWf3In) -> RunWf3Out:
+    backlog = await db_tools.list_companies_to_research(
+        limit=payload.limit, require_website=payload.require_website
+    )
+
+    items: list[RunWf3Item] = []
+    succeeded = failed = skipped = 0
+
+    for co in backlog:
+        try:
+            res = await research_company_by_id(
+                ResearchCompanyByIdIn(company_id=co["id"], model=payload.model)
+            )
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            items.append(RunWf3Item(
+                company_id=co["id"], name=co.get("name"),
+                status="error", error_text=repr(e),
+            ))
+            continue
+
+        if res.status == "ok":
+            succeeded += 1
+        elif res.status.startswith("skipped"):
+            skipped += 1
+        else:
+            failed += 1
+        items.append(RunWf3Item(
+            company_id=co["id"], name=co.get("name"),
+            status=res.status, duration_ms=res.duration_ms,
+            error_text=res.error_text,
+        ))
+
+    return RunWf3Out(
+        processed=len(items), succeeded=succeeded, failed=failed,
+        skipped=skipped, items=items,
     )

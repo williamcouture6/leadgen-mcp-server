@@ -15,6 +15,17 @@ Serveur MCP custom (FastMCP, Python) qui expose les outils unifiés du pipeline 
 
 Tools Phase 1B (après purchase Apollo) : `enrich.apollo_match`, `db.insert_contact`.
 
+## Endpoints HTTP supplémentaires (Phase 2 — WF-3 Research)
+
+| Endpoint | Description |
+|---|---|
+| `GET /companies/to-research?limit=N&require_website=true` | Backlog des companies sans `research_json` |
+| `POST /research/company` `{company_id, model?}` | Research d'une seule company (fetch Place Details avec reviews + scrape site + Claude Sonnet → persist `companies.research_json` + `agent_runs`) |
+| `POST /wf3/run` `{limit, model?, require_website?}` | Pass complet : prend N companies du backlog et les traite séquentiellement |
+
+Variables d'env requises (en plus de Phase 1) :
+- `ANTHROPIC_API_KEY` (Claude Sonnet 4.6 pour le Research Agent)
+
 ## Setup
 
 ```powershell
