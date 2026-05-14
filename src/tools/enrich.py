@@ -244,8 +244,11 @@ def _people_from_payload(data: dict[str, Any]) -> SearchDecisionMakersOut:
 # ----------------------------------------------------------------------
 
 class MatchPersonIn(BaseModel):
-    first_name: str
-    last_name: str
+    # Apollo Basic obfusque last_name dans mixed_people/api_search (ex: "Ro***i").
+    # Quand on a l'apollo_id de la search, le passer ici contourne le besoin de last_name.
+    apollo_id: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
     organization_name: str | None = None
     domain: str | None = None
     reveal_personal_emails: bool = False  # mettre True consomme crédits
@@ -253,6 +256,9 @@ class MatchPersonIn(BaseModel):
 
 class MatchPersonOut(BaseModel):
     matched: bool
+    apollo_id: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
     email: str | None = None
     email_status: str | None = None
     phone: str | None = None
@@ -263,20 +269,29 @@ class MatchPersonOut(BaseModel):
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
 async def match_person(payload: MatchPersonIn) -> MatchPersonOut:
-    cache_key = f"{payload.first_name}|{payload.last_name}|{payload.organization_name or payload.domain or ''}".lower()
+    if not payload.apollo_id and not (payload.first_name and payload.last_name):
+        raise ValueError("apollo_id requis OU first_name + last_name")
+
+    if payload.apollo_id:
+        cache_key = f"id:{payload.apollo_id}"
+    else:
+        cache_key = f"{payload.first_name}|{payload.last_name}|{payload.organization_name or payload.domain or ''}".lower()
     cached = await _cache_get("apollo_match", cache_key)
     if cached:
         return _match_from_payload(cached)
 
     body: dict[str, Any] = {
-        "first_name": payload.first_name,
-        "last_name": payload.last_name,
         "reveal_personal_emails": payload.reveal_personal_emails,
     }
-    if payload.organization_name:
-        body["organization_name"] = payload.organization_name
-    if payload.domain:
-        body["domain"] = payload.domain
+    if payload.apollo_id:
+        body["id"] = payload.apollo_id
+    else:
+        body["first_name"] = payload.first_name
+        body["last_name"] = payload.last_name
+        if payload.organization_name:
+            body["organization_name"] = payload.organization_name
+        if payload.domain:
+            body["domain"] = payload.domain
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.post(
@@ -297,6 +312,9 @@ def _match_from_payload(data: dict[str, Any]) -> MatchPersonOut:
         return MatchPersonOut(matched=False, raw=data)
     return MatchPersonOut(
         matched=True,
+        apollo_id=person.get("id"),
+        first_name=person.get("first_name"),
+        last_name=person.get("last_name"),
         email=person.get("email"),
         email_status=person.get("email_status"),
         phone=(person.get("phone_numbers") or [{}])[0].get("sanitized_number")

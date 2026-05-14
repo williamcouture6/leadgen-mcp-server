@@ -232,27 +232,32 @@ async def enrich_company_by_id(payload: EnrichCompanyByIdIn) -> EnrichCompanyByI
         )
 
     # 3) Pour chaque personne du top N : récupère email (déjà fourni ou via match).
+    # NB: Apollo Basic obfusque last_name dans search (ex: "Ro***i") → on match
+    # systématiquement via apollo_id pour révéler email + last_name complet.
     inserted = duplicate = skipped = 0
     for person in search_out.people[: payload.max_contacts]:
+        first_name = person.first_name
+        last_name = person.last_name
         email = person.email
         email_status = person.email_status
         title = person.title
         phone = person.phone
         linkedin = person.linkedin_url
 
-        # `email_locked` ou `extrapolated` = email non utilisable directement → match.
         needs_match = (
             not email
             or email_status not in ("verified", "guessed", "likely_to_engage")
+            or not last_name  # obfusqué dans search → forcer match
         )
-        if needs_match and person.first_name and person.last_name:
+        if needs_match and (person.apollo_id or (first_name and last_name)):
             try:
                 m = await enrich_tools.match_person(
                     enrich_tools.MatchPersonIn(
-                        first_name=person.first_name,
-                        last_name=person.last_name,
-                        organization_name=co.get("name"),
-                        domain=domain,
+                        apollo_id=person.apollo_id,
+                        first_name=first_name if not person.apollo_id else None,
+                        last_name=last_name if not person.apollo_id else None,
+                        organization_name=co.get("name") if not person.apollo_id else None,
+                        domain=domain if not person.apollo_id else None,
                         reveal_personal_emails=payload.reveal_personal_emails,
                     )
                 )
@@ -262,6 +267,8 @@ async def enrich_company_by_id(payload: EnrichCompanyByIdIn) -> EnrichCompanyByI
                     title = m.title or title
                     phone = m.phone or phone
                     linkedin = m.linkedin_url or linkedin
+                    first_name = m.first_name or first_name
+                    last_name = m.last_name or last_name
             except Exception:  # noqa: BLE001
                 # Pas bloquant — on insère ce qu'on a (sans email ça sera skip_no_email).
                 pass
@@ -269,8 +276,8 @@ async def enrich_company_by_id(payload: EnrichCompanyByIdIn) -> EnrichCompanyByI
         res = await db_tools.insert_contact(
             db_tools.ContactIn(
                 company_id=payload.company_id,
-                first_name=person.first_name,
-                last_name=person.last_name,
+                first_name=first_name,
+                last_name=last_name,
                 email=email,
                 email_verified=(email_status == "verified"),
                 email_verification_source="apollo" if email else None,
