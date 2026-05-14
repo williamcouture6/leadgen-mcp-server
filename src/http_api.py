@@ -530,6 +530,8 @@ class ResearchCompanyByIdOut(BaseModel):
     research_json: dict[str, Any] | None = None
     duration_ms: int | None = None
     error_text: str | None = None
+    emails_scraped_inserted: int = 0
+    emails_scraped_duplicate: int = 0
 
 
 @app.post(
@@ -611,11 +613,40 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
     except Exception:  # noqa: BLE001
         pass
 
+    # Fallback Apollo: insère les emails scrapés du site comme contacts.
+    # Apollo couvre mal les PME indépendantes QC (~10% de match sur cafés/restos).
+    # Les emails du site (info@, contact@, ou nominatifs) comblent le trou.
+    # `email_verified=False` → marqueur que ces emails n'ont pas été validés par Apollo.
+    inserted_scraped = duplicate_scraped = 0
+    for em in out.emails_found:
+        res = await db_tools.insert_contact(
+            db_tools.ContactIn(
+                company_id=payload.company_id,
+                email=em["email"],
+                email_verified=False,
+                email_verification_source="website_scrape",
+                title=None,
+                is_decision_maker=(em["kind"] != "other"),
+                source="website",
+                raw_payload={
+                    "kind": em["kind"],  # nominative | generic | other
+                    "source_url": em.get("source_url"),
+                    "local": em["local"],
+                },
+            )
+        )
+        if res.status == "inserted":
+            inserted_scraped += 1
+        elif res.status == "duplicate":
+            duplicate_scraped += 1
+
     return ResearchCompanyByIdOut(
         company_id=payload.company_id,
         status="ok",
         research_json=out.research_json,
         duration_ms=out.duration_ms,
+        emails_scraped_inserted=inserted_scraped,
+        emails_scraped_duplicate=duplicate_scraped,
     )
 
 
@@ -710,19 +741,35 @@ def _load_client_references() -> list[dict[str, Any]]:
 
 
 def _contact_for_prompt(contact_row: dict[str, Any]) -> dict[str, Any]:
-    """Format minimal du contact pour le prompt — uniquement champs utiles."""
+    """Format minimal du contact pour le prompt — uniquement champs utiles.
+
+    `email_source` permet au prompt d'adapter le ton :
+    - 'apollo' (vérifié) : email nominatif, peut tutoyer par prénom.
+    - 'website_scrape' + kind='nominative' : email perso du proprio, salutation prudente.
+    - 'website_scrape' + kind='generic' : info@/contact@, ne PAS adresser au nom.
+    """
+    raw = contact_row.get("raw_payload") or {}
     return {
         "first_name": contact_row.get("first_name"),
         "last_name": contact_row.get("last_name"),
         "title": contact_row.get("title"),
         "email": contact_row.get("email"),
+        "email_source": contact_row.get("email_verification_source"),
+        "email_kind": raw.get("kind") if isinstance(raw, dict) else None,
     }
 
 
 @app.get("/contacts/to-personalize", dependencies=[Depends(_require_auth)])
-async def contacts_to_personalize(limit: int = 20) -> list[dict[str, Any]]:
-    """Backlog WF-4 : contacts avec email + company.research_json + sans draft outbound."""
-    return await db_tools.list_contacts_to_personalize(limit=limit)
+async def contacts_to_personalize(
+    limit: int = 20, max_per_company: int = 1,
+) -> list[dict[str, Any]]:
+    """Backlog WF-4 : contacts avec email + company.research_json + sans draft outbound.
+
+    `max_per_company=1` (défaut) : un seul contact par entreprise, prioritisé.
+    """
+    return await db_tools.list_contacts_to_personalize(
+        limit=limit, max_per_company=max_per_company,
+    )
 
 
 class PersonalizeContactIn(BaseModel):
@@ -869,7 +916,7 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
     contacts = await db.select(
         "contacts",
         params={
-            "select": "id,first_name,last_name,email,title,company_id",
+            "select": "id,first_name,last_name,email,title,company_id,email_verification_source,raw_payload",
             "id": f"eq.{payload.contact_id}",
             "limit": "1",
         },
@@ -918,11 +965,14 @@ class RunWf4In(BaseModel):
     """Pass complet WF-4 : prend N contacts à personnaliser, génère drafts.
 
     Cron-friendly. La sélection des contacts évite ceux qui ont déjà un draft outbound.
+    `max_per_company=1` (défaut) garantit qu'on n'envoie pas plusieurs emails à
+    la même entreprise dans un même batch (brûlerait la company).
     """
     limit: int = 10
     template_choice: str = "A"
     model: str = "claude-sonnet-4-6"
     persist: bool = True
+    max_per_company: int = 1
 
 
 class RunWf4Item(BaseModel):
@@ -946,7 +996,9 @@ class RunWf4Out(BaseModel):
 
 @app.post("/wf4/run", dependencies=[Depends(_require_auth)], response_model=RunWf4Out)
 async def run_wf4(payload: RunWf4In) -> RunWf4Out:
-    backlog = await db_tools.list_contacts_to_personalize(limit=payload.limit)
+    backlog = await db_tools.list_contacts_to_personalize(
+        limit=payload.limit, max_per_company=payload.max_per_company,
+    )
 
     # Fetch Cal.com une seule fois pour tout le batch — évite N appels API et
     # garantit que tous les emails du batch piochent dans la même liste de créneaux.

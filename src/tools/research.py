@@ -83,6 +83,107 @@ TECH_KEYWORDS = (
     "hubspot", "salesforce", "intercom", "drift", "zendesk",
 )
 
+# Email scraping (fallback pour les PME indépendantes non couvertes par Apollo).
+EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+EMAIL_BLOCKLIST_LOCAL = {
+    "noreply", "no-reply", "donotreply", "do-not-reply", "mailer-daemon",
+    "postmaster", "abuse", "security", "webmaster", "spam",
+}
+EMAIL_BLOCKLIST_DOMAINS = {
+    "sentry.io", "sentry-next.wixpress.com", "wixpress.com",
+    "googlegroups.com", "example.com", "domain.com",
+}
+EMAIL_GENERIC_LOCAL = {
+    "info", "contact", "hello", "bonjour", "allo", "salut",
+    "sales", "ventes", "vente", "admin", "marketing", "support", "service",
+    "accueil", "reservation", "reservations", "booking", "commande",
+    "commandes", "office", "general", "general-info", "direction",
+}
+# PME indépendantes publient souvent l'email perso du proprio sur leur site
+# (ex: salons, traiteurs, micro-restos). On les accepte SEULEMENT si le local
+# matche un pattern nominatif (≥2 segments alpha ou un seul token de ≥6 lettres).
+EMAIL_PERSONAL_DOMAINS = {
+    "gmail.com", "hotmail.com", "hotmail.ca", "hotmail.fr",
+    "outlook.com", "outlook.fr", "live.com", "live.ca",
+    "yahoo.com", "yahoo.ca", "yahoo.fr",
+    "icloud.com", "me.com", "videotron.ca", "sympatico.ca",
+    "bellnet.ca", "rogers.com",
+}
+
+
+def _domain_of(url: str) -> str:
+    try:
+        host = urlparse(url).netloc.split(":")[0].lower()
+        return host[4:] if host.startswith("www.") else host
+    except ValueError:
+        return ""
+
+
+def _classify_email(local: str) -> str:
+    """Renvoie 'nominative' | 'generic' | 'other'.
+
+    - nominative : ressemble à prénom.nom@, p.nom@, prenomnom@ (≥2 segments alpha
+      séparés par '.', '-' ou '_', ou un seul token alpha de 6+ chars sans chiffres).
+    - generic : info@, contact@, ventes@, etc.
+    - other : tout le reste (chiffres, codes courts).
+    """
+    local_low = local.lower()
+    if local_low in EMAIL_GENERIC_LOCAL:
+        return "generic"
+    parts = re.split(r"[._\-]", local_low)
+    alpha_parts = [p for p in parts if p.isalpha() and len(p) >= 2]
+    if len(alpha_parts) >= 2:
+        return "nominative"
+    if len(alpha_parts) == 1 and len(alpha_parts[0]) >= 6:
+        return "nominative"
+    return "other"
+
+
+def _extract_emails_from_html(html: str, base_url: str) -> list[dict[str, str]]:
+    """Extrait les emails d'un HTML. Filtre blocklist + emails hors-domaine.
+
+    Garde uniquement les emails dont le domaine == base_domain (ou sous-domaine).
+    Évite de scraper les emails d'autres sites mentionnés (partenaires, etc.).
+    Retourne [{email, local, domain, kind}] dédupliqué.
+    """
+    base_dom = _domain_of(base_url)
+    seen: dict[str, dict[str, str]] = {}
+    soup = BeautifulSoup(html, "html.parser")
+
+    candidates: list[str] = list(EMAIL_REGEX.findall(html))
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.lower().startswith("mailto:"):
+            addr = href[7:].split("?")[0].strip()
+            if addr:
+                candidates.append(addr)
+
+    for raw in candidates:
+        addr = raw.strip().strip(".,;:<>()[]\"'").lower()
+        if "@" not in addr:
+            continue
+        local, _, dom = addr.partition("@")
+        if not local or not dom:
+            continue
+        if local in EMAIL_BLOCKLIST_LOCAL:
+            continue
+        if dom in EMAIL_BLOCKLIST_DOMAINS:
+            continue
+        kind = _classify_email(local)
+        is_same_domain = bool(base_dom) and (dom == base_dom or dom.endswith("." + base_dom))
+        is_personal_nominative = dom in EMAIL_PERSONAL_DOMAINS and kind == "nominative"
+        if not (is_same_domain or is_personal_nominative):
+            continue
+        if addr in seen:
+            continue
+        seen[addr] = {
+            "email": addr,
+            "local": local,
+            "domain": dom,
+            "kind": kind,
+        }
+    return list(seen.values())
+
 
 def _clean_text(html: str, max_chars: int = 8000) -> str:
     soup = BeautifulSoup(html, "html.parser")
@@ -105,8 +206,12 @@ async def fetch_site(url: str, max_pages: int = 3, timeout: float = 15.0) -> dic
 
     Returns: {url, status, pages: [{url, text}], tech_keyword_hits: [str]}
     """
-    out: dict[str, Any] = {"url": url, "status": "unknown", "pages": [], "tech_keyword_hits": []}
+    out: dict[str, Any] = {
+        "url": url, "status": "unknown", "pages": [],
+        "tech_keyword_hits": [], "emails_found": [],
+    }
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "fr-CA,fr;q=0.9,en;q=0.5"}
+    emails_by_addr: dict[str, dict[str, str]] = {}
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
         try:
@@ -121,6 +226,9 @@ async def fetch_site(url: str, max_pages: int = 3, timeout: float = 15.0) -> dic
 
         home_text = _clean_text(r.text)
         out["pages"].append({"url": str(r.url), "text": home_text})
+        for em in _extract_emails_from_html(r.text, str(r.url)):
+            em["source_url"] = str(r.url)
+            emails_by_addr.setdefault(em["email"], em)
 
         soup = BeautifulSoup(r.text, "html.parser")
         candidates: list[str] = []
@@ -139,11 +247,15 @@ async def fetch_site(url: str, max_pages: int = 3, timeout: float = 15.0) -> dic
                 rp = await client.get(href)
                 if rp.status_code < 400:
                     out["pages"].append({"url": str(rp.url), "text": _clean_text(rp.text)})
+                    for em in _extract_emails_from_html(rp.text, str(rp.url)):
+                        em["source_url"] = str(rp.url)
+                        emails_by_addr.setdefault(em["email"], em)
             except httpx.HTTPError:
                 continue
 
     haystack = " ".join(p["text"].lower() for p in out["pages"])
     out["tech_keyword_hits"] = [kw.strip() for kw in TECH_KEYWORDS if kw in haystack]
+    out["emails_found"] = list(emails_by_addr.values())
     return out
 
 
@@ -282,6 +394,7 @@ class ResearchCompanyOut(BaseModel):
     place_status: str
     site_status: str
     tech_keyword_hits: list[str]
+    emails_found: list[dict[str, Any]] = []  # [{email, local, domain, kind, source_url}]
 
 
 async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
@@ -309,4 +422,5 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
         place_status="ok",
         site_status=site.get("status", "unknown"),
         tech_keyword_hits=site.get("tech_keyword_hits", []),
+        emails_found=site.get("emails_found", []),
     )

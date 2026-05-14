@@ -427,35 +427,80 @@ async def get_company(company_id: str) -> dict[str, Any] | None:
 # Personalize (Phase 2 — WF-4)
 # ----------------------------------------------------------------------
 
+def _contact_priority_score(contact: dict[str, Any]) -> int:
+    """Score de priorité (plus bas = meilleur) pour choisir 1 contact par company.
+
+    Apollo verified > Apollo > scrape nominative same-domain > scrape nominative
+    personal-domain > scrape generic > other.
+
+    Évite d'envoyer plusieurs emails à la même entreprise (brûle la company).
+    Le contact retenu est celui qui a la plus forte probabilité de joindre un
+    décideur réel.
+    """
+    src = contact.get("email_verification_source")
+    raw = contact.get("raw_payload") or {}
+    kind = raw.get("kind") if isinstance(raw, dict) else None
+    email_dom = (contact.get("email") or "").rsplit("@", 1)[-1].lower()
+    # Domaines persos (gmail, hotmail, etc.) — on déclasse vs same-domain.
+    PERSONAL_DOMS = {
+        "gmail.com", "hotmail.com", "hotmail.ca", "hotmail.fr",
+        "outlook.com", "outlook.fr", "live.com", "live.ca",
+        "yahoo.com", "yahoo.ca", "yahoo.fr",
+        "icloud.com", "me.com", "videotron.ca", "sympatico.ca",
+        "bellnet.ca", "rogers.com",
+    }
+    is_personal = email_dom in PERSONAL_DOMS
+
+    if src == "apollo" and contact.get("email_verified"):
+        return 1
+    if src == "apollo":
+        return 2
+    if src == "website_scrape" and kind == "nominative" and not is_personal:
+        return 3
+    if src == "website_scrape" and kind == "nominative" and is_personal:
+        return 4
+    if src == "website_scrape" and kind == "generic":
+        return 5
+    return 9
+
+
 async def list_contacts_to_personalize(
     limit: int = 20,
     *,
     require_research: bool = True,
+    max_per_company: int = 1,
 ) -> list[dict[str, Any]]:
     """Contacts prêts pour personnalisation : email présent, company.research_json
     présent (sinon le prompt n'a rien à se mettre sous la dent), pas encore de
     draft outbound dans messages.
 
+    `max_per_company` (défaut 1) limite le nombre de contacts retournés par
+    company, en gardant les meilleurs selon `_contact_priority_score`. Évite
+    d'envoyer plusieurs emails séparés à la même entreprise.
+
     On filtre côté Python plutôt que via une jointure PostgREST compliquée :
     1) On récupère les contacts avec email + status='new' ou 'ready'.
     2) On joint manuellement avec companies.research_json.
     3) On exclut ceux qui ont déjà un message outbound (peu importe le status).
+    4) On garde les top-N contacts par company selon priorité.
     """
     contacts = await db.select(
         "contacts",
         params={
-            "select": "id,first_name,last_name,email,title,company_id,status",
+            "select": (
+                "id,first_name,last_name,email,email_verified,title,company_id,"
+                "status,email_verification_source,raw_payload"
+            ),
             "email": "not.is.null",
             "status": "in.(new,ready)",
             "order": "created_at.asc",
-            "limit": str(limit * 3),  # over-fetch, on filtrera après join
+            "limit": str(limit * 5),  # over-fetch, on filtrera + dédup par company
         },
     )
     if not contacts:
         return []
 
     company_ids = list({c["company_id"] for c in contacts})
-    # PostgREST: filter in.(uuid1,uuid2,...) — wrap chaque uuid dans des parenthèses si besoin.
     companies = await db.select(
         "companies",
         params={
@@ -465,7 +510,6 @@ async def list_contacts_to_personalize(
     )
     by_id = {c["id"]: c for c in companies}
 
-    # On exclut les contacts déjà avec un message outbound.
     existing_msgs = await db.select(
         "messages",
         params={
@@ -476,7 +520,8 @@ async def list_contacts_to_personalize(
     )
     already_drafted = {m["contact_id"] for m in existing_msgs}
 
-    out: list[dict[str, Any]] = []
+    # Filtre + groupe par company
+    eligible: dict[str, list[dict[str, Any]]] = {}
     for c in contacts:
         if c["id"] in already_drafted:
             continue
@@ -485,12 +530,30 @@ async def list_contacts_to_personalize(
             continue
         if require_research and not company.get("research_json"):
             continue
-        out.append({
-            "contact": c,
-            "company": company,
-        })
-        if len(out) >= limit:
-            break
+        eligible.setdefault(c["company_id"], []).append(c)
+
+    out: list[dict[str, Any]] = []
+    # Préserve l'ordre d'arrivée des companies (created_at.asc du premier contact).
+    seen_companies: list[str] = []
+    for c in contacts:
+        if c["company_id"] in eligible and c["company_id"] not in seen_companies:
+            seen_companies.append(c["company_id"])
+
+    # Dédup global sur email : si plusieurs companies pointent vers le même email
+    # (cas chaînes où Google Places retourne plusieurs succursales), garder
+    # uniquement la première company rencontrée pour ce email.
+    seen_emails: set[str] = set()
+    for company_id in seen_companies:
+        group = eligible[company_id]
+        group.sort(key=_contact_priority_score)
+        for c in group[:max_per_company]:
+            email_key = (c.get("email") or "").lower()
+            if email_key in seen_emails:
+                continue
+            seen_emails.add(email_key)
+            out.append({"contact": c, "company": by_id[company_id]})
+            if len(out) >= limit:
+                return out
     return out
 
 
