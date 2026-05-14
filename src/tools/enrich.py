@@ -204,8 +204,10 @@ async def search_decision_makers(payload: SearchDecisionMakersIn) -> SearchDecis
         body["q_organization_name"] = payload.organization_name
 
     async with httpx.AsyncClient(timeout=30.0) as client:
+        # Apollo a déprécié `mixed_people/search` pour les API callers (2025+).
+        # Le nouvel endpoint `mixed_people/api_search` accepte le même body.
         r = await client.post(
-            f"{APOLLO_BASE_URL}/mixed_people/search",
+            f"{APOLLO_BASE_URL}/mixed_people/api_search",
             headers=_apollo_headers(),
             json=body,
         )

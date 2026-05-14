@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from .tools import db as db_tools
 from .tools import enrich as enrich_tools
 from .tools import maps as maps_tools
+from .tools import personalize as personalize_tools
 from .tools import research as research_tools
 
 
@@ -116,6 +117,262 @@ async def enrich_decision_makers(
 @app.post("/enrich/apollo/match", dependencies=[Depends(_require_auth)])
 async def enrich_match(payload: enrich_tools.MatchPersonIn) -> dict[str, Any]:
     return (await enrich_tools.match_person(payload)).model_dump()
+
+
+# ---------------- WF-2 orchestration (Apollo enrichment, Phase 1B) ----------------
+
+def _domain_from_website(website: str | None) -> str | None:
+    """Extrait 'acme.com' depuis 'https://www.acme.com/whatever'."""
+    if not website:
+        return None
+    from urllib.parse import urlparse
+    parsed = urlparse(website if "://" in website else f"https://{website}")
+    host = parsed.netloc.split(":")[0].lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host or None
+
+
+class EnrichCompanyByIdIn(BaseModel):
+    company_id: str
+    max_contacts: int = 2
+    reveal_personal_emails: bool = False  # True = consomme credits Apollo
+
+
+class EnrichCompanyByIdOut(BaseModel):
+    company_id: str
+    status: str  # "ok" | "no_domain" | "no_apollo_org" | "no_decision_makers" | "error"
+    domain: str | None = None
+    apollo_org_id: str | None = None
+    contacts_inserted: int = 0
+    contacts_duplicate: int = 0
+    contacts_skipped_no_email: int = 0
+    error_text: str | None = None
+
+
+@app.post(
+    "/wf2/run-company",
+    dependencies=[Depends(_require_auth)],
+    response_model=EnrichCompanyByIdOut,
+)
+async def enrich_company_by_id(payload: EnrichCompanyByIdIn) -> EnrichCompanyByIdOut:
+    """Enrichit UNE company : org enrich → search décideurs → match emails → insert contacts.
+
+    Étapes :
+      1. Résout domain (champ `domain` direct, sinon dérivé de `website`).
+      2. `organizations/enrich` → récupère organization_id Apollo + taille.
+      3. `mixed_people/search` (organization_ids=[id], titles=décideurs) → top N personnes.
+      4. Pour chaque personne sans email vérifié : `people/match` pour révéler l'email.
+      5. Insert contacts (dédup company_id+email).
+      6. Mark company 'enriched' (ou 'disqualified' si échec dur).
+    """
+    co = await db_tools.get_company(payload.company_id)
+    if not co:
+        return EnrichCompanyByIdOut(
+            company_id=payload.company_id, status="error", error_text="company_not_found",
+        )
+
+    domain = co.get("domain") or _domain_from_website(co.get("website"))
+    if not domain:
+        await db_tools.mark_company_disqualified(
+            payload.company_id, "enrich_failed_no_domain"
+        )
+        return EnrichCompanyByIdOut(
+            company_id=payload.company_id, status="no_domain",
+            error_text="ni `domain` ni `website` exploitable",
+        )
+
+    # 1) Org enrich
+    try:
+        org = await enrich_tools.enrich_org(enrich_tools.EnrichOrgIn(domain=domain))
+    except Exception as e:  # noqa: BLE001
+        return EnrichCompanyByIdOut(
+            company_id=payload.company_id, status="error",
+            domain=domain, error_text=f"apollo_org_enrich: {e!r}",
+        )
+
+    if not org.organization_id:
+        await db_tools.mark_company_disqualified(
+            payload.company_id, "enrich_failed_apollo_no_org"
+        )
+        return EnrichCompanyByIdOut(
+            company_id=payload.company_id, status="no_apollo_org",
+            domain=domain,
+        )
+
+    # Patch domain + taille sur la company (utile si domain était null).
+    await db_tools.update_company_apollo_fields(
+        payload.company_id,
+        domain=domain if not co.get("domain") else None,
+        estimated_employees=org.estimated_num_employees,
+    )
+
+    # 2) Search décideurs
+    try:
+        search_out = await enrich_tools.search_decision_makers(
+            enrich_tools.SearchDecisionMakersIn(
+                organization_id=org.organization_id,
+                per_page=max(payload.max_contacts, 3),
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        return EnrichCompanyByIdOut(
+            company_id=payload.company_id, status="error",
+            domain=domain, apollo_org_id=org.organization_id,
+            error_text=f"apollo_people_search: {e!r}",
+        )
+
+    if not search_out.people:
+        # Pas un échec dur — l'entreprise existe mais Apollo n'a pas de décideur.
+        # On marque 'enriched' (le travail est fait) avec 0 contacts.
+        await db_tools.mark_company_enriched(payload.company_id, "enriched")
+        return EnrichCompanyByIdOut(
+            company_id=payload.company_id, status="no_decision_makers",
+            domain=domain, apollo_org_id=org.organization_id,
+        )
+
+    # 3) Pour chaque personne du top N : récupère email (déjà fourni ou via match).
+    inserted = duplicate = skipped = 0
+    for person in search_out.people[: payload.max_contacts]:
+        email = person.email
+        email_status = person.email_status
+        title = person.title
+        phone = person.phone
+        linkedin = person.linkedin_url
+
+        # `email_locked` ou `extrapolated` = email non utilisable directement → match.
+        needs_match = (
+            not email
+            or email_status not in ("verified", "guessed", "likely_to_engage")
+        )
+        if needs_match and person.first_name and person.last_name:
+            try:
+                m = await enrich_tools.match_person(
+                    enrich_tools.MatchPersonIn(
+                        first_name=person.first_name,
+                        last_name=person.last_name,
+                        organization_name=co.get("name"),
+                        domain=domain,
+                        reveal_personal_emails=payload.reveal_personal_emails,
+                    )
+                )
+                if m.matched:
+                    email = m.email or email
+                    email_status = m.email_status or email_status
+                    title = m.title or title
+                    phone = m.phone or phone
+                    linkedin = m.linkedin_url or linkedin
+            except Exception:  # noqa: BLE001
+                # Pas bloquant — on insère ce qu'on a (sans email ça sera skip_no_email).
+                pass
+
+        res = await db_tools.insert_contact(
+            db_tools.ContactIn(
+                company_id=payload.company_id,
+                first_name=person.first_name,
+                last_name=person.last_name,
+                email=email,
+                email_verified=(email_status == "verified"),
+                email_verification_source="apollo" if email else None,
+                phone=phone,
+                linkedin_url=linkedin,
+                title=title,
+                seniority=person.seniority,
+                is_decision_maker=True,
+                source="apollo",
+                raw_payload={"apollo_id": person.apollo_id, "email_status": email_status},
+            )
+        )
+        if res.status == "inserted":
+            inserted += 1
+        elif res.status == "duplicate":
+            duplicate += 1
+        else:
+            skipped += 1
+
+    await db_tools.mark_company_enriched(payload.company_id, "enriched")
+
+    return EnrichCompanyByIdOut(
+        company_id=payload.company_id, status="ok",
+        domain=domain, apollo_org_id=org.organization_id,
+        contacts_inserted=inserted,
+        contacts_duplicate=duplicate,
+        contacts_skipped_no_email=skipped,
+    )
+
+
+class RunWf2In(BaseModel):
+    """Pass complet WF-2 : prend N companies status='sourced', les enrichit séquentiellement.
+
+    Apollo Basic = 2 500 credits/mois. ~3 credits par company. Limite réelle MVP = throughput
+    Instantly (warmup), pas Apollo.
+    """
+    limit: int = 20
+    max_contacts: int = 2
+    reveal_personal_emails: bool = False
+
+
+class RunWf2Item(BaseModel):
+    company_id: str
+    name: str | None = None
+    status: str
+    contacts_inserted: int = 0
+    error_text: str | None = None
+
+
+class RunWf2Out(BaseModel):
+    processed: int
+    enriched: int
+    disqualified: int
+    failed: int
+    total_contacts_inserted: int
+    items: list[RunWf2Item]
+
+
+@app.post("/wf2/run", dependencies=[Depends(_require_auth)], response_model=RunWf2Out)
+async def run_wf2(payload: RunWf2In) -> RunWf2Out:
+    backlog = await db_tools.list_companies_to_enrich(limit=payload.limit)
+
+    items: list[RunWf2Item] = []
+    enriched = disqualified = failed = total_contacts = 0
+
+    for co in backlog:
+        try:
+            res = await enrich_company_by_id(
+                EnrichCompanyByIdIn(
+                    company_id=co["id"],
+                    max_contacts=payload.max_contacts,
+                    reveal_personal_emails=payload.reveal_personal_emails,
+                )
+            )
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            items.append(RunWf2Item(
+                company_id=co["id"], name=co.get("name"),
+                status="error", error_text=repr(e),
+            ))
+            continue
+
+        if res.status == "ok" or res.status == "no_decision_makers":
+            enriched += 1
+        elif res.status in ("no_domain", "no_apollo_org"):
+            disqualified += 1
+        else:
+            failed += 1
+        total_contacts += res.contacts_inserted
+        items.append(RunWf2Item(
+            company_id=co["id"], name=co.get("name"),
+            status=res.status,
+            contacts_inserted=res.contacts_inserted,
+            error_text=res.error_text,
+        ))
+
+    return RunWf2Out(
+        processed=len(items), enriched=enriched,
+        disqualified=disqualified, failed=failed,
+        total_contacts_inserted=total_contacts,
+        items=items,
+    )
 
 
 # ---------------- High-level workflow (WF-1 en un appel) ----------------
@@ -419,4 +676,320 @@ async def run_wf3(payload: RunWf3In) -> RunWf3Out:
     return RunWf3Out(
         processed=len(items), succeeded=succeeded, failed=failed,
         skipped=skipped, items=items,
+    )
+
+
+# ---------------- Personalize (Phase 2 — WF-4) ----------------
+
+import json as _json  # local alias to avoid clashing with model fields
+
+_REFERENCES_PATH = os.environ.get(
+    "CLIENT_REFERENCES_PATH",
+    str(__file__).replace("http_api.py", "../client_references.json"),
+)
+
+
+def _load_client_references() -> list[dict[str, Any]]:
+    """Charge la liste de social_proof. Fichier optionnel — `[]` si absent."""
+    from pathlib import Path
+    p = Path(_REFERENCES_PATH)
+    if not p.exists():
+        return []
+    try:
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        return data.get("references", [])
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _contact_for_prompt(contact_row: dict[str, Any]) -> dict[str, Any]:
+    """Format minimal du contact pour le prompt — uniquement champs utiles."""
+    return {
+        "first_name": contact_row.get("first_name"),
+        "last_name": contact_row.get("last_name"),
+        "title": contact_row.get("title"),
+        "email": contact_row.get("email"),
+    }
+
+
+@app.get("/contacts/to-personalize", dependencies=[Depends(_require_auth)])
+async def contacts_to_personalize(limit: int = 20) -> list[dict[str, Any]]:
+    """Backlog WF-4 : contacts avec email + company.research_json + sans draft outbound."""
+    return await db_tools.list_contacts_to_personalize(limit=limit)
+
+
+class PersonalizeContactIn(BaseModel):
+    contact_id: str
+    template_choice: str = "A"  # "A" ou "B"
+    model: str = "claude-sonnet-4-6"
+    persist: bool = True  # False → dry-run, retourne juste l'email sans insérer dans messages
+    available_slots: list[dict[str, Any]] | None = None  # override (sinon fetch Cal.com)
+
+
+class PersonalizeContactOut(BaseModel):
+    contact_id: str
+    status: str  # "ok" | "error" | "skipped_no_email" | "skipped_no_research"
+    message_id: str | None = None
+    email: dict[str, Any] | None = None
+    duration_ms: int | None = None
+    template_used: str | None = None
+    error_text: str | None = None
+
+
+async def _personalize_one(
+    contact_row: dict[str, Any],
+    company_row: dict[str, Any],
+    *,
+    template_choice: str,
+    model: str,
+    persist: bool,
+    available_slots: list[dict[str, Any]],
+    social_proof: list[dict[str, Any]],
+) -> PersonalizeContactOut:
+    """Coeur partagé entre /personalize/contact et /wf4/run."""
+    contact_id = contact_row["id"]
+    if not contact_row.get("email"):
+        return PersonalizeContactOut(contact_id=contact_id, status="skipped_no_email")
+    research = company_row.get("research_json")
+    if not research:
+        return PersonalizeContactOut(contact_id=contact_id, status="skipped_no_research")
+
+    try:
+        out = await personalize_tools.personalize(
+            personalize_tools.PersonalizeIn(
+                research_json=research,
+                company={
+                    "name": company_row.get("name"),
+                    "website": company_row.get("website"),
+                    "city": company_row.get("city"),
+                    "icp_segment": company_row.get("icp_segment"),
+                    "industry": company_row.get("industry"),
+                },
+                contact=_contact_for_prompt(contact_row),
+                social_proof=social_proof,
+                template_choice=template_choice,
+                available_slots=available_slots,
+                model=model,
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        # Audit l'échec sans bloquer le batch
+        try:
+            await db_tools.record_agent_run(
+                db_tools.AgentRunIn(
+                    agent="personalization",
+                    model=model,
+                    contact_id=contact_id,
+                    company_id=company_row["id"],
+                    error_text=repr(e),
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return PersonalizeContactOut(contact_id=contact_id, status="error", error_text=repr(e))
+
+    email = out.email or {}
+    subject = email.get("subject") or ""
+    body = email.get("body_text") or ""
+    warnings = email.get("warnings") or []
+
+    # Audit succès dans agent_runs (avant insert message pour avoir l'id à référencer)
+    agent_run_id: str | None = None
+    try:
+        ar = await db_tools.record_agent_run(
+            db_tools.AgentRunIn(
+                agent="personalization",
+                model=out.model,
+                contact_id=contact_id,
+                company_id=company_row["id"],
+                input_payload={
+                    "template_choice": template_choice,
+                    "slots_count": sum(len(s.get("times", [])) for s in available_slots),
+                    "social_proof_count": len(social_proof),
+                },
+                output_payload=email,
+                duration_ms=out.duration_ms,
+                input_tokens=out.usage.input_tokens,
+                output_tokens=out.usage.output_tokens,
+                cache_read_tokens=out.usage.cache_read_input_tokens,
+                cache_creation_tokens=out.usage.cache_creation_input_tokens,
+            )
+        )
+        agent_run_id = ar.get("agent_run_id")
+    except Exception:  # noqa: BLE001
+        pass
+
+    message_id: str | None = None
+    if persist and subject and body:
+        try:
+            ins = await db_tools.insert_message_draft(
+                db_tools.MessageDraftIn(
+                    contact_id=contact_id,
+                    subject=subject,
+                    body_text=body,
+                    to_email=contact_row["email"],
+                    generated_by_agent_run=agent_run_id,
+                    compliance_check_passed=None,  # WF-5 le valide
+                    compliance_notes=("; ".join(warnings) if warnings else None),
+                )
+            )
+            message_id = ins.get("message_id")
+        except Exception as e:  # noqa: BLE001
+            return PersonalizeContactOut(
+                contact_id=contact_id, status="error",
+                error_text=f"insert_message_draft: {e!r}",
+                email=email, template_used=out.template_used,
+            )
+
+    return PersonalizeContactOut(
+        contact_id=contact_id, status="ok",
+        message_id=message_id, email=email,
+        duration_ms=out.duration_ms, template_used=out.template_used,
+    )
+
+
+@app.post(
+    "/personalize/contact",
+    dependencies=[Depends(_require_auth)],
+    response_model=PersonalizeContactOut,
+)
+async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeContactOut:
+    """Personnalisation d'UN contact. Le mode `persist=False` est utile pour
+    QA / preview sans polluer la table messages.
+    """
+    from . import supabase_client as db
+
+    contacts = await db.select(
+        "contacts",
+        params={
+            "select": "id,first_name,last_name,email,title,company_id",
+            "id": f"eq.{payload.contact_id}",
+            "limit": "1",
+        },
+    )
+    if not contacts:
+        return PersonalizeContactOut(
+            contact_id=payload.contact_id, status="error", error_text="contact_not_found",
+        )
+    contact = contacts[0]
+
+    companies = await db.select(
+        "companies",
+        params={
+            "select": "id,name,website,city,icp_segment,industry,research_json",
+            "id": f"eq.{contact['company_id']}",
+            "limit": "1",
+        },
+    )
+    if not companies:
+        return PersonalizeContactOut(
+            contact_id=payload.contact_id, status="error", error_text="company_not_found",
+        )
+    company = companies[0]
+
+    # Fetch Cal.com une fois (ou utilise l'override). Si échec : on tombe sur slots=[]
+    # et le prompt fallback sur un CTA générique.
+    slots: list[dict[str, Any]] = payload.available_slots or []
+    if not payload.available_slots:
+        from .lib.calcom import CalcomError, get_available_slots
+        try:
+            slots = get_available_slots(days_ahead=7)
+        except CalcomError:
+            slots = []
+
+    return await _personalize_one(
+        contact, company,
+        template_choice=payload.template_choice,
+        model=payload.model,
+        persist=payload.persist,
+        available_slots=slots,
+        social_proof=_load_client_references(),
+    )
+
+
+class RunWf4In(BaseModel):
+    """Pass complet WF-4 : prend N contacts à personnaliser, génère drafts.
+
+    Cron-friendly. La sélection des contacts évite ceux qui ont déjà un draft outbound.
+    """
+    limit: int = 10
+    template_choice: str = "A"
+    model: str = "claude-sonnet-4-6"
+    persist: bool = True
+
+
+class RunWf4Item(BaseModel):
+    contact_id: str
+    company_name: str | None = None
+    status: str
+    message_id: str | None = None
+    template_used: str | None = None
+    duration_ms: int | None = None
+    error_text: str | None = None
+
+
+class RunWf4Out(BaseModel):
+    processed: int
+    drafts_created: int
+    skipped: int
+    failed: int
+    slots_available: int  # nb total créneaux Cal.com fetched
+    items: list[RunWf4Item]
+
+
+@app.post("/wf4/run", dependencies=[Depends(_require_auth)], response_model=RunWf4Out)
+async def run_wf4(payload: RunWf4In) -> RunWf4Out:
+    backlog = await db_tools.list_contacts_to_personalize(limit=payload.limit)
+
+    # Fetch Cal.com une seule fois pour tout le batch — évite N appels API et
+    # garantit que tous les emails du batch piochent dans la même liste de créneaux.
+    from .lib.calcom import CalcomError, get_available_slots
+    try:
+        slots = get_available_slots(days_ahead=7)
+    except CalcomError:
+        slots = []
+    total_slots = sum(len(s.get("times", [])) for s in slots)
+
+    social_proof = _load_client_references()
+
+    items: list[RunWf4Item] = []
+    drafts = skipped = failed = 0
+
+    for entry in backlog:
+        contact = entry["contact"]
+        company = entry["company"]
+        try:
+            res = await _personalize_one(
+                contact, company,
+                template_choice=payload.template_choice,
+                model=payload.model,
+                persist=payload.persist,
+                available_slots=slots,
+                social_proof=social_proof,
+            )
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            items.append(RunWf4Item(
+                contact_id=contact["id"], company_name=company.get("name"),
+                status="error", error_text=repr(e),
+            ))
+            continue
+
+        if res.status == "ok":
+            drafts += 1
+        elif res.status.startswith("skipped"):
+            skipped += 1
+        else:
+            failed += 1
+        items.append(RunWf4Item(
+            contact_id=contact["id"], company_name=company.get("name"),
+            status=res.status, message_id=res.message_id,
+            template_used=res.template_used, duration_ms=res.duration_ms,
+            error_text=res.error_text,
+        ))
+
+    return RunWf4Out(
+        processed=len(items), drafts_created=drafts,
+        skipped=skipped, failed=failed,
+        slots_available=total_slots, items=items,
     )

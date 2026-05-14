@@ -31,33 +31,73 @@ DEFAULT_CITIES: list[str] = [
 # 3 segments ICP × keywords Google Places
 SECTOR_CATALOG: dict[str, list[str]] = {
     "commerce_local": [
+        # Restauration
         "restaurant",
-        "cafe",
-        "bakery",
-        "beauty_salon",
-        "hair_care",
-        "gym",
+        # Santé (5-50 empl., privé)
+        "clinique dentaire",
+        "clinique de physiothérapie",
+        "clinique médicale privée",
+        # Services auto
+        "garage automobile",
+        "carrosserie",
+        "concessionnaire automobile",
+        # Beauté / bien-être
         "spa",
-        "auto_repair",
-        "florist",
-        "pet_store",
+        "salon de coiffure",
+        "centre esthétique",
+        # Retail local
+        "boutique de mode",
+        "quincaillerie",
+        "animalerie",
+        # Services résidentiels
+        "plombier",
+        "électricien",
+        "entrepreneur CVAC",
+        "paysagiste",
+        "entretien ménager commercial",
+        "entrepreneur en déneigement",
+        "couvreur",
+        "entrepreneur général en rénovation",
+        "peintre résidentiel",
+        "exterminateur",
+        "inspecteur en bâtiment",
+        "piscines et spas",
+        "pavage",
+        "réparation électroménagers",
+        "lavage de vitres",
+        "menuisier",
     ],
     "services_pro": [
-        "lawyer",
-        "accountant",
-        "real_estate_agency",
-        "insurance_agency",
-        "dentist",
-        "physiotherapist",
-        "veterinary_care",
-        "travel_agency",
+        # Cabinets comptables / fiscalité
+        "cabinet comptable",
+        "CPA",
+        # Juridique
+        "cabinet d'avocats",
+        "notaire",
+        # RH / recrutement
+        "agence de recrutement",
+        "firme de consultation RH",
+        # Agences créatives
+        "agence de marketing",
+        "agence web",
+        "agence de design",
+        # Ingénierie / architecture
+        "firme d'ingénierie",
+        "cabinet d'architecture",
+        # Consultation
+        "consultant en gestion",
     ],
     "manufacturier": [
-        "manufacturer",
-        "wholesaler",
-        "industrial",
-        "metal_fabrication",
-        "food_processing",
+        # Note : Google Places n'est pas idéal pour les manufacturiers
+        # (peu de discoverabilité locale). Phase 1B Apollo prendra le relais.
+        "manufacturier alimentaire",
+        "manufacturier de boissons",
+        "atelier de machinage",
+        "fabricant de produits métalliques",
+        "manufacturier de plastique",
+        "fabricant d'emballages",
+        "grossiste industriel",
+        "fabricant d'équipement industriel",
     ],
 }
 
@@ -321,6 +361,160 @@ async def mark_company_enriched(company_id: str, status: str = "enriched") -> di
             )
         )
     }
+
+
+async def mark_company_disqualified(company_id: str, reason: str) -> dict[str, Any]:
+    """Marque une company comme disqualifiée (échec dur d'enrichissement, hors-ICP, etc.).
+
+    `list_companies_to_enrich` filtre sur status='sourced' donc une disqualified
+    sortira automatiquement du backlog WF-2 (et du backlog WF-3 via le filtre
+    `status neq.disqualified`).
+    """
+    return {
+        "updated": len(
+            await db.update(
+                "companies",
+                {
+                    "status": "disqualified",
+                    "disqualified_reason": reason,
+                    "last_enriched_at": datetime.now(timezone.utc).isoformat(),
+                },
+                filters={"id": f"eq.{company_id}"},
+            )
+        )
+    }
+
+
+async def update_company_apollo_fields(
+    company_id: str,
+    *,
+    domain: str | None = None,
+    estimated_employees: int | None = None,
+) -> dict[str, Any]:
+    """Patch les colonnes companies enrichies par Apollo (domain manquant, taille).
+
+    On ne touche pas au `status` ici — c'est `mark_company_enriched` qui le fait
+    à la fin du flow WF-2.
+    """
+    patch: dict[str, Any] = {}
+    if domain:
+        patch["domain"] = domain
+    if estimated_employees is not None:
+        patch["estimated_employees"] = estimated_employees
+    if not patch:
+        return {"updated": 0}
+    rows = await db.update(
+        "companies",
+        patch,
+        filters={"id": f"eq.{company_id}"},
+    )
+    return {"updated": len(rows)}
+
+
+async def get_company(company_id: str) -> dict[str, Any] | None:
+    rows = await db.select(
+        "companies",
+        params={
+            "select": "id,name,domain,website,city,icp_segment,industry,status,google_place_id",
+            "id": f"eq.{company_id}",
+            "limit": "1",
+        },
+    )
+    return rows[0] if rows else None
+
+
+# ----------------------------------------------------------------------
+# Personalize (Phase 2 — WF-4)
+# ----------------------------------------------------------------------
+
+async def list_contacts_to_personalize(
+    limit: int = 20,
+    *,
+    require_research: bool = True,
+) -> list[dict[str, Any]]:
+    """Contacts prêts pour personnalisation : email présent, company.research_json
+    présent (sinon le prompt n'a rien à se mettre sous la dent), pas encore de
+    draft outbound dans messages.
+
+    On filtre côté Python plutôt que via une jointure PostgREST compliquée :
+    1) On récupère les contacts avec email + status='new' ou 'ready'.
+    2) On joint manuellement avec companies.research_json.
+    3) On exclut ceux qui ont déjà un message outbound (peu importe le status).
+    """
+    contacts = await db.select(
+        "contacts",
+        params={
+            "select": "id,first_name,last_name,email,title,company_id,status",
+            "email": "not.is.null",
+            "status": "in.(new,ready)",
+            "order": "created_at.asc",
+            "limit": str(limit * 3),  # over-fetch, on filtrera après join
+        },
+    )
+    if not contacts:
+        return []
+
+    company_ids = list({c["company_id"] for c in contacts})
+    # PostgREST: filter in.(uuid1,uuid2,...) — wrap chaque uuid dans des parenthèses si besoin.
+    companies = await db.select(
+        "companies",
+        params={
+            "select": "id,name,domain,website,city,icp_segment,industry,research_json",
+            "id": f"in.({','.join(company_ids)})",
+        },
+    )
+    by_id = {c["id"]: c for c in companies}
+
+    # On exclut les contacts déjà avec un message outbound.
+    existing_msgs = await db.select(
+        "messages",
+        params={
+            "select": "contact_id",
+            "contact_id": f"in.({','.join(c['id'] for c in contacts)})",
+            "direction": "eq.outbound",
+        },
+    )
+    already_drafted = {m["contact_id"] for m in existing_msgs}
+
+    out: list[dict[str, Any]] = []
+    for c in contacts:
+        if c["id"] in already_drafted:
+            continue
+        company = by_id.get(c["company_id"])
+        if not company:
+            continue
+        if require_research and not company.get("research_json"):
+            continue
+        out.append({
+            "contact": c,
+            "company": company,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+class MessageDraftIn(BaseModel):
+    contact_id: str
+    campaign_id: str | None = None
+    sequence_step_id: str | None = None
+    subject: str
+    body_text: str
+    from_email: str | None = None
+    to_email: str
+    generated_by_agent_run: str | None = None
+    compliance_check_passed: bool | None = None
+    compliance_notes: str | None = None
+
+
+async def insert_message_draft(payload: MessageDraftIn) -> dict[str, Any]:
+    """Insert un draft outbound dans messages. Le Compliance Agent (WF-5) le
+    validera avant envoi."""
+    row = payload.model_dump(exclude_none=True)
+    row["direction"] = "outbound"
+    row["status"] = "draft"
+    rows = await db.insert("messages", row)
+    return {"message_id": rows[0]["id"] if rows else None}
 
 
 async def list_companies_to_enrich(limit: int = 50) -> list[dict[str, Any]]:
