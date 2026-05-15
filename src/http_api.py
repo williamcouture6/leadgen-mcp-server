@@ -809,10 +809,16 @@ class RunWf3In(BaseModel):
 
     On reste séquentiel volontairement — l'API Anthropic et Google Places ont des
     rate limits, et un cron quotidien sur 10-20 companies tolère bien 30s par item.
+
+    `inter_company_sleep_seconds` (défaut 3s) espace les appels Anthropic pour éviter
+    les pics qui déclenchent des 529 Overloaded en cascade. Combiné au retry interne
+    de `_call_llm`, on absorbe les saturations transitoires sans laisser de companies
+    en erreur. 0 = pas de pause (pour test).
     """
     limit: int = 10
     model: str = "claude-sonnet-4-6"
     require_website: bool = True
+    inter_company_sleep_seconds: float = 3.0
 
 
 class RunWf3Item(BaseModel):
@@ -833,14 +839,17 @@ class RunWf3Out(BaseModel):
 
 @app.post("/wf3/run", dependencies=[Depends(_require_auth)], response_model=RunWf3Out)
 async def run_wf3(payload: RunWf3In) -> RunWf3Out:
+    import asyncio
+
     backlog = await db_tools.list_companies_to_research(
         limit=payload.limit, require_website=payload.require_website
     )
 
     items: list[RunWf3Item] = []
     succeeded = failed = skipped = 0
+    sleep_s = max(0.0, payload.inter_company_sleep_seconds)
 
-    for co in backlog:
+    for idx, co in enumerate(backlog):
         try:
             res = await research_company_by_id(
                 ResearchCompanyByIdIn(company_id=co["id"], model=payload.model)
@@ -851,6 +860,9 @@ async def run_wf3(payload: RunWf3In) -> RunWf3Out:
                 company_id=co["id"], name=co.get("name"),
                 status="error", error_text=repr(e),
             ))
+            # Continue avec sleep même en cas d'erreur (évite hammer si problème global).
+            if sleep_s > 0 and idx < len(backlog) - 1:
+                await asyncio.sleep(sleep_s)
             continue
 
         if res.status == "ok":
@@ -864,6 +876,10 @@ async def run_wf3(payload: RunWf3In) -> RunWf3Out:
             status=res.status, duration_ms=res.duration_ms,
             error_text=res.error_text,
         ))
+        # Petit délai entre companies pour ne pas saturer Anthropic ni Google Places.
+        # 3s = compromis raisonnable (10 companies → +30s total, négligeable sur cron).
+        if sleep_s > 0 and idx < len(backlog) - 1:
+            await asyncio.sleep(sleep_s)
 
     return RunWf3Out(
         processed=len(items), succeeded=succeeded, failed=failed,

@@ -21,9 +21,16 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from anthropic import Anthropic
+from anthropic import APIStatusError, RateLimitError, APIConnectionError
 from bs4 import BeautifulSoup
 from pydantic import BaseModel
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from ..config import settings
 
@@ -335,13 +342,42 @@ class LLMResult(BaseModel):
     usage: LLMUsage
 
 
+def _is_transient_anthropic_error(exc: BaseException) -> bool:
+    """True si l'erreur Anthropic est transitoire et mérite un retry.
+
+    Catch surtout les 529 OverloadedError + 429 RateLimitError + erreurs réseau.
+    Apollo et Anthropic émettent des 529 pendant les pics de charge globaux —
+    on retry avec backoff au lieu de laisser la company en `status='error'`.
+    """
+    if isinstance(exc, (RateLimitError, APIConnectionError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        status = getattr(exc, "status_code", None)
+        # 529 = Overloaded, 503 = Service Unavailable, 502 = Bad Gateway, 504 = Gateway Timeout
+        return status in (502, 503, 504, 529)
+    # OverloadedError (sous-classe d'APIStatusError dans SDK récents) attrapé via APIStatusError.
+    return False
+
+
+@retry(
+    retry=retry_if_exception(_is_transient_anthropic_error),
+    wait=wait_exponential(multiplier=2, min=4, max=60),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
 def _call_llm(
     place_block: str,
     site_block: str,
     model: str = _DEFAULT_MODEL,
     max_tokens: int = 2000,
 ) -> LLMResult:
-    """Synchronous Anthropic call. Wrapped via `asyncio.to_thread` from the endpoint."""
+    """Synchronous Anthropic call. Wrapped via `asyncio.to_thread` from the endpoint.
+
+    Retry avec backoff exponentiel sur les erreurs transitoires Anthropic
+    (529 Overloaded, 429 Rate Limit, 502/503/504 gateway, erreurs réseau).
+    5 tentatives au total, attente 4→8→16→32→60s entre essais. Couvre les
+    pics de charge globaux de l'API Anthropic qui durent typiquement <2 min.
+    """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY non défini")
