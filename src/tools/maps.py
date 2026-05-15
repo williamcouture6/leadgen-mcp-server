@@ -78,20 +78,35 @@ class SearchPlacesOut(BaseModel):
 # du 2026-05-14 (16 contacts pollués supprimés). Pour ces companies, on stocke
 # `domain=None` → WF-2 les marque `no_domain` au lieu d'enrichir incorrectement.
 PLATFORM_DOMAINS_NEVER_EXTRACT = frozenset({
+    # Réseaux sociaux
     "facebook.com", "m.facebook.com", "fb.com", "fb.me",
     "instagram.com",
     "twitter.com", "x.com",
     "linkedin.com",
     "tiktok.com",
     "youtube.com", "youtu.be",
+    "pinterest.com", "pinterest.ca",
+    # Avis + restos
     "yelp.com", "yelp.ca",
     "tripadvisor.com", "tripadvisor.ca",
+    # Livraison resto (le site de la PME peut être leur fiche resto)
     "doordash.com", "ubereats.com", "skipthedishes.com",
+    "foodora.ca", "foodora.com", "deliveroo.com", "grubhub.com",
+    # Google + maps shorteners
     "google.com", "goo.gl", "maps.app.goo.gl", "g.page",
+    # Builders de site (souvent gratuit + sous-domaine plateforme)
     "wix.com", "wixsite.com", "squarespace.com", "shopify.com",
     "wordpress.com", "weebly.com", "godaddy.com", "sites.google.com",
-    "bookenda.com", "opentable.com",
-    "etsy.com",
+    "carrd.co", "webnode.com", "jimdo.com",
+    # Réservation resto / salon / spa
+    "bookenda.com", "opentable.com", "resy.com", "tock.com",
+    "dikidi.net", "vagaro.com", "fresha.com", "mindbodyonline.com",
+    "styleseat.com", "planity.com", "treatwell.com", "thumbtack.com",
+    # Marketplaces / e-commerce
+    "etsy.com", "amazon.com", "amazon.ca",
+    # Annuaires / directories
+    "411sante.com", "411.ca", "canada411.ca",
+    "pagesjaunes.ca", "yellowpages.ca", "yellowpages.com",
 })
 
 
