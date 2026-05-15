@@ -184,7 +184,33 @@ class EnrichCompanyByIdOut(BaseModel):
     contacts_inserted: int = 0
     contacts_duplicate: int = 0
     contacts_skipped_no_email: int = 0
+    contacts_skipped_domain_mismatch: int = 0
     error_text: str | None = None
+
+
+def _email_domain_matches(email: str | None, expected_domain: str | None) -> bool:
+    """True si le domaine de l'email correspond au domaine attendu (ou en est un
+    sous-domaine). Défense en profondeur : si Apollo retourne un email avec un
+    domaine qui ne ressemble pas à celui qu'on a passé à enrich_org, on rejette
+    l'insert.
+
+    Exemples :
+    - email=`mfabi@cafefaro.com`, expected=`cafefaro.com` → True (match exact)
+    - email=`john@mail.cafefaro.com`, expected=`cafefaro.com` → True (sous-domaine)
+    - email=`ssingh@meta.com`, expected=`cafefaro.com` → False (mismatch flagrant)
+    - email=`ssingh@meta.com`, expected=`facebook.com` → False (Apollo n'a même
+      pas répondu avec le domaine qu'on lui a passé — la blocklist en amont
+      empêche normalement ce cas, mais défense en profondeur).
+    """
+    if not email or "@" not in email or not expected_domain:
+        return False
+    dom = email.rsplit("@", 1)[1].lower()
+    exp = expected_domain.lower()
+    if dom == exp:
+        return True
+    if dom.endswith("." + exp):
+        return True
+    return False
 
 
 @app.post(
@@ -276,7 +302,7 @@ async def enrich_company_by_id(payload: EnrichCompanyByIdIn) -> EnrichCompanyByI
     # 3) Pour chaque personne du top N : récupère email (déjà fourni ou via match).
     # NB: Apollo Basic obfusque last_name dans search (ex: "Ro***i") → on match
     # systématiquement via apollo_id pour révéler email + last_name complet.
-    inserted = duplicate = skipped = 0
+    inserted = duplicate = skipped = domain_mismatch = 0
     for person in search_out.people[: payload.max_contacts]:
         first_name = person.first_name
         last_name = person.last_name
@@ -315,6 +341,15 @@ async def enrich_company_by_id(payload: EnrichCompanyByIdIn) -> EnrichCompanyByI
                 # Pas bloquant — on insère ce qu'on a (sans email ça sera skip_no_email).
                 pass
 
+        # Défense en profondeur : si l'email Apollo n'est pas sur le domaine qu'on
+        # a passé à enrich_org, on rejette. Catch les cas où une plateforme
+        # inconnue échappe à la blocklist (ex: domain=`unknownsocial.com` →
+        # Apollo renvoie une org tierce → email @autrechose.com). WF-3 ramassera
+        # l'email scrapé du vrai site si dispo.
+        if email and not _email_domain_matches(email, domain):
+            domain_mismatch += 1
+            continue
+
         res = await db_tools.insert_contact(
             db_tools.ContactIn(
                 company_id=payload.company_id,
@@ -347,6 +382,7 @@ async def enrich_company_by_id(payload: EnrichCompanyByIdIn) -> EnrichCompanyByI
         contacts_inserted=inserted,
         contacts_duplicate=duplicate,
         contacts_skipped_no_email=skipped,
+        contacts_skipped_domain_mismatch=domain_mismatch,
     )
 
 
