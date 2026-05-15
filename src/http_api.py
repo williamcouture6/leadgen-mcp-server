@@ -121,8 +121,41 @@ async def enrich_match(payload: enrich_tools.MatchPersonIn) -> dict[str, Any]:
 
 # ---------------- WF-2 orchestration (Apollo enrichment, Phase 1B) ----------------
 
+# Domaines de plateformes qui hébergent des pages d'entreprise (Facebook, Instagram,
+# DoorDash, Yelp, etc.). Beaucoup de PME indé QC n'ont QUE une page Facebook comme
+# "website" → Google Places retourne `facebook.com/cafelocal` → si on enrichit
+# `facebook.com` via Apollo, Apollo renvoie Meta Inc. et ses employés. Faux positif
+# critique : on insère des emails @meta.com pour démarcher un café québécois.
+#
+# Découvert 2026-05-14 sur 50 companies (Le Café NamasThé → DoorDash, CAFÉ KRÉMA
+# → Meta, Augusta Café → Instagram, etc.). Voir memory
+# `feedback_no_apollo_on_social_platform_domains`.
+PLATFORM_DOMAINS_NEVER_ENRICH = frozenset({
+    "facebook.com", "m.facebook.com", "fb.com", "fb.me",
+    "instagram.com",
+    "twitter.com", "x.com",
+    "linkedin.com",
+    "tiktok.com",
+    "youtube.com", "youtu.be",
+    "yelp.com", "yelp.ca",
+    "tripadvisor.com", "tripadvisor.ca",
+    "doordash.com", "ubereats.com", "skipthedishes.com",
+    "google.com", "goo.gl", "maps.app.goo.gl", "g.page",
+    "wix.com", "wixsite.com", "squarespace.com", "shopify.com",
+    "wordpress.com", "weebly.com", "godaddy.com", "sites.google.com",
+    "bookenda.com", "opentable.com",  # plateformes de réservation
+    "etsy.com",
+})
+
+
 def _domain_from_website(website: str | None) -> str | None:
-    """Extrait 'acme.com' depuis 'https://www.acme.com/whatever'."""
+    """Extrait 'acme.com' depuis 'https://www.acme.com/whatever'.
+
+    Retourne `None` si le domaine extrait est une plateforme générique
+    (`facebook.com`, `instagram.com`, etc.) — auquel cas la company n'a pas
+    de vrai domaine et NE DOIT PAS être enrichie via Apollo (qui renverrait
+    la plateforme elle-même, ex. Meta Inc.).
+    """
     if not website:
         return None
     from urllib.parse import urlparse
@@ -130,7 +163,11 @@ def _domain_from_website(website: str | None) -> str | None:
     host = parsed.netloc.split(":")[0].lower()
     if host.startswith("www."):
         host = host[4:]
-    return host or None
+    if not host:
+        return None
+    if host in PLATFORM_DOMAINS_NEVER_ENRICH:
+        return None
+    return host
 
 
 class EnrichCompanyByIdIn(BaseModel):
@@ -172,14 +209,19 @@ async def enrich_company_by_id(payload: EnrichCompanyByIdIn) -> EnrichCompanyByI
             company_id=payload.company_id, status="error", error_text="company_not_found",
         )
 
-    domain = co.get("domain") or _domain_from_website(co.get("website"))
+    # Le domain stocké peut déjà être une plateforme (`facebook.com`, etc.) à cause
+    # d'un sourcing antérieur — re-filtrer ici pour éviter d'enrichir via Apollo.
+    existing_domain = (co.get("domain") or "").lower() or None
+    if existing_domain and existing_domain in PLATFORM_DOMAINS_NEVER_ENRICH:
+        existing_domain = None
+    domain = existing_domain or _domain_from_website(co.get("website"))
     if not domain:
         await db_tools.mark_company_disqualified(
-            payload.company_id, "enrich_failed_no_domain"
+            payload.company_id, "enrich_failed_no_domain_or_platform_only"
         )
         return EnrichCompanyByIdOut(
             company_id=payload.company_id, status="no_domain",
-            error_text="ni `domain` ni `website` exploitable",
+            error_text="ni `domain` ni `website` exploitable (ou plateforme générique facebook/instagram/etc.)",
         )
 
     # 1) Org enrich

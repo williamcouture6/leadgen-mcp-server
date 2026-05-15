@@ -72,12 +72,42 @@ class SearchPlacesOut(BaseModel):
     next_page_token: str | None = None
 
 
+# Beaucoup de PME indé QC n'ont QU'UNE page Facebook/Instagram comme "website".
+# Si on stocke `domain='facebook.com'`, WF-2 enrichirait Apollo sur facebook.com
+# et insérerait des emails @meta.com pour démarcher un café. Voir bug critique
+# du 2026-05-14 (16 contacts pollués supprimés). Pour ces companies, on stocke
+# `domain=None` → WF-2 les marque `no_domain` au lieu d'enrichir incorrectement.
+PLATFORM_DOMAINS_NEVER_EXTRACT = frozenset({
+    "facebook.com", "m.facebook.com", "fb.com", "fb.me",
+    "instagram.com",
+    "twitter.com", "x.com",
+    "linkedin.com",
+    "tiktok.com",
+    "youtube.com", "youtu.be",
+    "yelp.com", "yelp.ca",
+    "tripadvisor.com", "tripadvisor.ca",
+    "doordash.com", "ubereats.com", "skipthedishes.com",
+    "google.com", "goo.gl", "maps.app.goo.gl", "g.page",
+    "wix.com", "wixsite.com", "squarespace.com", "shopify.com",
+    "wordpress.com", "weebly.com", "godaddy.com", "sites.google.com",
+    "bookenda.com", "opentable.com",
+    "etsy.com",
+})
+
+
 def _domain_from_url(url: str | None) -> str | None:
     if not url:
         return None
     try:
         host = urlparse(url).hostname or ""
-        return host.lower().lstrip("www.") or None
+        host = host.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if not host:
+            return None
+        if host in PLATFORM_DOMAINS_NEVER_EXTRACT:
+            return None
+        return host
     except Exception:  # noqa: BLE001
         return None
 
