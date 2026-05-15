@@ -162,6 +162,36 @@ PLATFORM_DOMAINS_NEVER_ENRICH = frozenset({
     "pagesjaunes.ca", "yellowpages.ca", "yellowpages.com",
 })
 
+# Industries Apollo qui signalent qu'on a enrichi une plateforme/saas/marketplace
+# au lieu d'une PME commerce local ou services pro. Si Apollo retourne ces
+# industries pour un prospect QC (cafés/restos/salons/plombiers/etc.), c'est
+# quasi-certain qu'on est sur une plateforme tierce — rejet.
+APOLLO_INDUSTRIES_NEVER_ENRICH = frozenset({
+    "information technology & services",
+    "internet",
+    "computer software",
+    "software",
+    "saas",
+    "online media",
+    "marketplaces",
+    "e-learning",
+    "computer & network security",
+    "computer hardware",
+    "telecommunications",
+    "venture capital & private equity",
+    "investment management",
+    "investment banking",
+    "banking",  # PME indé n'est pas une banque
+    "financial services",
+})
+
+# Cap de taille : nos cibles sont des PME indépendantes (1-30 employés).
+# Si Apollo retourne > N employés, c'est presque sûr une plateforme ou une
+# multinationale qui partage le domaine par accident. Marge: chaînes locales
+# légit (Brûleries FARO ~50, Café Dépôt 120, Boulangerie Ange 3300 réelle).
+# Seuil 300 = catch Stripe/Shopify/Square/Yocale tout en gardant les chaînes QC.
+APOLLO_MAX_EMPLOYEES_THRESHOLD = 300
+
 
 def _domain_from_website(website: str | None) -> str | None:
     """Extrait 'acme.com' depuis 'https://www.acme.com/whatever'.
@@ -281,6 +311,37 @@ async def enrich_company_by_id(payload: EnrichCompanyByIdIn) -> EnrichCompanyByI
         return EnrichCompanyByIdOut(
             company_id=payload.company_id, status="no_apollo_org",
             domain=domain,
+        )
+
+    # 1.5) Guard contre les plateformes/big-tech qui auraient échappé à la blocklist.
+    # Si Apollo retourne une org dont l'industry est tech/saas/marketplace OU dont
+    # la taille dépasse le profil PME indépendante (>300 emp), on rejette : presque
+    # sûr que le `domain` est une plateforme tierce hébergeant la PME (booking,
+    # directory, builder de site, etc.) et Apollo nous a renvoyé la plateforme,
+    # pas le commerce local qu'on visait. WF-3 (scraping) prendra la relève si
+    # le site brut publie un email.
+    org_industry = (org.industry or "").lower().strip()
+    org_employees = org.estimated_num_employees or 0
+    is_blocked_industry = org_industry in APOLLO_INDUSTRIES_NEVER_ENRICH
+    is_oversize = org_employees > APOLLO_MAX_EMPLOYEES_THRESHOLD
+    if is_blocked_industry or is_oversize:
+        reason_parts = []
+        if is_blocked_industry:
+            reason_parts.append(f"industry={org_industry!r}")
+        if is_oversize:
+            reason_parts.append(f"employees={org_employees}>{APOLLO_MAX_EMPLOYEES_THRESHOLD}")
+        await db_tools.mark_company_disqualified(
+            payload.company_id,
+            f"apollo_org_is_platform_or_oversize ({', '.join(reason_parts)})",
+        )
+        # Reset le domain pour éviter ré-enrichissement futur.
+        await db_tools.update_company_apollo_fields(
+            payload.company_id, domain=None, estimated_employees=org_employees,
+        )
+        return EnrichCompanyByIdOut(
+            company_id=payload.company_id, status="no_apollo_org",
+            domain=domain, apollo_org_id=org.organization_id,
+            error_text=f"apollo_org_platform_guard: {', '.join(reason_parts)}",
         )
 
     # Patch domain + taille sur la company (utile si domain était null).
