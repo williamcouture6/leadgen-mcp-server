@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
 
+from .tools import compliance as compliance_tools
 from .tools import db as db_tools
 from .tools import enrich as enrich_tools
 from .tools import maps as maps_tools
@@ -1221,4 +1222,238 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
         processed=len(items), drafts_created=drafts,
         skipped=skipped, failed=failed,
         slots_available=total_slots, items=items,
+    )
+
+
+# ---------------- Compliance (Phase 2 — WF-5) ----------------
+
+class ComplianceCheckIn(BaseModel):
+    """Lance les 2 layers de compliance sur un draft.
+
+    Si `persist=True` (défaut), met à jour `messages.compliance_check_passed`
+    et `messages.compliance_notes` avec le verdict. `persist=False` = dry-run
+    (utile pour QA, ne touche pas la DB).
+    """
+    message_id: str
+    skip_llm: bool = False
+    model: str = "claude-sonnet-4-6"
+    persist: bool = True
+
+
+@app.post(
+    "/compliance/check",
+    dependencies=[Depends(_require_auth)],
+    response_model=compliance_tools.ComplianceCheckOut,
+)
+async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.ComplianceCheckOut:
+    """Compliance d'UN draft. Pratique pour n8n traitement individuel."""
+    from . import supabase_client as db
+
+    # 1) Fetch le message + contact + company + agent_run (pour available_slots)
+    msgs = await db.select(
+        "messages",
+        params={
+            "select": "id,subject,body_text,contact_id,generated_by_agent_run,compliance_check_passed",
+            "id": f"eq.{payload.message_id}",
+            "limit": "1",
+        },
+    )
+    if not msgs:
+        return compliance_tools.ComplianceCheckOut(
+            message_id=payload.message_id, verdict="error",
+            send_decision="DO_NOT_SEND",
+            error_text="message_not_found",
+        )
+    msg = msgs[0]
+
+    contact_id = msg.get("contact_id")
+    contact_rows = await db.select(
+        "contacts",
+        params={
+            "select": "id,company_id",
+            "id": f"eq.{contact_id}",
+            "limit": "1",
+        },
+    ) if contact_id else []
+    if not contact_rows:
+        return compliance_tools.ComplianceCheckOut(
+            message_id=payload.message_id, verdict="error",
+            send_decision="DO_NOT_SEND",
+            error_text="contact_not_found",
+        )
+    company_id = contact_rows[0].get("company_id")
+
+    company_rows = await db.select(
+        "companies",
+        params={
+            "select": "research_json",
+            "id": f"eq.{company_id}",
+            "limit": "1",
+        },
+    ) if company_id else []
+    research_json = (company_rows[0].get("research_json") if company_rows else None) or {}
+
+    # 2) Charger le contexte du draft (template + slots) depuis agent_runs
+    template_used: str | None = None
+    available_slots: list[dict[str, Any]] = []
+    social_proof: list[dict[str, Any]] = _load_client_references()
+    agent_run_id = msg.get("generated_by_agent_run")
+    if agent_run_id:
+        runs = await db.select(
+            "agent_runs",
+            params={
+                "select": "input_payload,output_payload",
+                "id": f"eq.{agent_run_id}",
+                "limit": "1",
+            },
+        )
+        if runs:
+            inp = runs[0].get("input_payload") or {}
+            outp = runs[0].get("output_payload") or {}
+            template_used = (inp.get("template_choice")
+                             or outp.get("template_used"))
+            # available_slots peut être stocké dans input_payload mais on a juste un count
+            # → on re-fetch Cal.com pour avoir la liste actuelle (acceptable car compliance
+            # se fait peu après personalize, slots quasi identiques).
+
+    if not available_slots:
+        try:
+            from .lib.calcom import CalcomError, get_available_slots
+            available_slots = get_available_slots(days_ahead=14)
+        except Exception:  # noqa: BLE001
+            available_slots = []
+
+    # 3) Run compliance
+    try:
+        out = await compliance_tools.compliance_check(
+            message_id=payload.message_id,
+            body=msg.get("body_text") or "",
+            subject=msg.get("subject") or "",
+            template_used=template_used,
+            research_json=research_json,
+            social_proof=social_proof,
+            available_slots=available_slots,
+            skip_llm=payload.skip_llm,
+            model=payload.model,
+        )
+    except Exception as e:  # noqa: BLE001
+        return compliance_tools.ComplianceCheckOut(
+            message_id=payload.message_id, verdict="error",
+            send_decision="DO_NOT_SEND",
+            error_text=repr(e),
+        )
+
+    # 4) Persist verdict
+    if payload.persist:
+        try:
+            await db.update(
+                "messages",
+                {
+                    "compliance_check_passed": (out.verdict == "approved"),
+                    "compliance_notes": compliance_tools.format_compliance_notes(out),
+                },
+                filters={"id": f"eq.{payload.message_id}"},
+            )
+        except Exception:  # noqa: BLE001
+            pass  # Non bloquant — l'agent retourne le verdict même si update échoue
+
+    return out
+
+
+class RunWf5In(BaseModel):
+    """Pass complet WF-5 : prend N drafts non encore validés, lance compliance.
+
+    Limite : drafts avec `compliance_check_passed IS NULL` AND `status='draft'`.
+    Re-traite ceux dont les notes contiennent "llm_error" (transient).
+    """
+    limit: int = 20
+    skip_llm: bool = False
+    model: str = "claude-sonnet-4-6"
+    inter_message_sleep_seconds: float = 2.0
+
+
+class RunWf5Item(BaseModel):
+    message_id: str
+    subject: str | None = None
+    verdict: str
+    send_decision: str
+    duration_ms: int | None = None
+    error_text: str | None = None
+
+
+class RunWf5Out(BaseModel):
+    processed: int
+    approved: int
+    needs_revision: int
+    blocked: int
+    errors: int
+    items: list[RunWf5Item]
+
+
+@app.post("/wf5/run", dependencies=[Depends(_require_auth)], response_model=RunWf5Out)
+async def run_wf5(payload: RunWf5In) -> RunWf5Out:
+    """Batch compliance sur tous les drafts non encore checked."""
+    import asyncio
+    from . import supabase_client as db
+
+    # Fetch drafts pending compliance
+    drafts = await db.select(
+        "messages",
+        params={
+            "select": "id,subject",
+            "direction": "eq.outbound",
+            "status": "eq.draft",
+            "compliance_check_passed": "is.null",
+            "order": "created_at.asc",
+            "limit": str(payload.limit),
+        },
+    )
+
+    items: list[RunWf5Item] = []
+    approved = needs_revision = blocked = errors = 0
+    sleep_s = max(0.0, payload.inter_message_sleep_seconds)
+
+    for idx, draft in enumerate(drafts):
+        try:
+            res = await compliance_check(
+                ComplianceCheckIn(
+                    message_id=draft["id"],
+                    skip_llm=payload.skip_llm,
+                    model=payload.model,
+                    persist=True,
+                )
+            )
+        except Exception as e:  # noqa: BLE001
+            errors += 1
+            items.append(RunWf5Item(
+                message_id=draft["id"], subject=draft.get("subject"),
+                verdict="error", send_decision="DO_NOT_SEND",
+                error_text=repr(e),
+            ))
+            if sleep_s > 0 and idx < len(drafts) - 1:
+                await asyncio.sleep(sleep_s)
+            continue
+
+        if res.verdict == "approved":
+            approved += 1
+        elif res.verdict == "needs_revision":
+            needs_revision += 1
+        elif res.verdict == "blocked":
+            blocked += 1
+        else:
+            errors += 1
+
+        items.append(RunWf5Item(
+            message_id=draft["id"], subject=draft.get("subject"),
+            verdict=res.verdict, send_decision=res.send_decision,
+            duration_ms=res.duration_ms, error_text=res.error_text,
+        ))
+
+        if sleep_s > 0 and idx < len(drafts) - 1:
+            await asyncio.sleep(sleep_s)
+
+    return RunWf5Out(
+        processed=len(items), approved=approved,
+        needs_revision=needs_revision, blocked=blocked, errors=errors,
+        items=items,
     )
