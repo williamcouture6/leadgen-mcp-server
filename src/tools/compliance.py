@@ -137,6 +137,12 @@ async def compliance_check(
 
     started = time.monotonic()
 
+    # Footer LCAP injecté par l'ESP (Instantly) au moment de l'envoi — pas dans
+    # le body généré par WF-4. On le passe aux checks déterministes pour que
+    # le scan legal_footer / loi25_privacy le voie. Vide = pas d'ESP footer
+    # (mode dev ou tout est dans le body).
+    appended_footer = os.environ.get("INSTANTLY_CAMPAIGN_FOOTER", "")
+
     # Layer 1 — deterministic
     det_results: list[CheckResult] = run_all(
         email_body=body,
@@ -144,6 +150,7 @@ async def compliance_check(
         available_slots=available_slots or None,
         template=template_used,
         email_subject=subject,
+        appended_footer=appended_footer,
     )
     det_blockers = [r for r in det_results if not r.passed and r.severity == "block"]
     det_warnings = [r for r in det_results if not r.passed and r.severity == "warn"]

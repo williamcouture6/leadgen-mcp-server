@@ -189,8 +189,14 @@ def check_fake_social_proof(email_body: str, social_proof_count: int) -> CheckRe
     )
 
 
-def check_legal_footer(email_body: str) -> CheckResult:
-    body_low = email_body.lower()
+def check_legal_footer(email_body: str, appended_footer: str = "") -> CheckResult:
+    """`appended_footer` couvre le cas où l'ESP (Instantly) injecte un footer
+    LCAP (nom légal + adresse + lien désabo) au moment de l'envoi — donc absent
+    du `email_body` généré par WF-4 mais présent dans le mail effectivement reçu.
+    On scanne body + footer comme un seul texte pour valider les requis LCAP.
+    """
+    combined = (email_body + "\n" + appended_footer) if appended_footer else email_body
+    body_low = combined.lower()
     body_norm = re.sub(r"\s+", " ", body_low)
 
     company_name = os.environ.get("LEGAL_COMPANY_NAME", "")
@@ -228,8 +234,9 @@ def check_legal_footer(email_body: str) -> CheckResult:
     )
 
 
-def check_loi25_privacy_contact(email_body: str) -> CheckResult:
-    body_low = email_body.lower()
+def check_loi25_privacy_contact(email_body: str, appended_footer: str = "") -> CheckResult:
+    combined = (email_body + "\n" + appended_footer) if appended_footer else email_body
+    body_low = combined.lower()
     dpo = os.environ.get("DPO_EMAIL", "").lower()
     has_dpo = dpo and dpo in body_low
     has_privacy_link = bool(re.search(r"confidentialit[ée]|vie priv[ée]e|/privacy|/confidentialite", body_low))
@@ -377,6 +384,7 @@ def run_all(
     available_slots: list[dict] | None = None,
     template: str | None = None,
     email_subject: str | None = None,
+    appended_footer: str = "",
 ) -> list[CheckResult]:
     return [
         check_warmup_window(),
@@ -386,8 +394,8 @@ def run_all(
         check_subject_first_person_actions(email_subject or ""),
         check_fake_social_proof(email_body, social_proof_count),
         check_subject_fake_social_proof(email_subject or "", social_proof_count),
-        check_legal_footer(email_body),
-        check_loi25_privacy_contact(email_body),
+        check_legal_footer(email_body, appended_footer=appended_footer),
+        check_loi25_privacy_contact(email_body, appended_footer=appended_footer),
         check_length(email_body, template=template),
         check_cta_present(email_body),
         check_cta_slots_real(email_body, available_slots),

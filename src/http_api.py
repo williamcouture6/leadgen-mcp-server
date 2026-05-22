@@ -22,6 +22,7 @@ from .tools import enrich as enrich_tools
 from .tools import maps as maps_tools
 from .tools import personalize as personalize_tools
 from .tools import research as research_tools
+from .tools import send as send_tools
 
 
 def _expected_token() -> str | None:
@@ -1457,3 +1458,46 @@ async def run_wf5(payload: RunWf5In) -> RunWf5Out:
         needs_revision=needs_revision, blocked=blocked, errors=errors,
         items=items,
     )
+
+
+# ---------------- Send (Phase 2 — WF-6) ----------------
+
+@app.post(
+    "/send/message",
+    dependencies=[Depends(_require_auth)],
+    response_model=send_tools.SendMessageOut,
+)
+async def send_message(payload: send_tools.SendMessageIn) -> send_tools.SendMessageOut:
+    """Push UN draft approuvé à Instantly. Idempotent : si status != 'draft',
+    skip. Defense in depth : revérifie warmup gate + suppression list même
+    si WF-5 a déjà approuvé.
+    """
+    return await send_tools.send_one_message(payload)
+
+
+@app.post(
+    "/wf6/run",
+    dependencies=[Depends(_require_auth)],
+    response_model=send_tools.RunWf6Out,
+)
+async def run_wf6(payload: send_tools.RunWf6In) -> send_tools.RunWf6Out:
+    """Pass complet WF-6 : pousse jusqu'à `limit` drafts approuvés à Instantly,
+    en respectant le daily cap (compté sur fenêtre America/Toronto).
+
+    `dry_run=true` : simule le push sans appel Instantly (pour tester la
+    sélection des drafts pendant le warmup).
+    """
+    return await send_tools.run_wf6(payload)
+
+
+@app.get("/send/healthcheck", dependencies=[Depends(_require_auth)])
+async def send_healthcheck() -> dict[str, Any]:
+    """Vérifie que l'API Instantly est joignable et que la campagne existe.
+    Utilisable comme smoke test avant d'activer le cron WF-6.
+    """
+    from .lib import instantly as instantly_lib
+    try:
+        camp = await instantly_lib.get_campaign()
+        return {"ok": True, "campaign_id": camp.get("id"), "name": camp.get("name")}
+    except instantly_lib.InstantlyError as e:
+        return {"ok": False, "error": str(e)}
