@@ -1494,10 +1494,13 @@ async def run_wf6(payload: send_tools.RunWf6In) -> send_tools.RunWf6Out:
 async def send_healthcheck() -> dict[str, Any]:
     """Vérifie que l'API Instantly est joignable et que la campagne existe.
     Utilisable comme smoke test avant d'activer le cron WF-6.
+
+    Retourne toujours 200 — `ok=false` + `error=<msg>` si problème. Évite
+    qu'un 500 cache le vrai diagnostic (env var manquante, réseau, etc.).
     """
     from .lib import instantly as instantly_lib
     try:
         camp = await instantly_lib.get_campaign()
         return {"ok": True, "campaign_id": camp.get("id"), "name": camp.get("name")}
-    except instantly_lib.InstantlyError as e:
-        return {"ok": False, "error": str(e)}
+    except Exception as e:  # noqa: BLE001 — endpoint diag, on veut tout voir
+        return {"ok": False, "error_type": type(e).__name__, "error": str(e)[:500]}

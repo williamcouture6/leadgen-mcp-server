@@ -23,7 +23,18 @@ import os
 from typing import Any
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+# Ne retry QUE les erreurs réseau transitoires (timeout, connection drop).
+# Les InstantlyError (4xx/5xx HTTP, payload invalide) signalent un problème
+# côté Instantly ou côté config — retry ne va rien arranger et tenacity
+# masquerait l'exception originale derrière RetryError sans `reraise=True`.
+_RETRY_ON_HTTP_ERROR = retry_if_exception_type(httpx.HTTPError)
 
 INSTANTLY_API_BASE = "https://api.instantly.ai/api/v2"
 
@@ -53,7 +64,12 @@ def _headers() -> dict[str, str]:
     }
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+@retry(
+    retry=_RETRY_ON_HTTP_ERROR,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=1, max=8),
+    reraise=True,
+)
 async def add_lead_to_campaign(
     *,
     email: str,
@@ -123,7 +139,12 @@ async def add_lead_to_campaign(
     return data
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+@retry(
+    retry=_RETRY_ON_HTTP_ERROR,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=1, max=8),
+    reraise=True,
+)
 async def get_campaign(campaign_id: str | None = None) -> dict[str, Any]:
     """Récupère les métadonnées d'une campagne. Utile pour healthcheck pré-envoi."""
     cid = (campaign_id or _campaign_id()).strip()
