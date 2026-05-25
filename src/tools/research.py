@@ -40,7 +40,8 @@ from ..config import settings
 
 PLACES_BASE = "https://places.googleapis.com/v1"
 
-# Mêmes champs que dans le proto CLI (agents/lib/places.py) — inclut `reviews`.
+# FieldMask étendu (inclut `reviews`) — WF-1 sourcing utilise un mask plus court
+# pour économiser les crédits Google ; le research re-fetch ici avec reviews.
 PLACE_DETAILS_FIELD_MASK = ",".join([
     "id",
     "displayName",
@@ -75,7 +76,7 @@ async def fetch_place_details(google_place_id: str) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------------
-# Website scraper (port de agents/lib/scraper.py — version async)
+# Website scraper — version async (httpx) avec extraction emails + tech keywords
 # ----------------------------------------------------------------------
 
 USER_AGENT = "Mozilla/5.0 (compatible; CoutureIA-Research/0.1; +https://couture-ia.com)"

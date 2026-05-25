@@ -1,0 +1,13 @@
+{
+  "_comment": "Références client réelles de Couture IA. Utilisées comme social proof par la Personalization Agent. Si vide ou si aucune entrée ne matche le secteur/ville du prospect, l'agent N'INVENTE PAS de référence. Format prévu pour migrer vers une table Supabase plus tard (client_references).",
+  "references": [],
+  "_schema_example": {
+    "client_name": "Plomberie XYZ",
+    "sector": "plomberie residentielle",
+    "city": "Laval",
+    "deployed_at": "2026-03-15",
+    "outcome_one_line": "Système de réponse 24/7 aux demandes Messenger — ~12 nouveaux RDV/sem capturés hors heures",
+    "is_public_quotable": true,
+    "_notes_internes": "consentement obtenu pour citation publique anonymisée"
+  }
+}

@@ -1,11 +1,12 @@
 """Cal.com integration — source de vérité pour les créneaux dispos.
 
-Port de `agents/lib/calcom.py` vers le service Railway. Lit l'API v2 Cal.com
-(https://api.cal.com/v2/slots) pour récupérer les créneaux RÉELLEMENT disponibles
-selon la config Cal.com de William (qui sync elle-même avec Google Calendar).
+Lit l'API v2 Cal.com (https://api.cal.com/v2/slots) pour récupérer les
+créneaux RÉELLEMENT disponibles selon la config Cal.com de William (qui sync
+elle-même avec Google Calendar).
 
-Le Personalization Agent pioche dans cette liste — interdiction d'inventer un créneau.
-Cohérent avec [[feedback_cta_real_availability]] : si Cal.com dit pas dispo, on ne propose pas.
+Le Personalization Agent pioche dans cette liste — interdiction d'inventer
+un créneau. Cohérent avec [[feedback_cta_real_availability]] : si Cal.com dit
+pas dispo, on ne propose pas.
 """
 from __future__ import annotations
 

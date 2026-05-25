@@ -1,9 +1,8 @@
 """Deterministic compliance checks for outreach emails — no LLM needed.
 
-Port de `agents/lib/compliance_checks.py` vers le service Railway. Chaque check
-retourne (passed: bool, message: str, severity: 'block'|'warn'). L'orchestrateur
-(`tools/compliance.py`) les collecte en verdict. Ces checks tournent AVANT le LLM
-judge pour court-circuiter sur les violations dures.
+Chaque check retourne (passed: bool, message: str, severity: 'block'|'warn').
+L'orchestrateur (`tools/compliance.py`) les collecte en verdict. Ces checks
+tournent AVANT le LLM judge pour court-circuiter sur les violations dures.
 
 Lit les env vars suivantes :
   - LEGAL_COMPANY_NAME       (LCAP: identification expéditeur)
