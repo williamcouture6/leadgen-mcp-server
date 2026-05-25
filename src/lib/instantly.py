@@ -30,13 +30,20 @@ from tenacity import (
     wait_exponential,
 )
 
-# Ne retry QUE les erreurs réseau transitoires (timeout, connection drop).
-# Les InstantlyError (4xx/5xx HTTP, payload invalide) signalent un problème
-# côté Instantly ou côté config — retry ne va rien arranger et tenacity
-# masquerait l'exception originale derrière RetryError sans `reraise=True`.
-_RETRY_ON_HTTP_ERROR = retry_if_exception_type(httpx.HTTPError)
-
 INSTANTLY_API_BASE = "https://api.instantly.ai/api/v2"
+
+# Classes httpx vraiment transitoires : timeouts réseau, connection drop, RST.
+# Liste explicite (pas `httpx.HTTPError` parent) pour éviter de retry sur
+# autre chose qui hériterait de HTTPError sans être transitoire (ex. erreurs
+# de protocole côté serveur Instantly = retry inutile).
+_TRANSIENT_HTTPX_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.RemoteProtocolError,
+)
 
 
 class InstantlyError(Exception):
@@ -64,12 +71,45 @@ def _headers() -> dict[str, str]:
     }
 
 
+# ----------------------------------------------------------------------
+# Retry interne sur les vraies erreurs transitoires uniquement.
+# Tenacity wraps le call HTTP brut. Si après N tentatives ça fail toujours,
+# l'exception httpx remonte au caller qui la convertit en InstantlyError.
+# Les 4xx/5xx ne déclenchent PAS de retry — pas d'exception httpx levée sur
+# un status, on les check manuellement après le call.
+# ----------------------------------------------------------------------
+
 @retry(
-    retry=_RETRY_ON_HTTP_ERROR,
+    retry=retry_if_exception_type(_TRANSIENT_HTTPX_ERRORS),
     stop=stop_after_attempt(3),
     wait=wait_exponential(min=1, max=8),
     reraise=True,
 )
+async def _http_post_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    headers: dict[str, str],
+    json: dict[str, Any],
+) -> httpx.Response:
+    return await client.post(url, headers=headers, json=json)
+
+
+@retry(
+    retry=retry_if_exception_type(_TRANSIENT_HTTPX_ERRORS),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=1, max=8),
+    reraise=True,
+)
+async def _http_get_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    headers: dict[str, str],
+) -> httpx.Response:
+    return await client.get(url, headers=headers)
+
+
 async def add_lead_to_campaign(
     *,
     email: str,
@@ -95,7 +135,7 @@ async def add_lead_to_campaign(
 
     Returns le payload Instantly (contient `id` = lead_id Instantly).
 
-    Raises InstantlyError sur 4xx/5xx ou format inattendu.
+    Raises InstantlyError sur 4xx/5xx, format inattendu, ou réseau après retries.
     """
     cid = (campaign_id or _campaign_id()).strip()
     body: dict[str, Any] = {
@@ -118,11 +158,15 @@ async def add_lead_to_campaign(
         body["company_name"] = company_name
 
     url = f"{INSTANTLY_API_BASE}/leads"
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(url, headers=_headers(), json=body)
-    except httpx.HTTPError as e:
-        raise InstantlyError(f"HTTP error Instantly: {type(e).__name__}: {e}") from e
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            r = await _http_post_with_retry(
+                client, url, headers=_headers(), json=body
+            )
+        except httpx.HTTPError as e:
+            raise InstantlyError(
+                f"HTTP error Instantly after retries: {type(e).__name__}: {e}"
+            ) from e
 
     if r.status_code >= 400:
         raise InstantlyError(
@@ -139,18 +183,17 @@ async def add_lead_to_campaign(
     return data
 
 
-@retry(
-    retry=_RETRY_ON_HTTP_ERROR,
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(min=1, max=8),
-    reraise=True,
-)
 async def get_campaign(campaign_id: str | None = None) -> dict[str, Any]:
     """Récupère les métadonnées d'une campagne. Utile pour healthcheck pré-envoi."""
     cid = (campaign_id or _campaign_id()).strip()
     url = f"{INSTANTLY_API_BASE}/campaigns/{cid}"
     async with httpx.AsyncClient(timeout=15.0) as client:
-        r = await client.get(url, headers=_headers())
+        try:
+            r = await _http_get_with_retry(client, url, headers=_headers())
+        except httpx.HTTPError as e:
+            raise InstantlyError(
+                f"HTTP error Instantly after retries: {type(e).__name__}: {e}"
+            ) from e
     if r.status_code >= 400:
         raise InstantlyError(
             f"Instantly /campaigns status {r.status_code}: {r.text[:300]}"
