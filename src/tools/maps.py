@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from ..config import settings
+from ..lib.platform_domains import PLATFORM_DOMAINS_NEVER_USE
 
 PLACES_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 
@@ -72,45 +73,14 @@ class SearchPlacesOut(BaseModel):
     next_page_token: str | None = None
 
 
-# Beaucoup de PME indé QC n'ont QU'UNE page Facebook/Instagram comme "website".
-# Si on stocke `domain='facebook.com'`, WF-2 enrichirait Apollo sur facebook.com
-# et insérerait des emails @meta.com pour démarcher un café. Voir bug critique
-# du 2026-05-14 (16 contacts pollués supprimés). Pour ces companies, on stocke
-# `domain=None` → WF-2 les marque `no_domain` au lieu d'enrichir incorrectement.
-PLATFORM_DOMAINS_NEVER_EXTRACT = frozenset({
-    # Réseaux sociaux
-    "facebook.com", "m.facebook.com", "fb.com", "fb.me",
-    "instagram.com",
-    "twitter.com", "x.com",
-    "linkedin.com",
-    "tiktok.com",
-    "youtube.com", "youtu.be",
-    "pinterest.com", "pinterest.ca",
-    # Avis + restos
-    "yelp.com", "yelp.ca",
-    "tripadvisor.com", "tripadvisor.ca",
-    # Livraison resto (le site de la PME peut être leur fiche resto)
-    "doordash.com", "ubereats.com", "skipthedishes.com",
-    "foodora.ca", "foodora.com", "deliveroo.com", "grubhub.com",
-    # Google + maps shorteners
-    "google.com", "goo.gl", "maps.app.goo.gl", "g.page",
-    # Builders de site (souvent gratuit + sous-domaine plateforme)
-    "wix.com", "wixsite.com", "squarespace.com", "shopify.com",
-    "wordpress.com", "weebly.com", "godaddy.com", "sites.google.com",
-    "carrd.co", "webnode.com", "jimdo.com",
-    # Réservation resto / salon / spa
-    "bookenda.com", "opentable.com", "resy.com", "tock.com",
-    "dikidi.net", "vagaro.com", "fresha.com", "mindbodyonline.com",
-    "styleseat.com", "planity.com", "treatwell.com", "thumbtack.com",
-    # Marketplaces / e-commerce
-    "etsy.com", "amazon.com", "amazon.ca",
-    # Annuaires / directories
-    "411sante.com", "411.ca", "canada411.ca",
-    "pagesjaunes.ca", "yellowpages.ca", "yellowpages.com",
-})
-
-
 def _domain_from_url(url: str | None) -> str | None:
+    """Extrait le domain (sans `www.`) d'un URL avec scheme.
+
+    Retourne `None` si l'URL est vide, malformé, OU si le domain est une
+    plateforme tierce (Facebook, Instagram, DoorDash, Wix, etc.) — voir
+    `lib.platform_domains` pour le pourquoi (bug 2026-05-14 sur emails
+    @meta.com insérés pour des cafés).
+    """
     if not url:
         return None
     try:
@@ -120,7 +90,7 @@ def _domain_from_url(url: str | None) -> str | None:
             host = host[4:]
         if not host:
             return None
-        if host in PLATFORM_DOMAINS_NEVER_EXTRACT:
+        if host in PLATFORM_DOMAINS_NEVER_USE:
             return None
         return host
     except Exception:  # noqa: BLE001

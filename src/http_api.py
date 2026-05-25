@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
 
+from .lib.platform_domains import PLATFORM_DOMAINS_NEVER_USE
 from .tools import compliance as compliance_tools
 from .tools import db as db_tools
 from .tools import enrich as enrich_tools
@@ -123,47 +124,6 @@ async def enrich_match(payload: enrich_tools.MatchPersonIn) -> dict[str, Any]:
 
 # ---------------- WF-2 orchestration (Apollo enrichment, Phase 1B) ----------------
 
-# Domaines de plateformes qui hébergent des pages d'entreprise (Facebook, Instagram,
-# DoorDash, Yelp, etc.). Beaucoup de PME indé QC n'ont QUE une page Facebook comme
-# "website" → Google Places retourne `facebook.com/cafelocal` → si on enrichit
-# `facebook.com` via Apollo, Apollo renvoie Meta Inc. et ses employés. Faux positif
-# critique : on insère des emails @meta.com pour démarcher un café québécois.
-#
-# Découvert 2026-05-14 sur 50 companies (Le Café NamasThé → DoorDash, CAFÉ KRÉMA
-# → Meta, Augusta Café → Instagram, etc.). Voir memory
-# `feedback_no_apollo_on_social_platform_domains`.
-PLATFORM_DOMAINS_NEVER_ENRICH = frozenset({
-    # Réseaux sociaux
-    "facebook.com", "m.facebook.com", "fb.com", "fb.me",
-    "instagram.com",
-    "twitter.com", "x.com",
-    "linkedin.com",
-    "tiktok.com",
-    "youtube.com", "youtu.be",
-    "pinterest.com", "pinterest.ca",
-    # Avis + restos
-    "yelp.com", "yelp.ca",
-    "tripadvisor.com", "tripadvisor.ca",
-    # Livraison resto
-    "doordash.com", "ubereats.com", "skipthedishes.com",
-    "foodora.ca", "foodora.com", "deliveroo.com", "grubhub.com",
-    # Google + maps shorteners
-    "google.com", "goo.gl", "maps.app.goo.gl", "g.page",
-    # Builders de site
-    "wix.com", "wixsite.com", "squarespace.com", "shopify.com",
-    "wordpress.com", "weebly.com", "godaddy.com", "sites.google.com",
-    "carrd.co", "webnode.com", "jimdo.com",
-    # Réservation
-    "bookenda.com", "opentable.com", "resy.com", "tock.com",
-    "dikidi.net", "vagaro.com", "fresha.com", "mindbodyonline.com",
-    "styleseat.com", "planity.com", "treatwell.com", "thumbtack.com",
-    # Marketplaces / e-commerce
-    "etsy.com", "amazon.com", "amazon.ca",
-    # Annuaires / directories
-    "411sante.com", "411.ca", "canada411.ca",
-    "pagesjaunes.ca", "yellowpages.ca", "yellowpages.com",
-})
-
 # Industries Apollo qui signalent qu'on a enrichi une plateforme/saas/marketplace
 # au lieu d'une PME commerce local ou services pro. Si Apollo retourne ces
 # industries pour un prospect QC (cafés/restos/salons/plombiers/etc.), c'est
@@ -212,7 +172,7 @@ def _domain_from_website(website: str | None) -> str | None:
         host = host[4:]
     if not host:
         return None
-    if host in PLATFORM_DOMAINS_NEVER_ENRICH:
+    if host in PLATFORM_DOMAINS_NEVER_USE:
         return None
     return host
 
@@ -285,7 +245,7 @@ async def enrich_company_by_id(payload: EnrichCompanyByIdIn) -> EnrichCompanyByI
     # Le domain stocké peut déjà être une plateforme (`facebook.com`, etc.) à cause
     # d'un sourcing antérieur — re-filtrer ici pour éviter d'enrichir via Apollo.
     existing_domain = (co.get("domain") or "").lower() or None
-    if existing_domain and existing_domain in PLATFORM_DOMAINS_NEVER_ENRICH:
+    if existing_domain and existing_domain in PLATFORM_DOMAINS_NEVER_USE:
         existing_domain = None
     domain = existing_domain or _domain_from_website(co.get("website"))
     if not domain:
