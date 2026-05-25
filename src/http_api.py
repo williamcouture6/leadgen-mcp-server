@@ -1077,9 +1077,13 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
     # et le prompt fallback sur un CTA générique.
     slots: list[dict[str, Any]] = payload.available_slots or []
     if not payload.available_slots:
+        import asyncio
         from .lib.calcom import CalcomError, get_available_slots
         try:
-            slots = get_available_slots(days_ahead=7)
+            # get_available_slots est synchrone (httpx.get) — wrap via to_thread
+            # pour ne pas bloquer l'event loop FastAPI pendant l'appel Cal.com
+            # (jusqu'à 10s timeout).
+            slots = await asyncio.to_thread(get_available_slots, days_ahead=7)
         except CalcomError:
             slots = []
 
@@ -1134,9 +1138,12 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
 
     # Fetch Cal.com une seule fois pour tout le batch — évite N appels API et
     # garantit que tous les emails du batch piochent dans la même liste de créneaux.
+    import asyncio
     from .lib.calcom import CalcomError, get_available_slots
     try:
-        slots = get_available_slots(days_ahead=7)
+        # Wrap sync httpx.get dans to_thread pour ne pas bloquer l'event loop
+        # pendant l'appel Cal.com (jusqu'à 10s timeout).
+        slots = await asyncio.to_thread(get_available_slots, days_ahead=7)
     except CalcomError:
         slots = []
     total_slots = sum(len(s.get("times", [])) for s in slots)
@@ -1279,8 +1286,12 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
 
     if not available_slots:
         try:
+            import asyncio
             from .lib.calcom import CalcomError, get_available_slots
-            available_slots = get_available_slots(days_ahead=14)
+            # Wrap sync httpx.get dans to_thread (event loop non bloqué).
+            available_slots = await asyncio.to_thread(
+                get_available_slots, days_ahead=14
+            )
         except Exception:  # noqa: BLE001
             available_slots = []
 
