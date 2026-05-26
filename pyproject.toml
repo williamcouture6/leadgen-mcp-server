@@ -19,6 +19,10 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "respx>=0.21.0",
     "ruff>=0.6.0",
+    # Windows: zoneinfo n'a pas de tz DB système, tzdata fournit les fichiers
+    # IANA (sinon ZoneInfo('America/Toronto') lève ZoneInfoNotFoundError).
+    # No-op sur Linux/Railway (système TZ files utilisés).
+    "tzdata>=2024.1",
 ]
 
 [project.scripts]
