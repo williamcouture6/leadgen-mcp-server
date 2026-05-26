@@ -33,6 +33,7 @@ from pydantic import BaseModel
 from .. import supabase_client as db
 from ..lib import instantly as instantly_lib
 from ..lib.compliance_checks import check_warmup_window
+from ..lib.platform_domains import is_email_on_blocked_domain
 
 DAILY_CAP_DEFAULT = 10
 DAILY_CAP_ENV = "INSTANTLY_DAILY_CAP"
@@ -186,6 +187,31 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
             skipped_reason=warmup.message,
         )
 
+    # 2b) Defense — platform / big tech email domain.
+    # Filet final après les 4 défenses amont (blocklist WF-1, blocklist WF-2,
+    # Apollo industry guard, domain-match check). Si malgré tout un contact
+    # @meta.com / @doordash.com / etc. est arrivé en DB (import manuel,
+    # ancienne pollution avant cleanup du 14 mai, edge case), on bloque ici
+    # AVANT l'action irréversible (push Instantly = email envoyé).
+    blocked, reason = is_email_on_blocked_domain(msg.get("to_email"))
+    if blocked:
+        # Marquer le message 'failed' pour qu'il ne soit pas re-tenté.
+        try:
+            await db.update(
+                "messages",
+                {"status": "failed", "compliance_notes": (
+                    (msg.get("compliance_notes") or "")
+                    + f" | send_blocked: platform_domain ({reason})"
+                ).strip(" |")},
+                filters={"id": f"eq.{payload.message_id}"},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return SendMessageOut(
+            message_id=payload.message_id, status="skipped_platform_domain",
+            skipped_reason=f"email domain dans blocklist: {reason}",
+        )
+
     # 3) Fetch contact + company pour Instantly metadata
     contact_id = msg.get("contact_id")
     contact_rows = await db.select(
@@ -319,6 +345,7 @@ class RunWf6Out(BaseModel):
     skipped_cap: int
     skipped_warmup: int
     skipped_suppressed: int
+    skipped_platform_domain: int = 0
     skipped_other: int
     errors: int
     daily_cap: int
@@ -335,7 +362,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
     effective_limit = min(payload.limit, remaining)
 
     items: list[RunWf6Item] = []
-    pushed = sk_cap = sk_warm = sk_supp = sk_other = errors = 0
+    pushed = sk_cap = sk_warm = sk_supp = sk_plat = sk_other = errors = 0
 
     if effective_limit <= 0:
         return RunWf6Out(
@@ -381,6 +408,8 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             sk_warm += 1
         elif res.status == "skipped_suppressed":
             sk_supp += 1
+        elif res.status == "skipped_platform_domain":
+            sk_plat += 1
         elif res.status == "skipped_not_eligible":
             sk_other += 1
         else:
@@ -404,6 +433,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         skipped_cap=sk_cap,
         skipped_warmup=sk_warm,
         skipped_suppressed=sk_supp,
+        skipped_platform_domain=sk_plat,
         skipped_other=sk_other,
         errors=errors,
         daily_cap=daily_cap,
