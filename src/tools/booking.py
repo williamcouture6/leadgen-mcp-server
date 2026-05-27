@@ -254,13 +254,19 @@ async def _upsert_conversation_state(
     campaign_id: str | None,
     state: str,
 ) -> None:
-    """Met à jour conversations.state — non-bloquant si échec."""
+    """Met à jour conversations.state — non-bloquant si échec.
+
+    `last_direction='inbound'` + `last_channel='email'` : sémantiquement
+    le booking est une action du lead déclenchée par notre CTA email.
+    Les enums DB (`message_direction`, `channel`) ne tolèrent pas d'autres
+    valeurs (pas de 'system'/'calendar').
+    """
     row: dict[str, Any] = {
         "contact_id": contact_id,
         "campaign_id": campaign_id,
         "state": state,
-        "last_direction": "system",
-        "last_channel": "calendar",
+        "last_direction": "inbound",
+        "last_channel": "email",
         "last_activity_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
