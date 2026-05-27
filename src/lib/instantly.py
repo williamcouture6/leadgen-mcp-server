@@ -183,6 +183,70 @@ async def add_lead_to_campaign(
     return data
 
 
+async def reply_to_email(
+    *,
+    reply_to_uuid: str,
+    eaccount: str,
+    subject: str,
+    body_text: str,
+    body_html: str | None = None,
+    to_address_email_list: str | None = None,
+    cc_address_email_list: str | None = None,
+    bcc_address_email_list: str | None = None,
+) -> dict[str, Any]:
+    """Envoie une réponse dans le thread d'un email existant via Instantly v2.
+
+    Args:
+      reply_to_uuid: UUID Instantly du message auquel on répond (= provider_message_id
+        de l'INBOUND msg reçu par webhook ; Instantly fournit cet UUID dans le payload).
+      eaccount: adresse email du sending account Instantly (ex: william@couture-ia.com).
+        DOIT correspondre à un sending account configuré dans le workspace, sinon 4xx.
+      subject: sujet de la réponse (typiquement "Re: <original subject>").
+      body_text: corps texte. body_html optionnel — si absent, Instantly génère le HTML.
+
+    Endpoint: POST /api/v2/emails/reply
+    Ref: https://developer.instantly.ai/api/v2/email/replyemail
+
+    Returns le payload Instantly (contient l'UUID du nouveau message envoyé).
+    Raises InstantlyError sur 4xx/5xx ou réseau après retries.
+    """
+    body: dict[str, Any] = {
+        "reply_to_uuid": reply_to_uuid,
+        "eaccount": eaccount,
+        "subject": subject,
+        "body": {"text": body_text},
+    }
+    if body_html:
+        body["body"]["html"] = body_html
+    if to_address_email_list:
+        body["to_address_email_list"] = to_address_email_list
+    if cc_address_email_list:
+        body["cc_address_email_list"] = cc_address_email_list
+    if bcc_address_email_list:
+        body["bcc_address_email_list"] = bcc_address_email_list
+
+    url = f"{INSTANTLY_API_BASE}/emails/reply"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            r = await _http_post_with_retry(
+                client, url, headers=_headers(), json=body
+            )
+        except httpx.HTTPError as e:
+            raise InstantlyError(
+                f"HTTP error Instantly reply after retries: {type(e).__name__}: {e}"
+            ) from e
+
+    if r.status_code >= 400:
+        raise InstantlyError(
+            f"Instantly /emails/reply status {r.status_code}: {r.text[:300]}"
+        )
+    try:
+        data = r.json()
+    except Exception as e:  # noqa: BLE001
+        raise InstantlyError(f"Instantly reply response not JSON: {r.text[:200]}") from e
+    return data
+
+
 async def get_campaign(campaign_id: str | None = None) -> dict[str, Any]:
     """Récupère les métadonnées d'une campagne. Utile pour healthcheck pré-envoi."""
     cid = (campaign_id or _campaign_id()).strip()

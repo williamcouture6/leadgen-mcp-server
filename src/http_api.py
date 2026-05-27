@@ -22,6 +22,7 @@ from .tools import db as db_tools
 from .tools import enrich as enrich_tools
 from .tools import maps as maps_tools
 from .tools import personalize as personalize_tools
+from .tools import reply as reply_tools
 from .tools import research as research_tools
 from .tools import send as send_tools
 
@@ -1475,3 +1476,134 @@ async def send_healthcheck() -> dict[str, Any]:
         return {"ok": True, "campaign_id": camp.get("id"), "name": camp.get("name")}
     except Exception as e:  # noqa: BLE001 — endpoint diag, on veut tout voir
         return {"ok": False, "error_type": type(e).__name__, "error": str(e)[:500]}
+
+
+# ---------------- Reply (Phase 2 — WF-7) ----------------
+
+# Le webhook public utilise un secret en QUERY PARAM (pas Bearer) car Instantly
+# ne sait pas envoyer de header custom standardisé sur tous les events. n8n nous
+# relaie typiquement la requête, donc on garde la même convention en cas d'accès
+# direct depuis Instantly (Phase 3 bypass n8n).
+#
+# Le secret est dans l'env WF7_WEBHOOK_SECRET. URL ressemble à :
+#   POST /wf7/instantly-webhook?secret=<long_random>
+#
+# Choisir un secret >= 32 chars, non-deviné. À rotater régulièrement.
+
+def _wf7_webhook_secret() -> str | None:
+    return os.environ.get("WF7_WEBHOOK_SECRET", "").strip() or None
+
+
+def _require_wf7_webhook_secret(secret: str | None) -> None:
+    expected = _wf7_webhook_secret()
+    if not expected:
+        # Refuse en prod si pas configuré — éviter qu'un webhook public traîne
+        # sans auth si l'env var est oubliée.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="WF7_WEBHOOK_SECRET non défini côté serveur",
+        )
+    if not secret or not secrets.compare_digest(secret, expected):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "bad webhook secret")
+
+
+@app.post("/wf7/instantly-webhook", response_model=reply_tools.HandleReplyOut)
+async def wf7_instantly_webhook(
+    payload: dict[str, Any],
+    secret: str | None = None,
+) -> reply_tools.HandleReplyOut:
+    """Endpoint public — reçoit le webhook brut d'Instantly (via n8n relais ou
+    direct). Auth via query param `?secret=<WF7_WEBHOOK_SECRET>`.
+
+    Pipeline :
+      1. Valide le secret
+      2. Extrait les champs du payload Instantly (event_type, lead_email, body,
+         provider IDs, etc.)
+      3. Si pas un `reply_received` → retourne ok=ignored sans crash
+      4. Délègue à `reply_tools.handle_reply` pour le LLM + actions DB
+    """
+    _require_wf7_webhook_secret(secret)
+
+    extracted = reply_tools.extract_from_instantly_webhook(payload or {})
+    if extracted is None:
+        # Pas un reply event — on accepte le webhook mais on ne fait rien.
+        return reply_tools.HandleReplyOut(
+            status="ok",
+            actions_taken=["event_ignored_not_reply"],
+        )
+    return await reply_tools.handle_reply(extracted)
+
+
+@app.post(
+    "/wf7/handle-reply",
+    dependencies=[Depends(_require_auth)],
+    response_model=reply_tools.HandleReplyOut,
+)
+async def wf7_handle_reply(payload: reply_tools.HandleReplyIn) -> reply_tools.HandleReplyOut:
+    """Endpoint interne (Bearer) pour replay manuel d'un reply ou test.
+
+    Permet de re-processer un reply en passant directement les champs normalisés
+    (sans le payload Instantly brut). Utile pour QA, debug, ou pour re-classer
+    avec un modèle différent.
+    """
+    return await reply_tools.handle_reply(payload)
+
+
+@app.get("/wf7/hot-leads", dependencies=[Depends(_require_auth)])
+async def wf7_hot_leads(limit: int = 50) -> list[dict[str, Any]]:
+    """Liste les contacts hot (status='replied', conversation.state='hot').
+    Dashboard manuel — utile si Slack pas configuré ou pour audit.
+    """
+    from . import supabase_client as db
+    # Approximation simple : on liste les contacts récemment passés 'replied'.
+    # Une vue SQL dédiée serait plus rigoureuse, suffit pour MVP.
+    rows = await db.select(
+        "contacts",
+        params={
+            "select": "id,first_name,last_name,email,company_id,status,updated_at",
+            "status": "eq.replied",
+            "order": "updated_at.desc",
+            "limit": str(min(limit, 200)),
+        },
+    )
+    # Enrichir avec company name
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        company_name: str | None = None
+        cid = r.get("company_id")
+        if cid:
+            co_rows = await db.select(
+                "companies",
+                params={"select": "name,city", "id": f"eq.{cid}", "limit": "1"},
+            )
+            if co_rows:
+                company_name = co_rows[0].get("name")
+        out.append({
+            "contact_id": r["id"],
+            "name": f"{r.get('first_name') or ''} {r.get('last_name') or ''}".strip(),
+            "email": r.get("email"),
+            "company": company_name,
+            "replied_at": r.get("updated_at"),
+        })
+    return out
+
+
+@app.get("/wf7/webhook-healthcheck")
+async def wf7_webhook_healthcheck(secret: str | None = None) -> dict[str, Any]:
+    """Vérifie que le secret webhook est bien configuré et que Slack répond.
+    Public (auth via secret) — utile pour valider la config Railway sans
+    déclencher de vrai reply.
+    """
+    _require_wf7_webhook_secret(secret)
+    from .lib import slack as slack_lib
+    slack_configured = bool(os.environ.get(slack_lib.SLACK_WEBHOOK_ENV))
+    sender = os.environ.get("INSTANTLY_SENDER_EMAIL", "").strip() or None
+    booking = os.environ.get("CALCOM_BOOKING_URL", "").strip() or None
+    return {
+        "ok": True,
+        "wf7_secret_configured": True,
+        "slack_configured": slack_configured,
+        "instantly_sender_configured": bool(sender),
+        "calcom_booking_url_configured": bool(booking),
+        "auto_reply_confidence_threshold": reply_tools.AUTO_REPLY_CONFIDENCE_THRESHOLD,
+    }
