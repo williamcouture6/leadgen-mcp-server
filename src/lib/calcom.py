@@ -130,8 +130,8 @@ def format_slots_for_prompt(slots: list[dict]) -> str:
         "## Créneaux disponibles (Cal.com — source de vérité)",
         "",
         "INSTRUCTION CRITIQUE: tu DOIS choisir EXACTEMENT 2 créneaux dans cette liste pour le CTA.",
-        "Format CTA: \"{jour} {date} à {heure} ou {jour2} {date2} à {heure2}, 15 minutes ?\"",
-        "Exemple: \"Mercredi 13 mai à 18h ou jeudi 14 mai à 18h30, 15 minutes ?\"",
+        "Format CTA: \"{jour} {date} à {heure} ou {jour2} {date2} à {heure2}, un appel rapide ?\"",
+        "Exemple: \"Mercredi 13 mai à 18h ou jeudi 14 mai à 18h30, un appel rapide ?\"",
         "INTERDICTION ABSOLUE d'inventer un jour ou une heure absent de cette liste.",
         "",
     ]
