@@ -64,8 +64,17 @@ AUTO_REPLY_CONFIDENCE_THRESHOLD = 0.8
 
 
 def _booking_url() -> str:
-    """URL Cal.com publique à inclure dans les replies auto."""
-    return os.environ.get("CALCOM_BOOKING_URL", "https://cal.com/couture-ia/15min").strip()
+    """URL Cal.com publique à inclure dans les replies auto.
+
+    Lit CALCOM_BOOKING_URL en priorité (var spécifique au composer), puis
+    BOOKING_URL (var partagée avec le reste de la config Cal.com). Fallback
+    sur l'URL prod connue pour ne jamais envoyer de lien mort.
+    """
+    return (
+        os.environ.get("CALCOM_BOOKING_URL", "").strip()
+        or os.environ.get("BOOKING_URL", "").strip()
+        or "https://cal.com/william-couture/20-min"
+    )
 
 
 def _sender_eaccount() -> str | None:

@@ -94,7 +94,7 @@ NE PAS UTILISER :
 Original email : Vouvoiement, sujet "Clinique Tremblay — admin RDV no-show"
 Lead reply : "Oui ça pourrait être pertinent, je suis dispo cette semaine."
 Available slots : [mercredi 28 mai 14h, jeudi 29 mai 10h30, jeudi 29 mai 14h]
-Booking URL : https://cal.com/couture-ia/15min
+Booking URL : https://cal.com/william-couture/20-min
 
 ```json
 {
