@@ -851,6 +851,204 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
 # Webhook payload extraction (Instantly v2)
 # ----------------------------------------------------------------------
 
+def extract_from_instantly_email_list_item(item: dict[str, Any]) -> HandleReplyIn | None:
+    """Convertit un item de la réponse GET /api/v2/emails (type=received) en
+    HandleReplyIn. Shape légèrement différent du webhook event_type=reply_received.
+
+    Champs courants dans Instantly v2 /emails (best-effort, on essaie plusieurs noms) :
+      - id / uuid : UUID du message
+      - from_address_email_list / from_email : adresse expéditeur
+      - to_address_email_list : destinataire (= notre sending account)
+      - subject
+      - body : objet `{text: ..., html: ...}` OU string brut OU split en body_text/body_html
+      - parent_email_uuid / in_reply_to_uuid / reply_to_uuid : UUID parent
+      - timestamp_created
+      - eaccount
+
+    Returns None si l'item n'a pas les champs minimaux requis (id + from + body).
+    """
+    provider_id_inbound = str(
+        item.get("id")
+        or item.get("uuid")
+        or ""
+    ).strip()
+    if not provider_id_inbound:
+        return None
+
+    # Champs from/to peuvent être string ou liste — normaliser
+    def _first_str(v: Any) -> str | None:
+        if not v:
+            return None
+        if isinstance(v, str):
+            return v.strip().lower() or None
+        if isinstance(v, list) and v:
+            head = v[0]
+            if isinstance(head, str):
+                return head.strip().lower() or None
+            if isinstance(head, dict):
+                return (head.get("address") or head.get("email") or "").strip().lower() or None
+        return None
+
+    lead_email = (
+        _first_str(item.get("from_address_email_list"))
+        or _first_str(item.get("from_address"))
+        or _first_str(item.get("from_email"))
+        or _first_str(item.get("from"))
+    )
+    if not lead_email:
+        return None
+
+    # Corps : peut être `body: {text, html}` ou `body_text` / `body_html` directement
+    body_field = item.get("body")
+    body_text: str | None = None
+    body_html: str | None = None
+    if isinstance(body_field, dict):
+        body_text = body_field.get("text") or body_field.get("plain")
+        body_html = body_field.get("html")
+    elif isinstance(body_field, str):
+        body_text = body_field
+    body_text = body_text or item.get("body_text") or item.get("text") or item.get("plain_text")
+    body_html = body_html or item.get("body_html") or item.get("html")
+
+    if not body_text and not body_html:
+        return None  # rien à classer
+
+    eaccount = (
+        _first_str(item.get("to_address_email_list"))
+        or _first_str(item.get("to_address"))
+        or item.get("eaccount")
+    )
+
+    return HandleReplyIn(
+        lead_email=lead_email,
+        reply_subject=item.get("subject"),
+        reply_body_text=body_text or (body_html or "(html-only body)"),
+        reply_body_html=body_html,
+        provider_message_id_inbound=provider_id_inbound,
+        provider_message_id_parent=(
+            item.get("parent_email_uuid")
+            or item.get("in_reply_to_uuid")
+            or item.get("reply_to_uuid")
+            or item.get("thread_id")
+        ),
+        received_at=str(item.get("timestamp_created") or item.get("created_at") or ""),
+        eaccount=eaccount,
+        raw_payload=item,
+    )
+
+
+class PollRepliesIn(BaseModel):
+    """Pass complet polling Instantly /emails (alternative au webhook)."""
+    limit: int = 50  # max emails à fetch par run (Instantly cap ~100)
+    skip_auto_reply: bool = False
+    classifier_model: str = _DEFAULT_CLASSIFIER_MODEL
+    composer_model: str = _DEFAULT_COMPOSER_MODEL
+
+
+class PollRepliesItem(BaseModel):
+    provider_message_id: str
+    lead_email: str | None = None
+    status: str
+    category: str | None = None
+    confidence: float | None = None
+    actions: list[str] = []
+    error_text: str | None = None
+
+
+class PollRepliesOut(BaseModel):
+    fetched: int
+    processed: int
+    skipped_duplicate: int
+    skipped_invalid: int
+    errors: int
+    items: list[PollRepliesItem]
+
+
+async def poll_and_process_replies(payload: PollRepliesIn) -> PollRepliesOut:
+    """Fetch les N derniers emails received dans Instantly + process chaque
+    nouveau via handle_reply. Idempotent : skip si provider_message_id déjà
+    en `messages` (direction=inbound). Pas de cursor — on s'appuie sur l'idempotence.
+    """
+    try:
+        resp = await instantly_lib.list_emails(
+            email_type=2,  # received
+            limit=payload.limit,
+        )
+    except instantly_lib.InstantlyError as e:
+        return PollRepliesOut(
+            fetched=0, processed=0, skipped_duplicate=0,
+            skipped_invalid=0, errors=1,
+            items=[PollRepliesItem(
+                provider_message_id="(none)",
+                status="error",
+                error_text=f"list_emails_failed: {e}",
+            )],
+        )
+
+    # Extract items list — Instantly utilise `items` ou `data` selon version
+    items_raw = resp.get("items") or resp.get("data") or []
+    if not isinstance(items_raw, list):
+        items_raw = []
+
+    fetched = len(items_raw)
+    processed = skipped_duplicate = skipped_invalid = errors = 0
+    out_items: list[PollRepliesItem] = []
+
+    for it in items_raw:
+        extracted = extract_from_instantly_email_list_item(it if isinstance(it, dict) else {})
+        if extracted is None:
+            skipped_invalid += 1
+            out_items.append(PollRepliesItem(
+                provider_message_id=str((it or {}).get("id") or "(none)"),
+                status="skipped_invalid",
+                error_text="missing required fields (id/from/body)",
+            ))
+            continue
+
+        # Préserve les overrides de modèles passés au poll
+        extracted.skip_auto_reply = payload.skip_auto_reply
+        extracted.classifier_model = payload.classifier_model
+        extracted.composer_model = payload.composer_model
+
+        try:
+            res = await handle_reply(extracted)
+        except Exception as e:  # noqa: BLE001
+            errors += 1
+            out_items.append(PollRepliesItem(
+                provider_message_id=extracted.provider_message_id_inbound,
+                lead_email=extracted.lead_email,
+                status="error",
+                error_text=f"handle_reply_failed: {e!r}",
+            ))
+            continue
+
+        if res.status == "skipped_duplicate":
+            skipped_duplicate += 1
+        elif res.status == "ok":
+            processed += 1
+        else:
+            errors += 1
+
+        out_items.append(PollRepliesItem(
+            provider_message_id=extracted.provider_message_id_inbound,
+            lead_email=extracted.lead_email,
+            status=res.status,
+            category=res.category,
+            confidence=res.confidence,
+            actions=res.actions_taken,
+            error_text=res.error_text,
+        ))
+
+    return PollRepliesOut(
+        fetched=fetched,
+        processed=processed,
+        skipped_duplicate=skipped_duplicate,
+        skipped_invalid=skipped_invalid,
+        errors=errors,
+        items=out_items,
+    )
+
+
 def extract_from_instantly_webhook(body: dict[str, Any]) -> HandleReplyIn | None:
     """Convertit un payload Instantly webhook brut en HandleReplyIn.
 

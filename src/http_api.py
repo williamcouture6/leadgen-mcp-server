@@ -1588,6 +1588,21 @@ async def wf7_hot_leads(limit: int = 50) -> list[dict[str, Any]]:
     return out
 
 
+@app.post(
+    "/wf7/poll-replies",
+    dependencies=[Depends(_require_auth)],
+    response_model=reply_tools.PollRepliesOut,
+)
+async def wf7_poll_replies(payload: reply_tools.PollRepliesIn) -> reply_tools.PollRepliesOut:
+    """Poll les N derniers emails received d'Instantly et traite ceux non encore
+    processés (idempotent via provider_message_id). Alternative au webhook pour
+    les plans Instantly sans webhook.
+
+    Cron-friendly. Recommandé toutes les 5-10 min via n8n.
+    """
+    return await reply_tools.poll_and_process_replies(payload)
+
+
 @app.get("/wf7/webhook-healthcheck")
 async def wf7_webhook_healthcheck(secret: str | None = None) -> dict[str, Any]:
     """Vérifie que le secret webhook est bien configuré et que Slack répond.

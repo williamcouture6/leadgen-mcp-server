@@ -247,6 +247,63 @@ async def reply_to_email(
     return data
 
 
+async def list_emails(
+    *,
+    email_type: int | str = 2,  # 2 = received (inbound) selon Instantly v2
+    limit: int = 50,
+    starting_after: str | None = None,
+    campaign_id: str | None = None,
+    eaccount: str | None = None,
+) -> dict[str, Any]:
+    """Liste les emails dans le workspace Instantly via GET /api/v2/emails.
+
+    Utilisé par le poll WF-7 (alternative au webhook qui requiert plan upgrade).
+    Combiné à l'idempotence côté DB (provider_message_id unique), on peut
+    refetch les N derniers emails à chaque cron run sans risque de double-traiter.
+
+    Args:
+      email_type: 2 = received (cold reply), 1 = sent. Instantly v2 utilise des
+        enums int; certains tenants utilisent les strings — on essaie int d'abord.
+      limit: max emails par page (Instantly cap = 100 typiquement).
+      starting_after: cursor pour pagination (= dernier id vu).
+      campaign_id: filtre par campagne (utile pour pas mélanger campagnes).
+      eaccount: filtre par sending account.
+
+    Returns le payload Instantly brut : `{"items": [...], "next_starting_after": ...}`
+    ou shape équivalent. Le caller doit gérer la variabilité.
+
+    Raises InstantlyError sur 4xx/5xx ou réseau après retries.
+    """
+    params: dict[str, Any] = {
+        "limit": limit,
+        "email_type": email_type,
+    }
+    if starting_after:
+        params["starting_after"] = starting_after
+    if campaign_id:
+        params["campaign_id"] = campaign_id
+    if eaccount:
+        params["eaccount"] = eaccount
+
+    url = f"{INSTANTLY_API_BASE}/emails"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            # GET via httpx avec params (httpx encode l'URL)
+            r = await client.get(url, headers=_headers(), params=params)
+        except httpx.HTTPError as e:
+            raise InstantlyError(
+                f"HTTP error Instantly list_emails: {type(e).__name__}: {e}"
+            ) from e
+    if r.status_code >= 400:
+        raise InstantlyError(
+            f"Instantly /emails status {r.status_code}: {r.text[:300]}"
+        )
+    try:
+        return r.json()
+    except Exception as e:  # noqa: BLE001
+        raise InstantlyError(f"Instantly /emails not JSON: {r.text[:200]}") from e
+
+
 async def get_campaign(campaign_id: str | None = None) -> dict[str, Any]:
     """Récupère les métadonnées d'une campagne. Utile pour healthcheck pré-envoi."""
     cid = (campaign_id or _campaign_id()).strip()
