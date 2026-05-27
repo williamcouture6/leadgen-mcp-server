@@ -9,9 +9,43 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from .config import settings
+
+
+# Retry uniquement sur les erreurs vraiment transitoires :
+# - Network errors (connect timeout, read timeout, etc.)
+# - 5xx serveur temporairement indisponible
+#
+# Les 4xx (400/401/403/404/409/422/...) ne doivent JAMAIS retry — c'est une
+# erreur côté caller (mauvais payload, unique violation, FK manquante).
+# Sans ce predicate, tenacity retry 3 fois sur un NOT NULL violation, gaspille
+# ~6s + 3 connexions PostgREST pour rien.
+_TRANSIENT_HTTPX_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.RemoteProtocolError,
+)
+
+
+def _is_transient_db_error(exc: BaseException) -> bool:
+    if isinstance(exc, _TRANSIENT_HTTPX_ERRORS):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in (500, 502, 503, 504)
+    return False
+
+
+_RETRY_KW = dict(
+    retry=retry_if_exception(_is_transient_db_error),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=1, max=8),
+    reraise=True,
+)
 
 
 def _headers() -> dict[str, str]:
@@ -30,7 +64,7 @@ def _rest_url(path: str) -> str:
     return f"{base}/rest/v1/{path.lstrip('/')}"
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+@retry(**_RETRY_KW)
 async def select(
     table: str,
     *,
@@ -42,7 +76,7 @@ async def select(
         return r.json()
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+@retry(**_RETRY_KW)
 async def insert(
     table: str,
     row: dict[str, Any] | list[dict[str, Any]],
@@ -65,7 +99,7 @@ async def insert(
         return r.json()
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+@retry(**_RETRY_KW)
 async def update(
     table: str,
     patch: dict[str, Any],
