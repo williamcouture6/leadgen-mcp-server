@@ -426,11 +426,16 @@ _QUOTE_HEADER_RE = re.compile(
 
 # Lead-in d'une signature : "Cordialement,", "Merci,", "Sent from my iPhone", etc.
 # Quand on hit cette ligne, on coupe — tout ce qui suit est signature.
+# Pour les sig lead-ins, on accepte soit fin-de-ligne immédiate (Cordialement,)
+# soit un suffix arbitraire (Sent from my iPhone, Envoyé depuis mon Android, etc.).
 _SIG_LEADIN_RE = re.compile(
-    r"^\s*(cordialement|sincèrement|sincerement|amicalement|cdlt|bien à vous|"
+    r"^\s*(?:"
+    r"(?:cordialement|sincèrement|sincerement|amicalement|cdlt|bien à vous|"
     r"merci(?:\s+d'avance)?|merci\s+et\s+bonne\s+journée|bonne\s+journée|"
-    r"thanks|thank\s+you|regards|best\s+regards|cheers|"
-    r"sent\s+from\s+my|envoyé\s+depuis\s+mon)[,!\s.]*$",
+    r"thanks|thank\s+you|regards|best\s+regards|cheers)[,!\s.]*"
+    r"|"
+    r"(?:sent\s+from\s+my|envoyé\s+depuis\s+mon)\b.*"
+    r")$",
     re.IGNORECASE,
 )
 # Phone number heuristique (FR/QC) — détecte les sigs avec un tel
