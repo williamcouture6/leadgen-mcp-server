@@ -806,6 +806,7 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
 
             if slots:
                 # Compose
+                composer_started = time.monotonic()
                 try:
                     composed, comp_usage = await asyncio.to_thread(
                         _call_composer,
@@ -820,6 +821,7 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
                     composed = None
                     comp_usage = None
                     actions.append(f"composer_failed:{type(e).__name__}")
+                composer_dur = int((time.monotonic() - composer_started) * 1000)
 
                 if composed and composed.get("body_text"):
                     # Audit le composer (Sonnet — modèle plus cher que le
@@ -843,7 +845,7 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
                                 "warnings": composed.get("warnings"),
                             },
                             error_text=None,
-                            duration_ms=0,  # mesure non capturée séparément
+                            duration_ms=composer_dur,
                             usage=comp_usage,
                         )
 
