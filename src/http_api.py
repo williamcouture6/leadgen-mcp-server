@@ -13,10 +13,11 @@ import os
 import secrets
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from .lib.platform_domains import PLATFORM_DOMAINS_NEVER_USE
+from .tools import booking as booking_tools
 from .tools import compliance as compliance_tools
 from .tools import db as db_tools
 from .tools import enrich as enrich_tools
@@ -1621,4 +1622,100 @@ async def wf7_webhook_healthcheck(secret: str | None = None) -> dict[str, Any]:
         "instantly_sender_configured": bool(sender),
         "calcom_booking_url_configured": bool(booking),
         "auto_reply_confidence_threshold": reply_tools.AUTO_REPLY_CONFIDENCE_THRESHOLD,
+    }
+
+
+# ---------------- Booking (Phase 2 — WF-8) ----------------
+
+# Cal.com webhook signe le raw body (HMAC-SHA256) avec un secret partagé.
+# Le secret est dans `CALCOM_WEBHOOK_SECRET` (env). Le header envoyé par
+# Cal.com est `X-Cal-Signature-256` (signature hex sans préfixe).
+#
+# Différence vs WF-7 webhook (Instantly) : Instantly utilise un secret query
+# param. Cal.com supporte HMAC natif — on l'utilise.
+
+def _calcom_webhook_secret() -> str | None:
+    return os.environ.get("CALCOM_WEBHOOK_SECRET", "").strip() or None
+
+
+@app.post(
+    "/wf8/calcom-webhook",
+    response_model=booking_tools.HandleBookingOut,
+)
+async def wf8_calcom_webhook(request: Request) -> booking_tools.HandleBookingOut:
+    """Endpoint public Cal.com webhook — BOOKING_CREATED / RESCHEDULED /
+    CANCELLED / MEETING_ENDED.
+
+    Pipeline:
+      1. Valide HMAC-SHA256 du raw body via `X-Cal-Signature-256`
+      2. Parse JSON et extrait les champs Cal.com normalisés
+      3. Persiste dans `booking_events`, update `conversations.state`
+      4. Slack ping (build_booked_blocks pour CREATED, texte simple pour autres)
+    """
+    expected_secret = _calcom_webhook_secret()
+    if not expected_secret:
+        # Refuse en prod si pas configuré — éviter qu'un webhook public
+        # accepte n'importe quoi si l'env var est oubliée.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="CALCOM_WEBHOOK_SECRET non défini côté serveur",
+        )
+
+    raw_body = await request.body()
+    signature = request.headers.get("X-Cal-Signature-256") or request.headers.get(
+        "x-cal-signature-256"
+    )
+    if not booking_tools.verify_calcom_signature(raw_body, signature, expected_secret):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "bad webhook signature")
+
+    import json as _json
+    try:
+        body = _json.loads(raw_body.decode("utf-8")) if raw_body else {}
+    except _json.JSONDecodeError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid json body")
+
+    extracted = booking_tools.extract_from_calcom_webhook(body or {})
+    if extracted is None:
+        return booking_tools.HandleBookingOut(
+            status="ignored_unsupported_trigger",
+            actions_taken=["payload_not_extractable"],
+        )
+    return await booking_tools.handle_calcom_booking(extracted)
+
+
+class HandleBookingReplayIn(BaseModel):
+    """Payload pour replay manuel (Bearer auth, pas de HMAC). Sert au QA et
+    au re-processing d'un webhook capturé.
+    """
+    body: dict[str, Any]
+
+
+@app.post(
+    "/wf8/handle-booking",
+    dependencies=[Depends(_require_auth)],
+    response_model=booking_tools.HandleBookingOut,
+)
+async def wf8_handle_booking(payload: HandleBookingReplayIn) -> booking_tools.HandleBookingOut:
+    """Replay manuel d'un webhook Cal.com (Bearer auth, bypass HMAC).
+
+    Utile pour QA / debug / re-processer un event capturé. Le payload doit
+    avoir le shape Cal.com brut (triggerEvent + payload).
+    """
+    extracted = booking_tools.extract_from_calcom_webhook(payload.body or {})
+    if extracted is None:
+        return booking_tools.HandleBookingOut(
+            status="ignored_unsupported_trigger",
+            actions_taken=["payload_not_extractable"],
+        )
+    return await booking_tools.handle_calcom_booking(extracted)
+
+
+@app.get("/wf8/webhook-healthcheck")
+async def wf8_webhook_healthcheck() -> dict[str, Any]:
+    """Vérifie config WF-8. Public (pas d'auth — pas de secret à divulguer)."""
+    from .lib import slack as slack_lib
+    return {
+        "ok": True,
+        "wf8_secret_configured": bool(_calcom_webhook_secret()),
+        "slack_configured": bool(os.environ.get(slack_lib.SLACK_WEBHOOK_ENV)),
     }
