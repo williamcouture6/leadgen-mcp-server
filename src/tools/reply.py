@@ -21,9 +21,11 @@ au sens large).
 from __future__ import annotations
 
 import asyncio
+import html as html_module
 import json
 import os
 import re
+import secrets
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -377,9 +379,10 @@ async def _record_agent_run(
     error_text: str | None,
     duration_ms: int,
     usage: dict[str, int] | None,
+    agent: str = "qualification",
 ) -> str | None:
     row: dict[str, Any] = {
-        "agent": "qualification",
+        "agent": agent,
         "model": model,
         "duration_ms": duration_ms,
         "input_payload": input_payload,
@@ -421,17 +424,33 @@ _QUOTE_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Lead-in d'une signature : "Cordialement,", "Merci,", "Sent from my iPhone", etc.
+# Quand on hit cette ligne, on coupe — tout ce qui suit est signature.
+_SIG_LEADIN_RE = re.compile(
+    r"^\s*(cordialement|sincèrement|sincerement|amicalement|cdlt|bien à vous|"
+    r"merci(?:\s+d'avance)?|merci\s+et\s+bonne\s+journée|bonne\s+journée|"
+    r"thanks|thank\s+you|regards|best\s+regards|cheers|"
+    r"sent\s+from\s+my|envoyé\s+depuis\s+mon)[,!\s.]*$",
+    re.IGNORECASE,
+)
+# Phone number heuristique (FR/QC) — détecte les sigs avec un tel
+_PHONE_RE = re.compile(r"(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}")
+
 
 def strip_quote_and_signature(body: str) -> str:
     """Retire les quotes du email d'origine et la signature.
 
-    Heuristique simple :
-    - Coupe à la 1ère ligne qui matche QUOTE_HEADER_RE
-    - Coupe les lignes consécutives commençant par `>`
-    - Coupe la signature après une ligne `-- ` (RFC 3676)
+    Heuristiques :
+    - Coupe à la 1ère ligne qui matche QUOTE_HEADER_RE (header de citation)
+    - Coupe les lignes consécutives commençant par `>` (quote markdown)
+    - Coupe à `-- ` (RFC 3676 signature delimiter)
+    - Coupe à un sig lead-in ("Cordialement,", "Merci,", etc.)
+    - Post-pass : si les 1-5 dernières lignes ressemblent à une signature
+      (lignes courtes + nom propre + phone/title), coupe.
 
     On veut un texte propre à donner au classifier pour ne pas qu'il analyse
-    notre propre cold email d'origine cité.
+    notre propre cold email d'origine cité, ni la signature qui peut polluer
+    la classification (un téléphone dans la sig pourrait ressembler à un CTA).
     """
     if not body:
         return ""
@@ -443,8 +462,8 @@ def strip_quote_and_signature(body: str) -> str:
         # Header de quote → on coupe tout ce qui suit
         if _QUOTE_HEADER_RE.match(stripped):
             break
-        # Signature RFC 3676
-        if stripped == "--":
+        # Signature RFC 3676 ou lead-in (Cordialement, etc.)
+        if stripped == "--" or _SIG_LEADIN_RE.match(stripped):
             break
         # Ligne de quote `> ...`
         if _QUOTE_LINE.match(line):
@@ -460,7 +479,40 @@ def strip_quote_and_signature(body: str) -> str:
             continue
         out.append(line)
     cleaned = "\n".join(out).strip()
+
+    # Post-pass : trim une signature en tail (1-5 lignes courtes contenant
+    # phone/email/title). Conservateur pour ne pas tronquer un vrai message.
+    tail_lines = cleaned.split("\n")
+    if len(tail_lines) >= 3:
+        for split_idx in range(len(tail_lines) - 1, max(0, len(tail_lines) - 6), -1):
+            if not tail_lines[split_idx].strip():
+                tail = tail_lines[split_idx + 1:]
+                if 1 <= len(tail) <= 5 and all(len(l.strip()) < 80 for l in tail):
+                    joined_tail = " ".join(tail)
+                    if _PHONE_RE.search(joined_tail) or "@" in joined_tail:
+                        cleaned = "\n".join(tail_lines[:split_idx]).rstrip()
+                break
     return cleaned
+
+
+def html_to_text(html_str: str) -> str:
+    """Convertit du HTML brut en texte plat pour feed au classifier.
+
+    Strip scripts/styles, convertit les block elements en newlines, retire les
+    tags restants, decode les entités HTML (&amp; → &, etc.). Best-effort,
+    pas un parseur HTML complet — suffit pour des replies email standards.
+    """
+    if not html_str:
+        return ""
+    s = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html_str, flags=re.IGNORECASE | re.DOTALL)
+    s = re.sub(r"<br\s*/?>", "\n", s, flags=re.IGNORECASE)
+    s = re.sub(r"</?(p|div|tr|li|h[1-6])[^>]*>", "\n", s, flags=re.IGNORECASE)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = html_module.unescape(s)
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\n[ \t]+", "\n", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
 
 
 # ----------------------------------------------------------------------
@@ -526,6 +578,9 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         lead_email=payload.lead_email,
     )
     contact_id: str | None = parent.get("contact_id") if parent else None
+    # On va aussi avoir besoin du contact_row plus tard pour la display (nom +
+    # company). On le fetch une fois ici et on le réutilise — évite un 2e SELECT.
+    contact_row: dict[str, Any] | None = None
     if not contact_id:
         # Fallback : peut-être qu'on a le contact mais pas le message parent
         # (ex: webhook arrive avant qu'on ait sync le message provider_id)
@@ -626,7 +681,10 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             pass
 
     # 4) Classifier
-    contact_row = await _find_contact_by_email(payload.lead_email)
+    # contact_row peut avoir été fetché à l'étape 2 (path fallback) — réutiliser
+    # si présent, sinon fetch maintenant.
+    if contact_row is None:
+        contact_row = await _find_contact_by_email(payload.lead_email)
     company_row: dict[str, Any] | None = None
     if contact_row and contact_row.get("company_id"):
         company_row = await _get_company(contact_row["company_id"])
@@ -723,12 +781,20 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
 
         # Décider auto-reply ou review manuel
         eaccount = payload.eaccount or _sender_eaccount()
+        # Defense in depth : on n'auto-reply QUE si le parent outbound avait
+        # passé compliance. Si WF-5 avait flag le parent ou si on n'a pas de
+        # parent du tout (orphan, ne devrait pas arriver ici car contact_id
+        # check plus haut), on n'amplifie pas le risque.
+        parent_compliance_ok = bool(parent and parent.get("compliance_check_passed") is True)
         can_auto_reply = (
             not payload.skip_auto_reply
             and confidence >= AUTO_REPLY_CONFIDENCE_THRESHOLD
             and eaccount is not None
             and payload.provider_message_id_inbound  # requis pour reply_to_uuid
+            and parent_compliance_ok
         )
+        if not parent_compliance_ok and parent is not None:
+            actions.append("skipped_auto_reply_parent_not_compliant")
 
         if can_auto_reply:
             # Fetch Cal.com slots
@@ -756,6 +822,31 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
                     actions.append(f"composer_failed:{type(e).__name__}")
 
                 if composed and composed.get("body_text"):
+                    # Audit le composer (Sonnet — modèle plus cher que le
+                    # classifier Haiku). Sans ça, le coût composer est invisible
+                    # dans les rapports agent_runs.
+                    if comp_usage is not None:
+                        await _record_agent_run(
+                            contact_id=contact_id, company_id=company_id,
+                            campaign_id=campaign_id,
+                            agent="personalization",  # composer = sous-cas perso
+                            model=payload.composer_model,
+                            input_payload={
+                                "agent_subtype": "reply_composer",
+                                "lead_reply_excerpt": (cleaned_reply or "")[:300],
+                                "slots_count": sum(len(s.get("times", [])) for s in slots),
+                            },
+                            output_payload={
+                                "subject": composed.get("subject"),
+                                "body_text": composed.get("body_text"),
+                                "slots_used": composed.get("slots_used"),
+                                "warnings": composed.get("warnings"),
+                            },
+                            error_text=None,
+                            duration_ms=0,  # mesure non capturée séparément
+                            usage=comp_usage,
+                        )
+
                     reply_subject = (
                         composed.get("subject")
                         or f"Re: {original_subject or 'votre message'}"
@@ -891,12 +982,15 @@ def extract_from_instantly_email_list_item(item: dict[str, Any]) -> HandleReplyI
     if not provider_id_inbound:
         return None
 
-    # Champs from/to peuvent être string ou liste — normaliser
+    # Champs from/to peuvent être string, dict, ou liste — normaliser
     def _first_str(v: Any) -> str | None:
         if not v:
             return None
         if isinstance(v, str):
             return v.strip().lower() or None
+        if isinstance(v, dict):
+            # Single object: {address: ..., name: ...} ou {email: ...}
+            return (v.get("address") or v.get("email") or "").strip().lower() or None
         if isinstance(v, list) and v:
             head = v[0]
             if isinstance(head, str):
@@ -929,6 +1023,11 @@ def extract_from_instantly_email_list_item(item: dict[str, Any]) -> HandleReplyI
     if not body_text and not body_html:
         return None  # rien à classer
 
+    # Si on n'a que du HTML, on génère un body_text exploitable par le classifier.
+    # Sans ça, le classifier reçoit `<p>...</p>` brut et hallucine.
+    if not body_text and body_html:
+        body_text = html_to_text(body_html)
+
     eaccount = (
         _first_str(item.get("to_address_email_list"))
         or _first_str(item.get("to_address"))
@@ -938,7 +1037,7 @@ def extract_from_instantly_email_list_item(item: dict[str, Any]) -> HandleReplyI
     return HandleReplyIn(
         lead_email=lead_email,
         reply_subject=item.get("subject"),
-        reply_body_text=body_text or (body_html or "(html-only body)"),
+        reply_body_text=body_text or "(empty body after html strip)",
         reply_body_html=body_html,
         provider_message_id_inbound=provider_id_inbound,
         provider_message_id_parent=(
@@ -1130,8 +1229,16 @@ def extract_from_instantly_webhook(body: dict[str, Any]) -> HandleReplyIn | None
     if not provider_id_inbound:
         # Sans UUID inbound, on perd l'idempotence ET la capacité de reply
         # in-thread. On fabrique un ID synthétique pour quand même persister
-        # l'audit, mais on flag.
-        provider_id_inbound = f"synthetic-{lead_email}-{int(time.time())}"
+        # l'audit, mais on flag. Ajout d'un suffix random pour éviter les
+        # collisions si 2 webhooks arrivent dans la même seconde pour le même
+        # lead_email (rare mais possible).
+        provider_id_inbound = (
+            f"synthetic-{lead_email}-{int(time.time())}-{secrets.token_hex(4)}"
+        )
+
+    # Si payload n'a que du HTML, dériver text via html_to_text pour le classifier
+    if not reply_body_text and reply_body_html:
+        reply_body_text = html_to_text(reply_body_html)
 
     return HandleReplyIn(
         lead_email=lead_email,
