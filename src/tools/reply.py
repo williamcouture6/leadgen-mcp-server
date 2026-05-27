@@ -592,6 +592,22 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         ins = await db.insert("messages", inbound_row)
         inbound_message_id = ins[0]["id"] if ins else None
     except Exception as e:  # noqa: BLE001
+        # Race condition: un autre process (poll concurrent / webhook + poll)
+        # a inséré le même provider_message_id entre notre check d'idempotence
+        # et notre INSERT. Le UNIQUE INDEX partiel messages_inbound_provider_id_unique_idx
+        # rejette le 2e INSERT avec un 409 / code Postgres 23505. On traite ça
+        # comme `skipped_duplicate` au lieu de `error` — un autre process a
+        # déjà fait le travail et le LLM ne devrait pas être appelé 2 fois.
+        err_str = repr(e)
+        if "409" in err_str or "23505" in err_str or "duplicate key" in err_str.lower():
+            # Re-fetch la row qui a gagné la race pour l'inclure dans la réponse
+            existing = await _find_inbound_by_provider_id(payload.provider_message_id_inbound)
+            return HandleReplyOut(
+                status="skipped_duplicate",
+                inbound_message_id=(existing or {}).get("id"),
+                actions_taken=["race_lost_to_concurrent_insert"],
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
         return HandleReplyOut(
             status="error",
             error_text=f"insert_inbound_failed: {e!r}",
