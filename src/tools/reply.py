@@ -971,7 +971,7 @@ async def poll_and_process_replies(payload: PollRepliesIn) -> PollRepliesOut:
     """
     try:
         resp = await instantly_lib.list_emails(
-            email_type=2,  # received
+            email_type="received",
             limit=payload.limit,
         )
     except instantly_lib.InstantlyError as e:

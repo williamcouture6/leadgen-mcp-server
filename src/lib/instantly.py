@@ -249,7 +249,7 @@ async def reply_to_email(
 
 async def list_emails(
     *,
-    email_type: int | str = 2,  # 2 = received (inbound) selon Instantly v2
+    email_type: str = "received",  # Instantly v2 enum: "received" | "sent"
     limit: int = 50,
     starting_after: str | None = None,
     campaign_id: str | None = None,
