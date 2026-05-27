@@ -1,8 +1,13 @@
-"""Slack Incoming Webhook — notifs minimales pour WF-7 / WF-8.
+"""Slack Incoming Webhook — notifs pour WF-7 / WF-8.
 
-Pattern: un seul webhook URL (SLACK_WEBHOOK_URL env) pour tout le système.
-Si l'env var est absente, les notifs sont silencieusement no-op — utile pour
-les environnements dev/test sans Slack configuré.
+Routing par catégorie (depuis 2026-05-27) :
+  - `bookings` → SLACK_WEBHOOK_BOOKINGS (WF-8 events)
+  - `leads`    → SLACK_WEBHOOK_LEADS (WF-7 hot lead, review)
+  - `alerts`   → SLACK_WEBHOOK_ALERTS (orphans, classifier errors)
+
+Fallback : si la var spécifique à la catégorie n'est pas set, on retombe
+sur SLACK_WEBHOOK_URL (legacy single-channel). Si rien n'est configuré,
+les notifs sont silencieusement no-op — utile pour dev/test sans Slack.
 
 Failure-mode : Slack DOWN ne DOIT JAMAIS casser la pipeline (auto-reply,
 booking, etc.). Les exceptions sont avalées + loggées en stderr. Le caller
@@ -16,15 +21,35 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
 SLACK_WEBHOOK_ENV = "SLACK_WEBHOOK_URL"
 SLACK_TIMEOUT_SECONDS = 5.0  # court — on ne veut pas bloquer la pipeline
 
+Category = Literal["bookings", "leads", "alerts"]
 
-def _webhook_url() -> str | None:
+# Mapping catégorie → env var dédiée. Si non set, on retombe sur SLACK_WEBHOOK_URL.
+_CATEGORY_ENV: dict[str, str] = {
+    "bookings": "SLACK_WEBHOOK_BOOKINGS",
+    "leads": "SLACK_WEBHOOK_LEADS",
+    "alerts": "SLACK_WEBHOOK_ALERTS",
+}
+
+
+def _webhook_url(category: str | None = None) -> str | None:
+    """Résout l'URL webhook pour une catégorie donnée.
+
+    Ordre : env catégorie spécifique → SLACK_WEBHOOK_URL fallback → None.
+    None = pas configuré, notify devient no-op silencieux.
+    """
+    if category:
+        env_name = _CATEGORY_ENV.get(category)
+        if env_name:
+            url = os.environ.get(env_name, "").strip()
+            if url:
+                return url
     url = os.environ.get(SLACK_WEBHOOK_ENV, "").strip()
     return url or None
 
@@ -34,6 +59,7 @@ async def notify(
     text: str,
     blocks: list[dict[str, Any]] | None = None,
     context: str | None = None,
+    category: Category | None = None,
 ) -> bool:
     """Envoie un message Slack via Incoming Webhook. Async (httpx).
 
@@ -41,11 +67,13 @@ async def notify(
       text: texte fallback (utilisé par notifs mobile + accessibilité).
       blocks: blocks Block Kit optionnels pour mise en forme riche.
       context: prefix court ajouté au log stderr en cas d'erreur (ex: "wf7_hot_lead").
+      category: route vers le webhook dédié ("bookings"/"leads"/"alerts"). Fallback
+        sur SLACK_WEBHOOK_URL si la var catégorie n'est pas set.
 
     Returns True si Slack a accepté (200 OK), False sinon ou si pas configuré.
     NE LÈVE JAMAIS — la pipeline ne doit pas casser à cause de Slack.
     """
-    url = _webhook_url()
+    url = _webhook_url(category)
     if not url:
         return False  # pas configuré = no-op silencieux
 
@@ -225,9 +253,10 @@ def notify_sync(
     text: str,
     blocks: list[dict[str, Any]] | None = None,
     context: str | None = None,
+    category: Category | None = None,
 ) -> bool:
     """Version sync de `notify` pour usage en script ou test. Bloquant."""
-    url = _webhook_url()
+    url = _webhook_url(category)
     if not url:
         return False
     payload: dict[str, Any] = {"text": text}

@@ -19,6 +19,9 @@ import pytest
 @pytest.fixture(autouse=True)
 def _clear_slack_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("SLACK_WEBHOOK_BOOKINGS", raising=False)
+    monkeypatch.delenv("SLACK_WEBHOOK_LEADS", raising=False)
+    monkeypatch.delenv("SLACK_WEBHOOK_ALERTS", raising=False)
 
 
 # =====================================================================
@@ -168,3 +171,77 @@ def test_build_booked_blocks_works_without_optional_fields() -> None:
     )
     assert "Anne" in fb
     assert isinstance(blocks, list) and len(blocks) >= 1
+
+
+# =====================================================================
+# Category routing — SLACK_WEBHOOK_BOOKINGS / LEADS / ALERTS
+# =====================================================================
+
+def _capture_posts(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Patch httpx.post to record where notify_sync sent its payload."""
+    calls: list[dict] = []
+
+    class _FakeResp:
+        status_code = 200
+        text = "ok"
+
+    def fake_post(url, json=None, timeout=None):
+        calls.append({"url": url, "json": json})
+        return _FakeResp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    return calls
+
+
+def test_category_routes_to_dedicated_webhook(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When SLACK_WEBHOOK_BOOKINGS is set, category='bookings' uses it."""
+    monkeypatch.setenv("SLACK_WEBHOOK_BOOKINGS", "https://hooks.slack.com/booked")
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/legacy")
+    calls = _capture_posts(monkeypatch)
+    from src.lib.slack import notify_sync
+    assert notify_sync(text="hi", category="bookings") is True
+    assert calls[0]["url"] == "https://hooks.slack.com/booked"
+
+
+def test_category_falls_back_to_legacy_when_specific_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If SLACK_WEBHOOK_LEADS is missing, category='leads' falls back to SLACK_WEBHOOK_URL."""
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/legacy")
+    calls = _capture_posts(monkeypatch)
+    from src.lib.slack import notify_sync
+    assert notify_sync(text="hi", category="leads") is True
+    assert calls[0]["url"] == "https://hooks.slack.com/legacy"
+
+
+def test_no_category_uses_legacy_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Backwards-compat : calls without category= still go to SLACK_WEBHOOK_URL."""
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/legacy")
+    monkeypatch.setenv("SLACK_WEBHOOK_BOOKINGS", "https://hooks.slack.com/booked")
+    calls = _capture_posts(monkeypatch)
+    from src.lib.slack import notify_sync
+    assert notify_sync(text="hi") is True
+    assert calls[0]["url"] == "https://hooks.slack.com/legacy"
+
+
+def test_three_categories_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """bookings/leads/alerts each route to their own webhook URL."""
+    monkeypatch.setenv("SLACK_WEBHOOK_BOOKINGS", "https://hooks.slack.com/b")
+    monkeypatch.setenv("SLACK_WEBHOOK_LEADS", "https://hooks.slack.com/l")
+    monkeypatch.setenv("SLACK_WEBHOOK_ALERTS", "https://hooks.slack.com/a")
+    calls = _capture_posts(monkeypatch)
+    from src.lib.slack import notify_sync
+    notify_sync(text="x", category="bookings")
+    notify_sync(text="y", category="leads")
+    notify_sync(text="z", category="alerts")
+    assert [c["url"] for c in calls] == [
+        "https://hooks.slack.com/b",
+        "https://hooks.slack.com/l",
+        "https://hooks.slack.com/a",
+    ]
+
+
+def test_no_config_at_all_is_silent_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No env vars set + category= → still silent no-op, no crash."""
+    calls = _capture_posts(monkeypatch)
+    from src.lib.slack import notify_sync
+    assert notify_sync(text="x", category="bookings") is False
+    assert calls == []

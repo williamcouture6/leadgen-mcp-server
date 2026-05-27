@@ -267,8 +267,10 @@ def slack_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     """Capture Slack notify calls so tests can assert pings happened."""
     calls: list[dict] = []
 
-    async def fake_notify(*, text, blocks=None, context=None):
-        calls.append({"text": text, "blocks": blocks, "context": context})
+    async def fake_notify(*, text, blocks=None, context=None, category=None):
+        calls.append({
+            "text": text, "blocks": blocks, "context": context, "category": category,
+        })
         return True
 
     from src.lib import slack
@@ -307,6 +309,7 @@ async def test_booking_created_inserts_row_and_pings_slack(
 
     assert len(slack_calls) == 1
     assert "anne@clinique-x.com" in str(slack_calls[0])
+    assert slack_calls[0]["category"] == "bookings"
 
 
 @pytest.mark.asyncio
@@ -387,6 +390,7 @@ async def test_orphan_booking_pings_slack_but_skips_db(
     assert "slack_ping" in out.actions_taken
     assert len(slack_calls) == 1
     assert "introuvable" in slack_calls[0]["text"]
+    assert slack_calls[0]["category"] == "alerts"
     assert len(stub_db.booking_events) == 0
 
 

@@ -333,6 +333,7 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
                 f"contact introuvable en DB (trigger={payload.trigger})"
             ),
             context="wf8_orphan_booking",
+            category="alerts",
         )
         return HandleBookingOut(
             status="skipped_no_contact",
@@ -474,7 +475,9 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
             meeting_url=payload.meeting_url,
             event_type=payload.event_type_title,
         )
-        await slack_lib.notify(text=fallback, blocks=blocks, context="wf8_booked")
+        await slack_lib.notify(
+            text=fallback, blocks=blocks, context="wf8_booked", category="bookings",
+        )
         actions.append("slack_booked")
     elif payload.trigger == "BOOKING_RESCHEDULED":
         await slack_lib.notify(
@@ -484,6 +487,7 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
                 + f" — nouvelle date: {payload.start_time_iso or '?'}"
             ),
             context="wf8_rescheduled",
+            category="bookings",
         )
         actions.append("slack_rescheduled")
     elif payload.trigger == "BOOKING_CANCELLED":
@@ -495,6 +499,7 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
                 + reason_str
             ),
             context="wf8_cancelled",
+            category="bookings",
         )
         actions.append("slack_cancelled")
     elif payload.trigger == "MEETING_ENDED":
@@ -504,6 +509,7 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
                 + (f" @ {company_name}" if company_name else "")
             ),
             context="wf8_ended",
+            category="bookings",
         )
         actions.append("slack_ended")
 

@@ -624,6 +624,7 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             await slack_lib.notify(
                 text=f"⚠️ Reply orphelin reçu de {payload.lead_email} — contact introuvable en DB",
                 context="wf7_orphan_reply",
+                category="alerts",
             )
             return HandleReplyOut(
                 status="skipped_no_contact",
@@ -728,6 +729,7 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         await slack_lib.notify(
             text=f"⚠️ Classifier LLM failed for {payload.lead_email} — review manuel requis",
             context="wf7_classifier_error",
+            category="alerts",
         )
         return HandleReplyOut(
             status="error",
@@ -917,7 +919,9 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             auto_reply_sent=auto_reply_sent,
             confidence=confidence,
         )
-        await slack_lib.notify(text=fallback, blocks=blocks, context="wf7_hot_lead")
+        await slack_lib.notify(
+            text=fallback, blocks=blocks, context="wf7_hot_lead", category="leads",
+        )
         actions.append("slack_hot_lead")
 
     else:  # 'other' ou catégorie inconnue
@@ -934,7 +938,9 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             reasoning=classifier_out.get("reasoning_one_line") or "(no reasoning)",
             reply_preview=cleaned_reply or payload.reply_body_text,
         )
-        await slack_lib.notify(text=fallback, blocks=blocks, context="wf7_review")
+        await slack_lib.notify(
+            text=fallback, blocks=blocks, context="wf7_review", category="leads",
+        )
         actions.append("slack_review")
 
     # 6) Audit
