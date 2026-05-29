@@ -1719,3 +1719,318 @@ async def wf8_webhook_healthcheck() -> dict[str, Any]:
         "wf8_secret_configured": bool(_calcom_webhook_secret()),
         "slack_configured": bool(os.environ.get(slack_lib.SLACK_WEBHOOK_ENV)),
     }
+
+
+# ---------------- Meeting report (Phase 2 — WF-9, auto Granola) ----------------
+
+# Pipeline auto post-RDV : n8n cron (toutes les 10 min) appelle
+# `GET /wf9/pending-bookings` pour lister les booking_events finis sans rapport,
+# puis pour chaque ID il appelle `POST /wf9/process-booking`. Le serveur fetch
+# la note Granola correspondante (matching attendee email + window temporelle),
+# appelle `meeting.analyze_meeting`, persiste le rapport et ping Slack.
+#
+# Granola enregistre LOCALEMENT sur la machine de William → si Granola ne
+# tournait pas (ou pas de note pour ce booking), `process-booking` retourne
+# `no_match_yet`. Le compteur `meeting_fetch_attempts` cap à 10 essais (~100 min)
+# avant d'arrêter de re-tenter automatiquement.
+
+MAX_FETCH_ATTEMPTS = 10
+
+
+class Wf9PendingOut(BaseModel):
+    booking_event_ids: list[str]
+    count: int
+
+
+@app.get(
+    "/wf9/pending-bookings",
+    dependencies=[Depends(_require_auth)],
+    response_model=Wf9PendingOut,
+)
+async def wf9_pending_bookings(limit: int = 20) -> Wf9PendingOut:
+    """Liste les booking_events finis (`meeting_outcome=held`) sans rapport encore
+    généré (`meeting_analyzed_at IS NULL`) et qui n'ont pas dépassé le cap de
+    re-tentatives Granola. Triés du plus ancien au plus récent.
+
+    n8n cron toutes les 10 min : GET cette liste, puis POST /wf9/process-booking
+    pour chaque ID.
+    """
+    from . import supabase_client as db_low
+
+    rows = await db_low.select(
+        "booking_events",
+        params={
+            "select": "id",
+            "meeting_outcome": "eq.held",
+            "meeting_analyzed_at": "is.null",
+            "meeting_fetch_attempts": f"lt.{MAX_FETCH_ATTEMPTS}",
+            "order": "meeting_scheduled_for.asc.nullsfirst",
+            "limit": str(max(1, min(limit, 100))),
+        },
+    )
+    ids = [r["id"] for r in rows if r.get("id")]
+    return Wf9PendingOut(booking_event_ids=ids, count=len(ids))
+
+
+class Wf9ProcessIn(BaseModel):
+    booking_event_id: str
+
+
+class Wf9ProcessOut(BaseModel):
+    status: str  # "ok" | "no_match_yet" | "note_not_ready" | "max_attempts" | "skipped_no_attendee" | "error"
+    booking_event_id: str
+    note_id: str | None = None
+    match_score: int | None = None
+    fit_score: str | None = None
+    attempts: int | None = None
+    duration_ms: int | None = None
+    error_text: str | None = None
+
+
+@app.post(
+    "/wf9/process-booking",
+    dependencies=[Depends(_require_auth)],
+    response_model=Wf9ProcessOut,
+)
+async def wf9_process_booking(payload: Wf9ProcessIn) -> Wf9ProcessOut:
+    """Traite UN booking_event : fetch Granola note + analyse + persiste + Slack.
+
+    Retours possibles :
+      - `ok`              : note trouvée, rapport généré et persisté
+      - `no_match_yet`    : aucune note Granola matche (ré-essai au prochain cron)
+      - `note_not_ready`  : note trouvée mais summary IA pas encore prête (re-try)
+      - `max_attempts`    : on a déjà tenté MAX_FETCH_ATTEMPTS fois → on lâche
+      - `skipped_no_attendee` : booking sans email → impossible de matcher
+      - `error`           : exception inattendue (Granola down, Anthropic, etc.)
+    """
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    from . import supabase_client as db_low
+    from .lib import granola as granola_lib
+    from .lib import slack as slack_lib
+    from .tools import meeting as meeting_tools
+
+    started = time.monotonic()
+    bid = payload.booking_event_id
+
+    # 1) Charge le booking_event
+    rows = await db_low.select(
+        "booking_events",
+        params={
+            "select": "id,contact_id,external_event_id,meeting_scheduled_for,"
+                      "meeting_outcome,meeting_analyzed_at,meeting_fetch_attempts",
+            "id": f"eq.{bid}",
+            "limit": "1",
+        },
+    )
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"booking_event {bid} introuvable")
+    be = rows[0]
+
+    attempts = int(be.get("meeting_fetch_attempts") or 0)
+    if attempts >= MAX_FETCH_ATTEMPTS:
+        return Wf9ProcessOut(
+            status="max_attempts", booking_event_id=bid, attempts=attempts,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    if be.get("meeting_analyzed_at"):
+        # Race avec un autre run : déjà traité.
+        return Wf9ProcessOut(
+            status="ok", booking_event_id=bid, attempts=attempts,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    # 2) Charge contact + company (pour email de matching et contexte LLM)
+    contact = None
+    company = None
+    if be.get("contact_id"):
+        c_rows = await db_low.select(
+            "contacts",
+            params={
+                "select": "id,company_id,first_name,last_name,email",
+                "id": f"eq.{be['contact_id']}",
+                "limit": "1",
+            },
+        )
+        contact = c_rows[0] if c_rows else None
+        if contact and contact.get("company_id"):
+            co_rows = await db_low.select(
+                "companies",
+                params={
+                    "select": "id,name,city,icp_segment,industry,research_json",
+                    "id": f"eq.{contact['company_id']}",
+                    "limit": "1",
+                },
+            )
+            company = co_rows[0] if co_rows else None
+
+    attendee_email = (contact or {}).get("email")
+    if not attendee_email:
+        # Pas d'email → matching impossible. On incrémente quand même pour
+        # éviter une boucle infinie ; max_attempts y mettra fin.
+        await db_low.update(
+            "booking_events",
+            {"meeting_fetch_attempts": attempts + 1},
+            filters={"id": f"eq.{bid}"},
+        )
+        return Wf9ProcessOut(
+            status="skipped_no_attendee", booking_event_id=bid, attempts=attempts + 1,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    # 3) Fetch Granola — window = meeting_start − 1h pour rattraper les notes
+    # créées légèrement avant (timezone slop) ou tout de suite après.
+    meeting_start = None
+    if be.get("meeting_scheduled_for"):
+        try:
+            meeting_start = datetime.fromisoformat(
+                str(be["meeting_scheduled_for"]).replace("Z", "+00:00")
+            )
+        except (ValueError, TypeError):
+            meeting_start = None
+    created_after = (meeting_start or datetime.now(timezone.utc)) - timedelta(hours=1)
+
+    try:
+        notes = await granola_lib.list_notes_paginated(
+            created_after=created_after, max_pages=3,
+        )
+    except granola_lib.GranolaError as e:
+        # Auth/clé manquante ou erreur permanente → on retourne error, on
+        # n'incrémente PAS attempts (le problème est côté serveur, pas Granola
+        # qui n'a pas encore généré la note).
+        return Wf9ProcessOut(
+            status="error", booking_event_id=bid, attempts=attempts,
+            error_text=f"granola_list_failed: {e}",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    contact_name = None
+    if contact:
+        contact_name = (
+            f"{contact.get('first_name') or ''} {contact.get('last_name') or ''}"
+        ).strip() or None
+
+    matched, score = meeting_tools.match_granola_note(
+        notes,
+        attendee_email=attendee_email,
+        meeting_start_iso=be.get("meeting_scheduled_for"),
+        contact_name=contact_name,
+        company_name=(company or {}).get("name"),
+    )
+
+    if matched is None:
+        # Pas de match — incrémente attempts pour qu'on arrête après MAX_FETCH_ATTEMPTS
+        await db_low.update(
+            "booking_events",
+            {"meeting_fetch_attempts": attempts + 1},
+            filters={"id": f"eq.{bid}"},
+        )
+        return Wf9ProcessOut(
+            status="no_match_yet", booking_event_id=bid, match_score=score,
+            attempts=attempts + 1,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    # 4) Fetch transcript complet de la note matchée
+    note_id = matched.get("id")
+    try:
+        full_note = await granola_lib.get_note(note_id, include_transcript=True) if note_id else matched
+    except granola_lib.GranolaNoteNotReady:
+        # Note trouvée mais summary IA pas encore générée. Re-try plus tard.
+        await db_low.update(
+            "booking_events",
+            {"meeting_fetch_attempts": attempts + 1},
+            filters={"id": f"eq.{bid}"},
+        )
+        return Wf9ProcessOut(
+            status="note_not_ready", booking_event_id=bid, note_id=note_id,
+            match_score=score, attempts=attempts + 1,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    except granola_lib.GranolaError as e:
+        return Wf9ProcessOut(
+            status="error", booking_event_id=bid, note_id=note_id, attempts=attempts,
+            error_text=f"granola_get_failed: {e}",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    transcript_blob = meeting_tools.granola_note_to_text(full_note)
+    if not transcript_blob.strip():
+        return Wf9ProcessOut(
+            status="error", booking_event_id=bid, note_id=note_id, attempts=attempts,
+            error_text="granola note vide après flattening",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    # 5) Analyse LLM
+    context = meeting_tools.format_company_context(company, contact)
+    try:
+        out = await meeting_tools.analyze_meeting(transcript_blob, company_context=context)
+    except Exception as e:  # noqa: BLE001
+        return Wf9ProcessOut(
+            status="error", booking_event_id=bid, note_id=note_id, attempts=attempts,
+            error_text=f"analyze_failed: {type(e).__name__}: {e}",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    # 6) Persiste — meeting_source='granola' distingue du CLI manuel
+    await db_low.update(
+        "booking_events",
+        {
+            "meeting_report_json": out.report,
+            "meeting_analyzed_at": datetime.now(timezone.utc).isoformat(),
+            "meeting_source": "granola",
+            "meeting_fetch_attempts": attempts + 1,
+        },
+        filters={"id": f"eq.{bid}"},
+    )
+
+    # 7) Slack ping #bookings — résumé court
+    fit = out.report.get("fit_score") or "?"
+    company_name = (company or {}).get("name") or ""
+    summary_line = (out.report.get("resume_executif") or "").strip().replace("\n", " ")
+    if len(summary_line) > 280:
+        summary_line = summary_line[:279] + "…"
+    top_opp = ""
+    opps = out.report.get("opportunites_automatisation")
+    if isinstance(opps, list) and opps:
+        first = opps[0] if isinstance(opps[0], dict) else None
+        if first and first.get("processus"):
+            top_opp = f"\n*Top opportunité :* {first.get('processus')} → {first.get('solution', '')}"
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"📝 Rapport post-RDV prêt — fit {fit}"}},
+        {"type": "section", "text": {"type": "mrkdwn",
+            "text": f"*{contact_name or attendee_email}*" + (f" @ *{company_name}*" if company_name else "")}},
+    ]
+    if summary_line:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": summary_line}})
+    if top_opp:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": top_opp}})
+    await slack_lib.notify(
+        text=f"📝 Rapport post-RDV prêt — {contact_name or attendee_email} (fit {fit})",
+        blocks=blocks, context="wf9_report_ready", category="bookings",
+    )
+
+    return Wf9ProcessOut(
+        status="ok", booking_event_id=bid, note_id=note_id, match_score=score,
+        fit_score=str(fit), attempts=attempts + 1,
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+
+
+@app.get("/wf9/healthcheck")
+async def wf9_healthcheck() -> dict[str, Any]:
+    """Vérifie config WF-9. Public (pas de secret divulgué)."""
+    from .lib import granola as granola_lib
+    from .lib import slack as slack_lib
+    return {
+        "ok": True,
+        "granola_key_configured": bool(os.environ.get(granola_lib.GRANOLA_API_KEY_ENV)),
+        "anthropic_key_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "slack_bookings_configured": bool(
+            os.environ.get("SLACK_WEBHOOK_BOOKINGS")
+            or os.environ.get(slack_lib.SLACK_WEBHOOK_ENV)
+        ),
+        "max_fetch_attempts": MAX_FETCH_ATTEMPTS,
+    }
