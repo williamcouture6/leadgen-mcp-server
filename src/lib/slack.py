@@ -199,6 +199,76 @@ def build_review_blocks(
     return fallback, blocks
 
 
+def _research_brief_blocks(research_json: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Construit la section 'Brief pré-RDV' depuis `companies.research_json` (WF-3).
+
+    Tout est déterministe (pas de LLM) — `research_json` est déjà structuré. Si le
+    champ est absent/vide, on retourne [] et le ping booking garde son format minimal.
+
+    Lecture défensive : `research_json` en DB est l'objet research direct (clés
+    `company_summary`, `pain_points_detected`, etc.), mais on tolère un éventuel
+    wrapper `{"research": {...}}` au cas où le shape changerait.
+    """
+    if not isinstance(research_json, dict) or not research_json:
+        return []
+    rj = research_json.get("research") if isinstance(research_json.get("research"), dict) else research_json
+
+    sections: list[str] = []
+
+    summary = (rj.get("company_summary") or "").strip()
+    if summary:
+        sections.append(f"*Résumé*\n{_truncate(summary, 300)}")
+
+    pains = rj.get("pain_points_detected")
+    if isinstance(pains, list) and pains:
+        lines = []
+        for p in pains[:3]:
+            txt = (p.get("pain") if isinstance(p, dict) else str(p)) or ""
+            txt = txt.strip()
+            if txt:
+                lines.append(f"• {_truncate(txt, 160)}")
+        if lines:
+            sections.append("*Pain points détectés*\n" + "\n".join(lines))
+
+    hooks = rj.get("personalization_hooks")
+    if isinstance(hooks, list) and hooks:
+        lines = [f"• {_truncate(str(h).strip(), 160)}" for h in hooks[:3] if str(h).strip()]
+        if lines:
+            sections.append("*Accroches / pistes d'automatisation*\n" + "\n".join(lines))
+
+    meta_bits: list[str] = []
+    tss = rj.get("tech_savvy_score")
+    score = tss.get("score") if isinstance(tss, dict) else None
+    if score:
+        meta_bits.append(f"Tech-savvy : *{score}*")
+    decideurs = rj.get("decideur_candidats")
+    if isinstance(decideurs, list) and decideurs:
+        names = []
+        for d in decideurs[:2]:
+            if isinstance(d, dict) and d.get("nom_complet"):
+                titre = d.get("titre")
+                names.append(f"{d['nom_complet']}" + (f" ({titre})" if titre else ""))
+        if names:
+            meta_bits.append("Décideur(s) : " + ", ".join(names))
+    if meta_bits:
+        sections.append(" · ".join(meta_bits))
+
+    if not sections:
+        return []
+
+    return [
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*🔎 Brief pré-RDV*"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "\n\n".join(sections)},
+        },
+    ]
+
+
 def build_booked_blocks(
     *,
     contact_name: str,
@@ -207,8 +277,14 @@ def build_booked_blocks(
     meeting_start_iso: str,
     meeting_url: str | None = None,
     event_type: str | None = None,
+    research_json: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Format Slack pour un meeting confirmé via Cal.com (WF-8)."""
+    """Format Slack pour un meeting confirmé via Cal.com (WF-8).
+
+    Si `research_json` est fourni (depuis `companies.research_json`), on ajoute
+    une section 'Brief pré-RDV' avec résumé, pain points, accroches et décideurs —
+    pour arriver au RDV préparé sans ouvrir la DB.
+    """
     fallback = f"✅ RDV booké — {contact_name} le {meeting_start_iso}"
     fields = [_kv_field("Contact", contact_name)]
     if contact_email:
@@ -234,6 +310,7 @@ def build_booked_blocks(
                 "text": f"<{meeting_url}|Ouvrir dans Cal.com>",
             },
         })
+    blocks.extend(_research_brief_blocks(research_json))
     return fallback, blocks
 
 

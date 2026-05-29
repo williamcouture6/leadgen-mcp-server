@@ -173,6 +173,84 @@ def test_build_booked_blocks_works_without_optional_fields() -> None:
     assert isinstance(blocks, list) and len(blocks) >= 1
 
 
+def test_build_booked_blocks_no_brief_when_research_json_absent() -> None:
+    """Sans research_json : aucune section 'Brief pré-RDV', format minimal intact."""
+    from src.lib.slack import build_booked_blocks
+    _, blocks = build_booked_blocks(
+        contact_name="Anne",
+        company_name="Co X",
+        contact_email="anne@x.com",
+        meeting_start_iso="2026-05-28T18:00:00Z",
+    )
+    body = " ".join(str(b) for b in blocks)
+    assert "Brief pré-RDV" not in body
+    # header + fields seulement
+    assert len(blocks) == 2
+
+
+def test_build_booked_blocks_empty_research_json_is_noop() -> None:
+    """research_json={} ne doit ni crasher ni ajouter de section vide."""
+    from src.lib.slack import build_booked_blocks
+    _, blocks = build_booked_blocks(
+        contact_name="Anne",
+        company_name="Co X",
+        contact_email="anne@x.com",
+        meeting_start_iso="2026-05-28T18:00:00Z",
+        research_json={},
+    )
+    body = " ".join(str(b) for b in blocks)
+    assert "Brief pré-RDV" not in body
+
+
+def test_build_booked_blocks_includes_research_brief() -> None:
+    """research_json présent → section Brief avec résumé, pains, accroches, décideurs."""
+    from src.lib.slack import build_booked_blocks
+    research = {
+        "company_summary": "Plomberie familiale à Montréal, service 24/7.",
+        "pain_points_detected": [
+            {"pain": "Formulaire sans réponse automatique hors heures"},
+            {"pain": "Une seule personne terrain, capacité de réponse limitée"},
+        ],
+        "personalization_hooks": [
+            "Mentionner leur note 4.9★ avec 155 avis",
+            "Leads du soir non confirmés automatiquement",
+        ],
+        "tech_savvy_score": {"score": "low"},
+        "decideur_candidats": [
+            {"nom_complet": "Adam Verge", "titre": "Co-fondateur"},
+        ],
+    }
+    _, blocks = build_booked_blocks(
+        contact_name="Adam Verge",
+        company_name="Plomberie A+",
+        contact_email="adam@x.com",
+        meeting_start_iso="2026-05-28T18:00:00Z",
+        research_json=research,
+    )
+    body = " ".join(str(b) for b in blocks)
+    assert "Brief pré-RDV" in body
+    assert "Plomberie familiale" in body
+    assert "réponse automatique" in body
+    assert "4.9★" in body
+    assert "low" in body
+    assert "Adam Verge" in body
+
+
+def test_build_booked_blocks_tolerates_wrapped_research_shape() -> None:
+    """Tolère un éventuel wrapper {'research': {...}} (shape du dump CLI)."""
+    from src.lib.slack import build_booked_blocks
+    research = {"research": {"company_summary": "Clinique privée."}}
+    _, blocks = build_booked_blocks(
+        contact_name="Dr X",
+        company_name="Clinique",
+        contact_email="x@y.com",
+        meeting_start_iso="2026-05-28T18:00:00Z",
+        research_json=research,
+    )
+    body = " ".join(str(b) for b in blocks)
+    assert "Clinique privée" in body
+
+
 # =====================================================================
 # Category routing — SLACK_WEBHOOK_BOOKINGS / LEADS / ALERTS
 # =====================================================================

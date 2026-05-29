@@ -209,7 +209,8 @@ async def _get_company(company_id: str) -> dict[str, Any] | None:
     rows = await db.select(
         "companies",
         params={
-            "select": "id,name,city,icp_segment",
+            # research_json + industry alimentent le brief pré-RDV Slack (WF-8).
+            "select": "id,name,city,icp_segment,industry,research_json",
             "id": f"eq.{company_id}",
             "limit": "1",
         },
@@ -474,6 +475,7 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
             meeting_start_iso=payload.start_time_iso or "(date inconnue)",
             meeting_url=payload.meeting_url,
             event_type=payload.event_type_title,
+            research_json=(company or {}).get("research_json"),
         )
         await slack_lib.notify(
             text=fallback, blocks=blocks, context="wf8_booked", category="bookings",
