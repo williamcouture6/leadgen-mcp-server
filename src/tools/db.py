@@ -49,22 +49,23 @@ SECTOR_CATALOG: dict[str, list[str]] = {
         "boutique de mode",
         "quincaillerie",
         "animalerie",
-        # Services résidentiels
+        # Services résidentiels (track OPT)
+        # NOTE anti double-fichage : les verticales REACTI (réactivation de base)
+        # sont EXCLUES de ce catalogue OPT — voir CLAUDE.md + migration 0003.
+        # Retirées 2026-05-30 : paysagiste, entrepreneur en déneigement,
+        # exterminateur, piscines et spas, lavage de vitres. Elles iront dans un
+        # catalogue REACTI dédié (auto-tag track='REACTI' au sourcing).
+        # NE PAS les remettre ici.
         "plombier",
         "électricien",
         "entrepreneur CVAC",
-        "paysagiste",
         "entretien ménager commercial",
-        "entrepreneur en déneigement",
         "couvreur",
         "entrepreneur général en rénovation",
         "peintre résidentiel",
-        "exterminateur",
         "inspecteur en bâtiment",
-        "piscines et spas",
         "pavage",
         "réparation électroménagers",
-        "lavage de vitres",
         "menuisier",
     ],
     "services_pro": [

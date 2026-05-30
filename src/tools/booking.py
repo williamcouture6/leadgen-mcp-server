@@ -24,6 +24,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from .. import supabase_client as db
+from ..lib import reacti_tickets
 from ..lib import slack as slack_lib
 
 # ----------------------------------------------------------------------
@@ -209,8 +210,9 @@ async def _get_company(company_id: str) -> dict[str, Any] | None:
     rows = await db.select(
         "companies",
         params={
-            # research_json + industry alimentent le brief pré-RDV Slack (WF-8).
-            "select": "id,name,city,icp_segment,industry,research_json",
+            # research_json + industry/google_types alimentent le brief pré-RDV
+            # Slack (WF-8) — google_types sert à résoudre la verticale REACTI.
+            "select": "id,name,city,icp_segment,industry,google_types,research_json",
             "id": f"eq.{company_id}",
             "limit": "1",
         },
@@ -468,6 +470,12 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
     company_name = (company or {}).get("name")
 
     if payload.trigger == "BOOKING_CREATED":
+        # REACTI : si la verticale de la boîte matche la grille, on joint le
+        # ticket moyen + commission au brief. None pour un prospect OPT (no-op).
+        reacti_ticket = reacti_tickets.ticket_for_company(
+            industry=(company or {}).get("industry"),
+            google_types=(company or {}).get("google_types"),
+        )
         fallback, blocks = slack_lib.build_booked_blocks(
             contact_name=contact_name,
             company_name=company_name,
@@ -476,6 +484,7 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
             meeting_url=payload.meeting_url,
             event_type=payload.event_type_title,
             research_json=(company or {}).get("research_json"),
+            reacti_ticket=reacti_ticket,
         )
         await slack_lib.notify(
             text=fallback, blocks=blocks, context="wf8_booked", category="bookings",

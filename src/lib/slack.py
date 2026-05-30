@@ -21,9 +21,12 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
+
+if TYPE_CHECKING:
+    from .reacti_tickets import ReactiTicket
 
 SLACK_WEBHOOK_ENV = "SLACK_WEBHOOK_URL"
 SLACK_TIMEOUT_SECONDS = 5.0  # court — on ne veut pas bloquer la pipeline
@@ -278,12 +281,18 @@ def build_booked_blocks(
     meeting_url: str | None = None,
     event_type: str | None = None,
     research_json: dict[str, Any] | None = None,
+    reacti_ticket: "ReactiTicket | None" = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Format Slack pour un meeting confirmé via Cal.com (WF-8).
 
     Si `research_json` est fourni (depuis `companies.research_json`), on ajoute
     une section 'Brief pré-RDV' avec résumé, pain points, accroches et décideurs —
     pour arriver au RDV préparé sans ouvrir la DB.
+
+    Si `reacti_ticket` est fourni (track REACTI uniquement), on ajoute une ligne
+    'économie commission' : verticale + ticket moyen défaut + commission estimée,
+    pour arriver à l'appel avec les chiffres en tête. Absent pour un prospect OPT
+    => le brief reste strictement inchangé.
     """
     fallback = f"✅ RDV booké — {contact_name} le {meeting_start_iso}"
     fields = [_kv_field("Contact", contact_name)]
@@ -308,6 +317,20 @@ def build_booked_blocks(
             "text": {
                 "type": "mrkdwn",
                 "text": f"<{meeting_url}|Ouvrir dans Cal.com>",
+            },
+        })
+    if reacti_ticket is not None:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*💰 REACTI — économie commission (défaut)*\n"
+                    f"Secteur : *{reacti_ticket.label}* · "
+                    f"Ticket moyen : *~{reacti_ticket.ticket} $* · "
+                    f"Commission {reacti_ticket.rate_pct} % : *~{reacti_ticket.commission} $/client*\n"
+                    "_Confirmer le vrai ticket du client à l'appel._"
+                ),
             },
         })
     blocks.extend(_research_brief_blocks(research_json))
