@@ -135,6 +135,8 @@ Blocs (aérés) :
 
 Input `## Créneaux disponibles (Cal.com)`.
 
+**Formulation EXACTE du CTA (obligatoire)** : le CTA contient toujours **mot pour mot** « un appel rapide pour en parler ». Ne JAMAIS substituer ni reformuler : pas de « un appel de 15 minutes », « un court appel », « un échange », « un appel-éclair », etc. Le mot « rapide » est voulu et reste tel quel.
+
 **Si la liste contient des créneaux** :
 - Choisir EXACTEMENT 2 créneaux de la liste.
 - Format : `"{Jour} {date} à {heure} ou {jour2} {date2} à {heure2}, un appel rapide pour en parler?"`
