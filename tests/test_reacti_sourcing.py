@@ -106,3 +106,19 @@ async def test_personalize_isole_par_track_company(monkeypatch: pytest.MonkeyPat
 
     out_opt = await dbt.list_contacts_to_personalize(track="OPT")
     assert {o["contact"]["email"] for o in out_opt} == {"a@opt.ca"}
+
+
+# ----------------------------------------------- Prompt personalize par track
+
+def test_reacti_personalize_prompt_wired() -> None:
+    """Le track REACTI charge prompts/reacti/personalize.md, pas le prompt OPT."""
+    import src.tools.personalize as pz
+
+    assert pz._PROMPT_PATHS["OPT"] != pz._PROMPT_PATHS["REACTI"]
+    assert pz._PROMPT_PATHS["REACTI"].exists()
+    txt = pz._PROMPT_PATHS["REACTI"].read_text(encoding="utf-8")
+    assert "REACTI" in txt
+    assert "réactivation" in txt.lower()
+    # garde-fous critiques présents dans le prompt REACTI
+    assert "Loi 25" in txt
+    assert "preuve sociale" in txt.lower()

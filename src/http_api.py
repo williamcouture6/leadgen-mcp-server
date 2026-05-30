@@ -951,6 +951,7 @@ async def _personalize_one(
         out = await personalize_tools.personalize(
             personalize_tools.PersonalizeIn(
                 research_json=research,
+                track=(company_row.get("track") or "OPT"),
                 company={
                     "name": company_row.get("name"),
                     "website": company_row.get("website"),

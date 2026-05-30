@@ -26,6 +26,9 @@ from pydantic import BaseModel
 # ----------------------------------------------------------------------
 
 _PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "personalize.md"
+_REACTI_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "reacti" / "personalize.md"
+# Sélection du prompt système par track. Défaut OPT = comportement historique.
+_PROMPT_PATHS = {"OPT": _PROMPT_PATH, "REACTI": _REACTI_PROMPT_PATH}
 _DEFAULT_MODEL = "claude-sonnet-4-6"
 
 
@@ -117,6 +120,7 @@ class PersonalizeIn(BaseModel):
     template_choice: str = "A"  # "A" ou "B"
     available_slots: list[dict[str, Any]] = []  # output de get_available_slots
     model: str = _DEFAULT_MODEL
+    track: str = "OPT"  # OPT | REACTI — choisit le prompt système (personalize.md vs reacti/personalize.md)
 
 
 class PersonalizeOut(BaseModel):
@@ -134,13 +138,14 @@ def _call_llm(
     user_message: str,
     model: str,
     max_tokens: int = 2500,
+    track: str = "OPT",
 ) -> tuple[dict[str, Any], LLMUsage]:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY non défini")
     client = Anthropic(api_key=api_key)
 
-    system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
+    system_prompt = _PROMPT_PATHS.get(track, _PROMPT_PATH).read_text(encoding="utf-8")
 
     resp = client.messages.create(
         model=model,
@@ -180,7 +185,7 @@ async def personalize(payload: PersonalizeIn) -> PersonalizeOut:
         slots_block=slots_block,
     )
 
-    email_json, usage = await asyncio.to_thread(_call_llm, user_message, payload.model)
+    email_json, usage = await asyncio.to_thread(_call_llm, user_message, payload.model, 2500, payload.track)
 
     return PersonalizeOut(
         email=email_json,
