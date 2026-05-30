@@ -514,12 +514,14 @@ async def list_contacts_to_personalize(
         params={
             "select": (
                 "id,first_name,last_name,email,email_verified,title,company_id,"
-                "status,email_verification_source,raw_payload"
+                "status,email_verification_source,raw_payload,track"
             ),
             "email": "not.is.null",
             "status": "in.(new,ready)",
+            "track": f"eq.{track}",  # filtre track au niveau DB (sinon les contacts d'un
+            # track minoritaire sont noyés par l'over-fetch oldest-first)
             "order": "created_at.asc",
-            "limit": str(limit * 5),  # over-fetch, on filtrera + dédup par company
+            "limit": str(limit * 5),  # over-fetch, on dédup ensuite par company
         },
     )
     if not contacts:
