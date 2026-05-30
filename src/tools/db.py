@@ -102,14 +102,34 @@ SECTOR_CATALOG: dict[str, list[str]] = {
     ],
 }
 
+# Catalogue de sourcing REACTI (track REACTI) — verticales service résidentiel
+# récurrent/saisonnier. Retirées du catalogue OPT le 2026-05-30 (anti double-fichage,
+# voir CLAUDE.md). Le sourcing REACTI tague track='REACTI' à l'insert.
+REACTI_SECTOR_CATALOG: dict[str, list[str]] = {
+    "commerce_local": [
+        "entrepreneur en déneigement",
+        "paysagiste",
+        "exterminateur",
+        "piscines et spas",
+        "lavage de vitres",
+    ],
+}
+
+# Sélection du catalogue par track. Défaut OPT = comportement historique.
+_CATALOGS: dict[str, dict[str, list[str]]] = {
+    "OPT": SECTOR_CATALOG,
+    "REACTI": REACTI_SECTOR_CATALOG,
+}
+
 COOLDOWN_DAYS = 30
 
 
-def _all_targets() -> list[tuple[str, str, str]]:
-    """Retourne la liste complète (city, sector, icp_segment) dans l'ordre de priorité."""
+def _all_targets(track: str = "OPT") -> list[tuple[str, str, str]]:
+    """Liste complète (city, sector, icp_segment) du catalogue du `track`, par priorité."""
+    catalog = _CATALOGS.get(track, SECTOR_CATALOG)
     targets: list[tuple[str, str, str]] = []
     for city in DEFAULT_CITIES:
-        for icp, sectors in SECTOR_CATALOG.items():
+        for icp, sectors in catalog.items():
             for sector in sectors:
                 targets.append((city, sector, icp))
     return targets
@@ -167,6 +187,7 @@ class CompanyIn(BaseModel):
     google_rating: float | None = None
     google_reviews_count: int | None = None
     source: str = "google_places"
+    track: str = "OPT"  # OPT | REACTI — taggé au sourcing (anti double-fichage)
     raw_payload: dict[str, Any] | None = None
 
 
@@ -180,8 +201,8 @@ class InsertCompanyOut(BaseModel):
 # Logique
 # ----------------------------------------------------------------------
 
-async def next_sourcing_target() -> NextTargetOut | None:
-    """Retourne la prochaine cible (city, sector) à scraper, ou None si rien à faire.
+async def next_sourcing_target(track: str = "OPT") -> NextTargetOut | None:
+    """Retourne la prochaine cible (city, sector) du catalogue `track`, ou None.
 
     Stratégie :
     1. On itère le catalogue dans l'ordre de priorité.
@@ -202,7 +223,7 @@ async def next_sourcing_target() -> NextTargetOut | None:
     )
     recent_keys = {(r["city"], r["sector"]) for r in recent}
 
-    for city, sector, icp in _all_targets():
+    for city, sector, icp in _all_targets(track):
         if (city, sector) in recent_keys:
             continue
         reason: Literal["never_scraped", "cooldown_expired"] = (
@@ -470,6 +491,7 @@ async def list_contacts_to_personalize(
     *,
     require_research: bool = True,
     max_per_company: int = 1,
+    track: str = "OPT",
 ) -> list[dict[str, Any]]:
     """Contacts prêts pour personnalisation : email présent, company.research_json
     présent (sinon le prompt n'a rien à se mettre sous la dent), pas encore de
@@ -505,11 +527,13 @@ async def list_contacts_to_personalize(
     companies = await db.select(
         "companies",
         params={
-            "select": "id,name,domain,website,city,icp_segment,industry,research_json",
+            "select": "id,name,domain,website,city,icp_segment,industry,research_json,track",
             "id": f"in.({','.join(company_ids)})",
         },
     )
-    by_id = {c["id"]: c for c in companies}
+    # by_id restreint au `track` demandé → un contact dont la company est d'un autre
+    # track est ignoré (company=None dans la boucle). Isolation OPT/REACTI.
+    by_id = {c["id"]: c for c in companies if (c.get("track") or "OPT") == track}
 
     existing_msgs = await db.select(
         "messages",
@@ -581,13 +605,18 @@ async def insert_message_draft(payload: MessageDraftIn) -> dict[str, Any]:
     return {"message_id": rows[0]["id"] if rows else None}
 
 
-async def list_companies_to_enrich(limit: int = 50) -> list[dict[str, Any]]:
-    """Companies status='sourced' à passer dans WF-2."""
+async def list_companies_to_enrich(limit: int = 50, track: str = "OPT") -> list[dict[str, Any]]:
+    """Companies status='sourced' du `track` donné à passer dans WF-2 (enrichment).
+
+    Filtre `track` (défaut OPT) = garde-fou anti double-fichage : l'enrichment OPT
+    ne touche jamais les rows REACTI et vice-versa.
+    """
     return await db.select(
         "companies",
         params={
-            "select": "id,name,domain,website,city,icp_segment,industry",
+            "select": "id,name,domain,website,city,icp_segment,industry,track",
             "status": "eq.sourced",
+            "track": f"eq.{track}",
             "order": "created_at.asc",
             "limit": str(limit),
         },
@@ -602,18 +631,20 @@ async def list_companies_to_research(
     limit: int = 20,
     *,
     require_website: bool = True,
+    track: str = "OPT",
 ) -> list[dict[str, Any]]:
     """Companies sans research_json. On exige par défaut un website : pas de site =
     pas assez de matière pour un research utile, le coût LLM est gaspillé.
 
     `status='disqualified'` est aussi exclu pour ne pas brûler de tokens sur des
-    leads écartés.
+    leads écartés. Filtre `track` (défaut OPT) = isolation OPT/REACTI.
     """
     params: dict[str, str] = {
-        "select": "id,name,domain,website,city,icp_segment,industry,google_place_id,status",
+        "select": "id,name,domain,website,city,icp_segment,industry,google_place_id,status,track",
         "research_json": "is.null",
         "google_place_id": "not.is.null",
         "status": "neq.disqualified",
+        "track": f"eq.{track}",
         "order": "created_at.asc",
         "limit": str(limit),
     }

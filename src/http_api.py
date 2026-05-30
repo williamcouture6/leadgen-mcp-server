@@ -59,8 +59,8 @@ async def healthz() -> dict[str, str]:
 # ---------------- Sourcing ----------------
 
 @app.get("/sourcing/next-target", dependencies=[Depends(_require_auth)])
-async def next_target() -> dict[str, Any] | None:
-    t = await db_tools.next_sourcing_target()
+async def next_target(track: str = "OPT") -> dict[str, Any] | None:
+    t = await db_tools.next_sourcing_target(track=track)
     return t.model_dump() if t else None
 
 
@@ -101,8 +101,8 @@ async def insert_contact(payload: db_tools.ContactIn) -> dict[str, Any]:
 
 
 @app.get("/companies/to-enrich", dependencies=[Depends(_require_auth)])
-async def companies_to_enrich(limit: int = 50) -> list[dict[str, Any]]:
-    return await db_tools.list_companies_to_enrich(limit=limit)
+async def companies_to_enrich(limit: int = 50, track: str = "OPT") -> list[dict[str, Any]]:
+    return await db_tools.list_companies_to_enrich(limit=limit, track=track)
 
 
 # ---------------- Enrich (Apollo, Phase 1B) ----------------
@@ -433,6 +433,7 @@ class RunWf2In(BaseModel):
     Instantly (warmup), pas Apollo.
     """
     limit: int = 20
+    track: str = "OPT"  # OPT | REACTI — isole le backlog enrichi par track
     max_contacts: int = 2
     reveal_personal_emails: bool = False
 
@@ -456,7 +457,7 @@ class RunWf2Out(BaseModel):
 
 @app.post("/wf2/run", dependencies=[Depends(_require_auth)], response_model=RunWf2Out)
 async def run_wf2(payload: RunWf2In) -> RunWf2Out:
-    backlog = await db_tools.list_companies_to_enrich(limit=payload.limit)
+    backlog = await db_tools.list_companies_to_enrich(limit=payload.limit, track=payload.track)
 
     items: list[RunWf2Item] = []
     enriched = disqualified = failed = total_contacts = 0
@@ -510,6 +511,7 @@ class RunWf1In(BaseModel):
     icp_segment: str | None = None
     max_pages: int = 3
     dry_run: bool = False
+    track: str = "OPT"  # OPT | REACTI — catalogue + tag à l'insert
 
 
 class RunWf1Out(BaseModel):
@@ -530,7 +532,7 @@ async def run_wf1(payload: RunWf1In) -> RunWf1Out:
         city, sector, icp = payload.city, payload.sector, payload.icp_segment
         target_meta = {"city": city, "sector": sector, "icp_segment": icp, "reason": "explicit"}
     else:
-        t = await db_tools.next_sourcing_target()
+        t = await db_tools.next_sourcing_target(track=payload.track)
         if not t:
             return RunWf1Out(
                 target=None, run_id=None, total_results=0,
@@ -586,6 +588,7 @@ async def run_wf1(payload: RunWf1In) -> RunWf1Out:
                         google_types=p.google_types,
                         google_rating=p.google_rating,
                         google_reviews_count=p.google_reviews_count,
+                        track=payload.track,
                         raw_payload=p.raw_payload,
                     )
                 )
@@ -630,10 +633,11 @@ async def run_wf1(payload: RunWf1In) -> RunWf1Out:
 async def companies_to_research(
     limit: int = 20,
     require_website: bool = True,
+    track: str = "OPT",
 ) -> list[dict[str, Any]]:
     """Companies sans research_json. Utilisé par n8n pour visualiser le backlog."""
     return await db_tools.list_companies_to_research(
-        limit=limit, require_website=require_website
+        limit=limit, require_website=require_website, track=track
     )
 
 
@@ -895,14 +899,14 @@ def _contact_for_prompt(contact_row: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/contacts/to-personalize", dependencies=[Depends(_require_auth)])
 async def contacts_to_personalize(
-    limit: int = 20, max_per_company: int = 1,
+    limit: int = 20, max_per_company: int = 1, track: str = "OPT",
 ) -> list[dict[str, Any]]:
     """Backlog WF-4 : contacts avec email + company.research_json + sans draft outbound.
 
     `max_per_company=1` (défaut) : un seul contact par entreprise, prioritisé.
     """
     return await db_tools.list_contacts_to_personalize(
-        limit=limit, max_per_company=max_per_company,
+        limit=limit, max_per_company=max_per_company, track=track,
     )
 
 
