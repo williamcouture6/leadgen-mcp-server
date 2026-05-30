@@ -787,6 +787,7 @@ class RunWf3In(BaseModel):
     model: str = "claude-sonnet-4-6"
     require_website: bool = True
     inter_company_sleep_seconds: float = 3.0
+    track: str = "OPT"  # OPT | REACTI — isole le backlog research par track
 
 
 class RunWf3Item(BaseModel):
@@ -810,7 +811,7 @@ async def run_wf3(payload: RunWf3In) -> RunWf3Out:
     import asyncio
 
     backlog = await db_tools.list_companies_to_research(
-        limit=payload.limit, require_website=payload.require_website
+        limit=payload.limit, require_website=payload.require_website, track=payload.track
     )
 
     items: list[RunWf3Item] = []
@@ -1115,6 +1116,7 @@ class RunWf4In(BaseModel):
     model: str = "claude-sonnet-4-6"
     persist: bool = True
     max_per_company: int = 1
+    track: str = "OPT"  # OPT | REACTI — isole le backlog personalize par track
 
 
 class RunWf4Item(BaseModel):
@@ -1139,7 +1141,7 @@ class RunWf4Out(BaseModel):
 @app.post("/wf4/run", dependencies=[Depends(_require_auth)], response_model=RunWf4Out)
 async def run_wf4(payload: RunWf4In) -> RunWf4Out:
     backlog = await db_tools.list_contacts_to_personalize(
-        limit=payload.limit, max_per_company=payload.max_per_company,
+        limit=payload.limit, max_per_company=payload.max_per_company, track=payload.track,
     )
 
     # Fetch Cal.com une seule fois pour tout le batch — évite N appels API et
