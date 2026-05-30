@@ -256,7 +256,7 @@ def check_length(
     max_words: int | None = None,
 ) -> CheckResult:
     if max_words is None:
-        max_words = 110 if (template or "").upper() == "B" else 90
+        max_words = 115 if (template or "").upper() == "B" else 95
     body = _body_without_signature(email_body)
     n = len(body.split())
     in_range = min_words <= n <= max_words
