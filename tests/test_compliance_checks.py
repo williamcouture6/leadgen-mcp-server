@@ -163,6 +163,34 @@ def test_fake_social_proof_neutral_phrase_passes() -> None:
     assert r.passed
 
 
+# ---------------- check_cta_present (forme réelle du prompt) ----------------
+
+def test_cta_present_passes_on_generic_call_invite() -> None:
+    """Le prompt génère 'un appel rapide ?' (fallback sans créneaux) — doit passer."""
+    body = "Bonjour, votre clinique m'intéresse.\n\nUn appel rapide cette semaine ?\n\n—\nWilliam"
+    r = cc.check_cta_present(body)
+    assert r.passed
+
+
+def test_cta_present_passes_on_slotted_call_invite() -> None:
+    """CTA avec jour/heure Cal.com + 'un appel rapide ?' — doit passer."""
+    body = "Mercredi 13 mai à 18h ou jeudi 14 mai à 18h30, un appel rapide ?\n\n—\nWilliam"
+    r = cc.check_cta_present(body)
+    assert r.passed
+
+
+def test_cta_present_still_passes_on_explicit_minutes() -> None:
+    """Rétrocompat: l'ancienne forme 'X minutes ?' reste acceptée."""
+    r = cc.check_cta_present("Bonjour, 15 minutes ?\n\n—\nWilliam")
+    assert r.passed
+
+
+def test_cta_present_fails_when_no_invite_and_no_question() -> None:
+    """Pas d'invitation à un appel ni de question → CTA faible."""
+    r = cc.check_cta_present("Bonjour, voici une idée pour votre clinique.\n\n—\nWilliam")
+    assert not r.passed
+
+
 # ---------------- 4. cta_slots_real (anti-créneau-inventé) ----------------
 
 def test_cta_slots_real_skipped_when_no_slots_provided() -> None:

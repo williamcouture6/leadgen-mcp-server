@@ -271,15 +271,24 @@ def check_length(
 
 def check_cta_present(email_body: str) -> CheckResult:
     body = _body_without_signature(email_body).lower()
-    has_time_ask = bool(re.search(r"\b(15|20|25|30)\s*minutes?\b", body))
     has_question = "?" in body
-    passed = has_time_ask and has_question
+    # Le prompt (personalize.md) génère le CTA sous la forme "...un appel rapide ?"
+    # — avec ou sans jour/heure piochés dans Cal.com — et JAMAIS sous la forme
+    # "X minutes". On accepte donc l'invitation à un appel, OU une demande
+    # explicitement temps-bornée ("15/20/25/30 minutes") pour rétrocompat.
+    has_call_invite = bool(re.search(r"\bun appel\b", body))
+    has_time_ask = bool(re.search(r"\b(15|20|25|30)\s*minutes?\b", body))
+    passed = has_question and (has_call_invite or has_time_ask)
     return CheckResult(
         name="cta_present",
         passed=passed,
         severity="warn",
-        message="CTA temps-borné + question présents" if passed else "CTA faible ou absent",
-        matches=[] if passed else [f"time_ask={has_time_ask}", f"question={has_question}"],
+        message="CTA (invitation à un appel + question) présent" if passed else "CTA faible ou absent",
+        matches=[] if passed else [
+            f"call_invite={has_call_invite}",
+            f"time_ask={has_time_ask}",
+            f"question={has_question}",
+        ],
     )
 
 
