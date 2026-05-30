@@ -11,6 +11,8 @@ import src.tools.db as dbt
 REACTI_VERTICALS = {
     "entrepreneur en déneigement",
     "paysagiste",
+    "tonte de gazon",
+    "tonte de pelouse",
     "exterminateur",
     "piscines et spas",
     "lavage de vitres",

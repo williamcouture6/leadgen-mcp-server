@@ -109,6 +109,8 @@ REACTI_SECTOR_CATALOG: dict[str, list[str]] = {
     "commerce_local": [
         "entrepreneur en déneigement",
         "paysagiste",
+        "tonte de gazon",
+        "tonte de pelouse",
         "exterminateur",
         "piscines et spas",
         "lavage de vitres",
