@@ -353,6 +353,78 @@ class InsertContactOut(BaseModel):
     contact_id: str | None = None
 
 
+def _consent_basis_for_contact(
+    *, source: str | None, email_verification_source: str | None,
+) -> str:
+    """Base légale LCAP/Loi 25 inférée de la provenance de l'email.
+
+    - Email publié manifestement sur le site public de l'entreprise (scraping WF-3)
+      → `implied_conspicuous` (CASL 10(9)(b) : publication conspicue + courriel
+      pertinent au rôle). On stocke l'URL source comme preuve.
+    - Email via Apollo (fournisseur B2B) ou autre → `legitimate_interest` : on n'a
+      PAS de preuve de publication conspicue, donc on enregistre honnêtement une
+      base plus faible, à confirmer/upgrader si opt-in express obtenu plus tard.
+    """
+    src = (email_verification_source or source or "").lower()
+    if "website" in src or "scrape" in src:
+        return "implied_conspicuous"
+    return "legitimate_interest"
+
+
+async def _record_consent(
+    contact_id: str,
+    *,
+    source: str | None,
+    email_verification_source: str | None,
+    raw_payload: dict[str, Any] | None,
+    recorded_by: str = "auto_insert_contact",
+) -> None:
+    """Journalise la base légale d'un contact dans `consent_registry` (Loi 25/LCAP).
+
+    Idempotent : `consent_registry` a un unique (contact_id, basis) ; on vérifie
+    l'existence avant insert. NON bloquant : toute erreur est avalée pour ne
+    jamais empêcher la création du contact (le log de consentement est un
+    complément de preuve, pas un prérequis au pipeline d'acquisition).
+    """
+    try:
+        basis = _consent_basis_for_contact(
+            source=source, email_verification_source=email_verification_source,
+        )
+        existing = await db.select(
+            "consent_registry",
+            params={
+                "select": "id",
+                "contact_id": f"eq.{contact_id}",
+                "basis": f"eq.{basis}",
+                "limit": "1",
+            },
+        )
+        if existing:
+            return
+        raw = raw_payload or {}
+        source_url = raw.get("source_url") if isinstance(raw, dict) else None
+        if basis == "implied_conspicuous":
+            desc = "Courriel publié publiquement sur le site de l'entreprise (scraping WF-3)."
+        else:
+            desc = (
+                f"Courriel professionnel obtenu via {source or 'fournisseur tiers'} "
+                "(B2B) — pas de preuve de publication conspicue ; base à confirmer."
+            )
+        await db.insert(
+            "consent_registry",
+            {
+                "contact_id": contact_id,
+                "basis": basis,
+                "source_url": source_url,
+                "source_description": desc,
+                "evidence_json": {"source": source, "email_source": email_verification_source},
+                "recorded_by": recorded_by,
+            },
+        )
+    except Exception:  # noqa: BLE001 — jamais bloquant
+        pass
+
+
 async def insert_contact(payload: ContactIn) -> InsertContactOut:
     """Insert contact, dédup sur (company_id, email)."""
     if not payload.email:
@@ -372,7 +444,17 @@ async def insert_contact(payload: ContactIn) -> InsertContactOut:
 
     row = payload.model_dump(exclude_none=False)
     rows = await db.insert("contacts", row)
-    return InsertContactOut(status="inserted", contact_id=rows[0]["id"])
+    contact_id = rows[0]["id"]
+
+    # Loi 25/LCAP : journaliser la base légale dès la création (compliance by design).
+    await _record_consent(
+        contact_id,
+        source=payload.source,
+        email_verification_source=payload.email_verification_source,
+        raw_payload=payload.raw_payload,
+    )
+
+    return InsertContactOut(status="inserted", contact_id=contact_id)
 
 
 async def mark_company_enriched(company_id: str, status: str = "enriched") -> dict[str, Any]:
