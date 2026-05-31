@@ -73,6 +73,71 @@ async def post_alert(payload: AlertIn) -> dict[str, Any]:
     return {"ok": ok, "category": payload.category}
 
 
+class DailySummaryIn(BaseModel):
+    category: str = "alerts"           # canal Slack du résumé
+    tracks: list[str] = ["OPT", "REACTI"]
+    post: bool = True                  # False = renvoie les chiffres sans poster (test)
+
+
+@app.post("/summary/daily", dependencies=[Depends(_require_auth)])
+async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
+    """Résumé quotidien de l'activité pipeline par track (sourcées/emails/drafts/
+    envoyés/réponses) + RDV → Slack. Compté depuis minuit America/Toronto.
+    Appelé par un cron n8n en fin de journée."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from . import supabase_client as sb
+    from .lib import slack as slack_lib
+
+    tz = ZoneInfo("America/Toronto")
+    start_local = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff = start_local.astimezone(timezone.utc).isoformat()
+    date_str = start_local.strftime("%Y-%m-%d")
+
+    async def _cnt(table: str, extra: dict[str, str], date_field: str = "created_at") -> int:
+        params = {"select": "id", date_field: f"gte.{cutoff}", **extra}
+        rows = await sb.select(table, params=params)
+        return len(rows)
+
+    lines: list[str] = []
+    totals: dict[str, Any] = {}
+    for tk in payload.tracks:
+        t = {"track": f"eq.{tk}"}
+        sourced = await _cnt("companies", t)
+        emails = await _cnt("contacts", t)
+        drafts = await _cnt("messages", {**t, "direction": "eq.outbound", "status": "eq.draft"})
+        sent = await _cnt(
+            "messages", {**t, "direction": "eq.outbound", "status": "neq.draft"},
+            date_field="scheduled_at",
+        )
+        replies = await _cnt("messages", {**t, "direction": "eq.inbound"})
+        totals[tk] = {
+            "sourced": sourced, "emails": emails, "drafts": drafts,
+            "sent": sent, "replies": replies,
+        }
+        lines.append(
+            f"*{tk}* — sourcées {sourced} · emails {emails} · drafts {drafts} · "
+            f"envoyés {sent} · réponses {replies}"
+        )
+
+    bookings = await _cnt("booking_events", {})
+    totals["bookings_total"] = bookings
+
+    text = (
+        f"📊 *Résumé quotidien — {date_str}*\n"
+        + "\n".join(lines)
+        + f"\n📅 RDV bookés: {bookings}"
+    )
+
+    posted = False
+    if payload.post:
+        posted = await slack_lib.notify(
+            text=text, context="daily_summary", category=payload.category
+        )
+    return {"date": date_str, "totals": totals, "posted": posted, "text": text}
+
+
 # ---------------- Sourcing ----------------
 
 @app.get("/sourcing/next-target", dependencies=[Depends(_require_auth)])
