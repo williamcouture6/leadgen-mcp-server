@@ -212,7 +212,7 @@ async def _get_company(company_id: str) -> dict[str, Any] | None:
         params={
             # research_json + industry/google_types alimentent le brief pré-RDV
             # Slack (WF-8) — google_types sert à résoudre la verticale REACTI.
-            "select": "id,name,city,icp_segment,industry,google_types,research_json",
+            "select": "id,name,city,icp_segment,industry,google_types,research_json,track",
             "id": f"eq.{company_id}",
             "limit": "1",
         },
@@ -468,6 +468,8 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
         f"{contact.get('first_name') or ''} {contact.get('last_name') or ''}"
     ).strip() or payload.attendee_name or payload.attendee_email
     company_name = (company or {}).get("name")
+    track = (company or {}).get("track")
+    tp = slack_lib._track_prefix(track)
 
     if payload.trigger == "BOOKING_CREATED":
         # REACTI : si la verticale de la boîte matche la grille, on joint le
@@ -485,6 +487,7 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
             event_type=payload.event_type_title,
             research_json=(company or {}).get("research_json"),
             reacti_ticket=reacti_ticket,
+            track=track,
         )
         await slack_lib.notify(
             text=fallback, blocks=blocks, context="wf8_booked", category="bookings",
@@ -493,7 +496,7 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
     elif payload.trigger == "BOOKING_RESCHEDULED":
         await slack_lib.notify(
             text=(
-                f"🔄 RDV replanifié — {contact_name}"
+                f"{tp}🔄 RDV replanifié — {contact_name}"
                 + (f" @ {company_name}" if company_name else "")
                 + f" — nouvelle date: {payload.start_time_iso or '?'}"
             ),
@@ -505,7 +508,7 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
         reason_str = f" — raison: {payload.cancellation_reason}" if payload.cancellation_reason else ""
         await slack_lib.notify(
             text=(
-                f"❌ RDV annulé — {contact_name}"
+                f"{tp}❌ RDV annulé — {contact_name}"
                 + (f" @ {company_name}" if company_name else "")
                 + reason_str
             ),
@@ -516,7 +519,7 @@ async def handle_calcom_booking(payload: CalcomBookingPayload) -> HandleBookingO
     elif payload.trigger == "MEETING_ENDED":
         await slack_lib.notify(
             text=(
-                f"🏁 RDV terminé — {contact_name}"
+                f"{tp}🏁 RDV terminé — {contact_name}"
                 + (f" @ {company_name}" if company_name else "")
             ),
             context="wf8_ended",

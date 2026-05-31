@@ -299,7 +299,7 @@ async def _get_company(company_id: str) -> dict[str, Any] | None:
     rows = await db.select(
         "companies",
         params={
-            "select": "id,name,domain,city,icp_segment,industry,research_json",
+            "select": "id,name,domain,city,icp_segment,industry,research_json,track",
             "id": f"eq.{company_id}",
             "limit": "1",
         },
@@ -752,6 +752,7 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         f"{(contact_row or {}).get('last_name') or ''}"
     ).strip() or payload.lead_email
     company_name = (company_row or {}).get("name") or "(entreprise inconnue)"
+    company_track = (company_row or {}).get("track")
 
     if category == "unsubscribe":
         await _add_to_suppression(
@@ -918,6 +919,7 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             reply_preview=cleaned_reply or payload.reply_body_text,
             auto_reply_sent=auto_reply_sent,
             confidence=confidence,
+            track=company_track,
         )
         await slack_lib.notify(
             text=fallback, blocks=blocks, context="wf7_hot_lead", category="leads",
@@ -937,6 +939,7 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             confidence=confidence,
             reasoning=classifier_out.get("reasoning_one_line") or "(no reasoning)",
             reply_preview=cleaned_reply or payload.reply_body_text,
+            track=company_track,
         )
         await slack_lib.notify(
             text=fallback, blocks=blocks, context="wf7_review", category="leads",

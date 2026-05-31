@@ -112,6 +112,16 @@ def _kv_field(label: str, value: str) -> dict[str, Any]:
     return {"type": "mrkdwn", "text": f"*{label}*\n{value}"}
 
 
+def _track_prefix(track: str | None) -> str:
+    """Préfixe visible du track pour les notifs partagées OPT/REACTI (ex: '[REACTI] ').
+
+    Vide si track inconnu — la notif reste propre. Mis sur le fallback (notif mobile)
+    ET le header pour qu'on sache d'un coup d'œil d'où vient l'event.
+    """
+    t = (track or "").strip().upper()
+    return f"[{t}] " if t in ("OPT", "REACTI") else ""
+
+
 def build_hot_lead_blocks(
     *,
     contact_name: str,
@@ -120,17 +130,19 @@ def build_hot_lead_blocks(
     reply_preview: str,
     auto_reply_sent: bool,
     confidence: float | None = None,
+    track: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Format Slack pour un reply classé 'interested' (WF-7).
 
     Returns (fallback_text, blocks) — passer aux 2 args de `notify`.
     """
+    tp = _track_prefix(track)
     status = "Auto-reply envoyé (Cal.com link)" if auto_reply_sent else "À répondre manuellement"
-    fallback = f"🔥 Hot lead — {contact_name} @ {company_name} ({status})"
+    fallback = f"{tp}🔥 Hot lead — {contact_name} @ {company_name} ({status})"
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "🔥 Hot lead"},
+            "text": {"type": "plain_text", "text": f"{tp}🔥 Hot lead"},
         },
         {
             "type": "section",
@@ -167,13 +179,15 @@ def build_review_blocks(
     confidence: float,
     reasoning: str,
     reply_preview: str,
+    track: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Format Slack pour un reply en review manuel (classifier hésite / 'other')."""
-    fallback = f"⚠️ Review manuel — {contact_name} ({category}, conf {confidence:.0%})"
+    tp = _track_prefix(track)
+    fallback = f"{tp}⚠️ Review manuel — {contact_name} ({category}, conf {confidence:.0%})"
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "⚠️ Reply à reviewer"},
+            "text": {"type": "plain_text", "text": f"{tp}⚠️ Reply à reviewer"},
         },
         {
             "type": "section",
@@ -283,6 +297,7 @@ def build_booked_blocks(
     event_type: str | None = None,
     research_json: dict[str, Any] | None = None,
     reacti_ticket: "ReactiTicket | None" = None,
+    track: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Format Slack pour un meeting confirmé via Cal.com (WF-8).
 
@@ -295,7 +310,8 @@ def build_booked_blocks(
     pour arriver à l'appel avec les chiffres en tête. Absent pour un prospect OPT
     => le brief reste strictement inchangé.
     """
-    fallback = f"✅ RDV booké — {contact_name} le {meeting_start_iso}"
+    tp = _track_prefix(track)
+    fallback = f"{tp}✅ RDV booké — {contact_name} le {meeting_start_iso}"
     fields = [_kv_field("Contact", contact_name)]
     if contact_email:
         fields.append(_kv_field("Email", contact_email))
@@ -308,7 +324,7 @@ def build_booked_blocks(
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "✅ Meeting booké"},
+            "text": {"type": "plain_text", "text": f"{tp}✅ Meeting booké"},
         },
         {"type": "section", "fields": fields},
     ]
