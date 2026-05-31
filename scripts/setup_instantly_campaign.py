@@ -20,7 +20,7 @@ Ce que tu dois faire manuellement après :
     - UI Instantly → Campaign settings → Footer / Signature : coller un bloc
       texte avec [nom légal], [adresse postale], "{{unsubscribe_link}}".
     - Vérifier visuellement le template rendu.
-    - Activer la campagne le 27 mai 2026 (fin warmup).
+    - Activer la campagne le 1 juin 2026 (fin warmup).
 """
 from __future__ import annotations
 
@@ -190,7 +190,7 @@ def main() -> int:
     print("  1. Ouvrir la campagne → Settings → Footer / Signature")
     print("     coller : '[Nom légal] · [Adresse postale] · Désabo : {{unsubscribe_link}}'")
     print("  2. Vérifier le rendu de la sequence step 1 (subject/body)")
-    print("  3. NE PAS activer la campagne avant le 27 mai 2026")
+    print("  3. NE PAS activer la campagne avant le 1 juin 2026")
     print()
     print("Ensuite pour valider côté code :")
     print("  curl -H \"Authorization: Bearer $AGENTS_HTTP_TOKEN\" \\")
