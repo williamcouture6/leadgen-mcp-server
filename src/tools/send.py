@@ -328,6 +328,15 @@ class RunWf6In(BaseModel):
     dry_run: bool = False
     # Override le daily cap (défaut: env INSTANTLY_DAILY_CAP ou 10).
     daily_cap: int | None = None
+    track: str = "OPT"  # OPT | REACTI — filtre les drafts + choisit la campagne Instantly
+
+
+def _campaign_for_track(track: str) -> str | None:
+    """Campagne Instantly selon le track. REACTI → INSTANTLY_CAMPAIGN_ID_REACTI ;
+    OPT/défaut → None (le lib instantly utilise INSTANTLY_CAMPAIGN_ID)."""
+    if track and track.strip().upper() == "REACTI":
+        return os.environ.get("INSTANTLY_CAMPAIGN_ID_REACTI", "").strip() or None
+    return None
 
 
 class RunWf6Item(BaseModel):
@@ -361,6 +370,17 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
     remaining = max(0, daily_cap - already)
     effective_limit = min(payload.limit, remaining)
 
+    track = (payload.track or "OPT").strip() or "OPT"
+    campaign = payload.campaign_id or _campaign_for_track(track)
+    # Garde : un track non-OPT DOIT avoir sa campagne dédiée, sinon on refuse —
+    # ne JAMAIS pousser des drafts REACTI vers la campagne OPT par défaut.
+    if track.upper() != "OPT" and not campaign:
+        return RunWf6Out(
+            processed=0, pushed=0, skipped_cap=0, skipped_warmup=0,
+            skipped_suppressed=0, skipped_other=0, errors=0,
+            daily_cap=daily_cap, already_pushed_today=already, items=[],
+        )
+
     items: list[RunWf6Item] = []
     pushed = sk_cap = sk_warm = sk_supp = sk_plat = sk_other = errors = 0
 
@@ -376,10 +396,11 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
     drafts = await db.select(
         "messages",
         params={
-            "select": "id,to_email,created_at",
+            "select": "id,to_email,created_at,track",
             "direction": "eq.outbound",
             "status": "eq.draft",
             "compliance_check_passed": "is.true",
+            "track": f"eq.{track}",
             "order": "created_at.asc",
             "limit": str(effective_limit),
         },
@@ -390,7 +411,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             res = await send_one_message(
                 SendMessageIn(
                     message_id=d["id"],
-                    campaign_id=payload.campaign_id,
+                    campaign_id=campaign,
                     dry_run=payload.dry_run,
                 )
             )
