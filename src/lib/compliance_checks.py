@@ -9,7 +9,9 @@ Lit les env vars suivantes :
   - LEGAL_COMPANY_ADDRESS    (LCAP: adresse postale)
   - UNSUBSCRIBE_URL          (LCAP: lien désabonnement)
   - DPO_EMAIL                (Loi 25: canal vie privée — warn only)
-  - WARMUP_END_DATE          (gate envoi pendant warmup Instantly)
+  - WARMUP_END_DATE          (gate envoi pendant warmup Instantly — FAIL-CLOSED:
+                              absent/invalide = BLOQUE l'envoi)
+  - WARMUP_DISABLED          (échappatoire explicite: 'true' = désactive le gate)
 """
 from __future__ import annotations
 
@@ -292,19 +294,43 @@ def check_cta_present(email_body: str) -> CheckResult:
     )
 
 
+def _warmup_disabled() -> bool:
+    """Échappatoire EXPLICITE pour désactiver le gate (warmup terminé / aucun
+    warmup requis). Doit être posée volontairement — jamais l'état par défaut."""
+    return os.environ.get("WARMUP_DISABLED", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def check_warmup_window(today: date | None = None) -> CheckResult:
-    raw = os.environ.get("WARMUP_END_DATE", "").strip()
-    if not raw:
+    # Désactivation explicite et volontaire du gate.
+    if _warmup_disabled():
         return CheckResult(
             "warmup_window", True, "block",
-            "WARMUP_END_DATE non configuré — gate désactivé", [],
+            "WARMUP_DISABLED=true — gate désactivé explicitement (envoi autorisé)", [],
+        )
+
+    raw = os.environ.get("WARMUP_END_DATE", "").strip()
+    if not raw:
+        # FAIL-CLOSED : absence de config = on BLOQUE. Une barrière de sécurité ne
+        # doit jamais s'ouvrir par oubli d'une variable d'env (sinon envoi accidentel).
+        return CheckResult(
+            "warmup_window", False, "block",
+            "WARMUP_END_DATE non configuré — envoi BLOQUÉ par sécurité (fail-closed)",
+            [
+                "Pour autoriser l'envoi : poser WARMUP_END_DATE=YYYY-MM-DD "
+                "(date passée si le warmup est terminé)",
+                "OU poser WARMUP_DISABLED=true si aucun warmup n'est requis",
+            ],
         )
     try:
         end_date = datetime.strptime(raw, "%Y-%m-%d").date()
     except ValueError:
+        # FAIL-CLOSED : config douteuse = on BLOQUE plutôt que d'envoyer à l'aveugle.
         return CheckResult(
-            "warmup_window", True, "block",
-            f"WARMUP_END_DATE format invalide ({raw!r}) — gate désactivé, attendu YYYY-MM-DD",
+            "warmup_window", False, "block",
+            f"WARMUP_END_DATE format invalide ({raw!r}) — envoi BLOQUÉ par sécurité, "
+            f"attendu YYYY-MM-DD",
             [f"valeur reçue: {raw!r}"],
         )
     today = today or date.today()

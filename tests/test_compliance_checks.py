@@ -278,20 +278,36 @@ def test_warmup_window_passes_after_end_date(monkeypatch: pytest.MonkeyPatch) ->
     assert r.passed
 
 
-def test_warmup_window_passes_when_env_var_absent(
+def test_warmup_window_blocks_when_env_var_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pas de WARMUP_END_DATE = gate désactivé (pas de blocage par défaut)."""
+    """FAIL-CLOSED : pas de WARMUP_END_DATE (ni WARMUP_DISABLED) = on BLOQUE.
+    Une barrière de sécurité ne doit jamais s'ouvrir par oubli d'une env var."""
     monkeypatch.delenv("WARMUP_END_DATE", raising=False)
+    monkeypatch.delenv("WARMUP_DISABLED", raising=False)
     r = cc.check_warmup_window()
-    assert r.passed
+    assert not r.passed
+    assert r.severity == "block"
 
 
-def test_warmup_window_passes_when_env_var_malformed(
+def test_warmup_window_blocks_when_env_var_malformed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Date malformée ne doit PAS bloquer la prod (fail-open intentionnel)."""
+    """FAIL-CLOSED : date malformée = config douteuse = on BLOQUE."""
+    monkeypatch.delenv("WARMUP_DISABLED", raising=False)
     monkeypatch.setenv("WARMUP_END_DATE", "pas-une-date")
+    r = cc.check_warmup_window()
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_warmup_window_passes_when_explicitly_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Échappatoire explicite : WARMUP_DISABLED=true autorise l'envoi même sans
+    WARMUP_END_DATE (cas warmup terminé / aucun warmup requis)."""
+    monkeypatch.delenv("WARMUP_END_DATE", raising=False)
+    monkeypatch.setenv("WARMUP_DISABLED", "true")
     r = cc.check_warmup_window()
     assert r.passed
 
