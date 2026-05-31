@@ -56,6 +56,23 @@ async def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+class AlertIn(BaseModel):
+    text: str
+    category: str = "errors"  # route vers SLACK_WEBHOOK_ERRORS (canal pannes pipeline)
+
+
+@app.post("/alert", dependencies=[Depends(_require_auth)])
+async def post_alert(payload: AlertIn) -> dict[str, Any]:
+    """Poste une alerte Slack. Utilisé par le workflow n8n 'Error Handler' pour
+    pinger les pannes de n'importe quel workflow (OPT + REACTI) dans le canal erreurs."""
+    from .lib import slack as slack_lib
+
+    ok = await slack_lib.notify(
+        text=payload.text, context="n8n_error_handler", category=payload.category
+    )
+    return {"ok": ok, "category": payload.category}
+
+
 # ---------------- Sourcing ----------------
 
 @app.get("/sourcing/next-target", dependencies=[Depends(_require_auth)])
