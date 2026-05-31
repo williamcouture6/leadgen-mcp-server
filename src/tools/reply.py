@@ -62,6 +62,12 @@ _DEFAULT_COMPOSER_MODEL = "claude-sonnet-4-6"
 # Sous ce seuil → flag hot lead + Slack ping pour review manuel.
 AUTO_REPLY_CONFIDENCE_THRESHOLD = 0.8
 
+# Plafond anti-boucle : nb max d'auto-réponses envoyées dans une même conversation.
+# Volontairement ÉLEVÉ — un lead légitime échange rarement autant avant de booker ;
+# c'est un filet de sécurité contre un ping-pong (ex. auto-répondeur côté lead),
+# PAS un limiteur de conversation normale. Au-delà → on ping pour review manuel.
+MAX_AUTO_REPLIES_PER_CONVERSATION = 5
+
 
 def _booking_url() -> str:
     """URL Cal.com publique à inclure dans les replies auto.
@@ -340,6 +346,51 @@ async def _upsert_conversation(
         )
     except Exception as e:  # noqa: BLE001 — non bloquant, juste log
         print(f"[reply] upsert conversation failed: {e!r}")
+
+
+async def _conversation_is_booked(contact_id: str | None) -> bool:
+    """True si une conversation du contact est déjà à l'état 'booked' (posé par
+    WF-8 quand un RDV est créé). Sert à NE PAS auto-répondre à un lead qui a déjà
+    pris rendez-vous (éviter de le ré-inviter à booker).
+
+    Fail-open sur la lecture : en cas d'erreur DB on retourne False pour ne pas
+    bloquer le flux normal (le pire cas = une auto-réponse de trop, déjà capée)."""
+    if not contact_id:
+        return False
+    try:
+        rows = await db.select(
+            "conversations",
+            params={
+                "select": "id",
+                "contact_id": f"eq.{contact_id}",
+                "state": "eq.booked",
+                "limit": "1",
+            },
+        )
+        return bool(rows)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _count_prior_auto_replies(contact_id: str | None) -> int:
+    """Nb d'auto-réponses déjà envoyées au contact (plafond anti-boucle).
+    Les auto-replies sont marqués `compliance_notes` commençant par
+    'auto_reply_to_interested'."""
+    if not contact_id:
+        return 0
+    try:
+        rows = await db.select(
+            "messages",
+            params={
+                "select": "id",
+                "contact_id": f"eq.{contact_id}",
+                "direction": "eq.outbound",
+                "compliance_notes": "like.auto_reply_to_interested*",
+            },
+        )
+        return len(rows)
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 async def _add_to_suppression(
@@ -789,12 +840,24 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         actions.append("ooo_logged")
 
     elif category == "interested":
-        await _update_contact_status(contact_id, "replied")
-        actions.append("contact_replied")
-        await _upsert_conversation(
-            contact_id=contact_id, campaign_id=campaign_id,
-            state="hot", last_direction="inbound",
-        )
+        # Gardes anti-boucle / anti-redondance (audit) :
+        #  - déjà 'booked' → ne pas régresser l'état ni auto-répondre (le lead a
+        #    déjà un RDV ; le ré-inviter à booker serait gênant).
+        #  - plafond d'auto-réponses atteint → on laisse la main à l'humain.
+        already_booked = await _conversation_is_booked(contact_id)
+        prior_auto_replies = await _count_prior_auto_replies(contact_id)
+        cap_reached = prior_auto_replies >= MAX_AUTO_REPLIES_PER_CONVERSATION
+
+        if already_booked:
+            # Ne pas downgrader la conversation 'booked' → 'hot' ni le statut.
+            actions.append("skipped_auto_reply_already_booked")
+        else:
+            await _update_contact_status(contact_id, "replied")
+            actions.append("contact_replied")
+            await _upsert_conversation(
+                contact_id=contact_id, campaign_id=campaign_id,
+                state="hot", last_direction="inbound",
+            )
 
         # Décider auto-reply ou review manuel
         eaccount = payload.eaccount or _sender_eaccount()
@@ -809,9 +872,13 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             and eaccount is not None
             and payload.provider_message_id_inbound  # requis pour reply_to_uuid
             and parent_compliance_ok
+            and not already_booked       # garde : lead déjà en RDV
+            and not cap_reached          # garde : plafond anti-boucle
         )
         if not parent_compliance_ok and parent is not None:
             actions.append("skipped_auto_reply_parent_not_compliant")
+        if cap_reached:
+            actions.append(f"skipped_auto_reply_cap_reached:{prior_auto_replies}")
 
         if can_auto_reply:
             # Fetch Cal.com slots
