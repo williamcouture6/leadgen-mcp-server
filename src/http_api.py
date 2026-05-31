@@ -50,6 +50,33 @@ def _require_auth(authorization: str | None = Header(default=None)) -> None:
 
 app = FastAPI(title="leadgen-mcp HTTP API", version="0.1.0")
 
+import logging
+
+_startup_log = logging.getLogger("leadgen.startup")
+
+
+@app.on_event("startup")
+async def _validate_env_on_startup() -> None:
+    """Fail-soft : loggue les env vars manquantes au démarrage (audit #10).
+
+    Ne bloque jamais le boot — un warning visible dans les logs Railway au deploy
+    vaut mieux qu'une feature qui no-op silencieusement des jours plus tard."""
+    from .config import validate_env
+
+    res = validate_env()
+    if res["missing_required"]:
+        _startup_log.error(
+            "ENV REQUISES MANQUANTES: %s — le serveur risque de ne pas fonctionner",
+            ", ".join(res["missing_required"]),
+        )
+    if res["missing_recommended"]:
+        _startup_log.warning(
+            "ENV recommandées manquantes (features dégradées): %s",
+            ", ".join(res["missing_recommended"]),
+        )
+    if not res["missing_required"] and not res["missing_recommended"]:
+        _startup_log.info("Config env OK (requises + recommandées présentes)")
+
 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:

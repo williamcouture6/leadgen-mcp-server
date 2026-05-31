@@ -31,3 +31,41 @@ class Settings(BaseModel):
 @lru_cache(maxsize=1)
 def settings() -> Settings:
     return Settings()
+
+
+# ----------------------------------------------------------------------
+# Validation des variables d'environnement au démarrage (audit #10)
+# ----------------------------------------------------------------------
+
+# Requises : le serveur est inutilisable sans (auth + accès DB).
+REQUIRED_ENV: tuple[str, ...] = (
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "AGENTS_HTTP_TOKEN",
+)
+
+# Recommandées : leur absence fait échouer SILENCIEUSEMENT une étape du pipeline
+# (pas le boot). On loggue un warning clair au démarrage pour attraper un
+# misconfig au deploy plutôt qu'au 1er envoi/cron.
+RECOMMENDED_ENV: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY",       # research / personalize / compliance / reply / meeting
+    "GOOGLE_PLACES_API_KEY",   # WF-1 sourcing
+    "INSTANTLY_API_KEY",       # WF-6 send + WF-7 poll
+    "INSTANTLY_CAMPAIGN_ID",   # WF-6 send OPT
+    "CALCOM_API_KEY",          # créneaux CTA (personalize / reply)
+    "CALCOM_WEBHOOK_SECRET",   # WF-8 booking webhook
+)
+
+
+def validate_env() -> dict[str, list[str]]:
+    """Liste les variables d'env manquantes (requises vs recommandées).
+
+    Ne lève PAS d'exception — retourne les listes pour que l'appelant décide
+    (le startup hook loggue ; il ne bloque pas le boot, fail-soft)."""
+    def _missing(names: tuple[str, ...]) -> list[str]:
+        return [n for n in names if not os.environ.get(n, "").strip()]
+
+    return {
+        "missing_required": _missing(REQUIRED_ENV),
+        "missing_recommended": _missing(RECOMMENDED_ENV),
+    }
