@@ -31,14 +31,15 @@ if TYPE_CHECKING:
 SLACK_WEBHOOK_ENV = "SLACK_WEBHOOK_URL"
 SLACK_TIMEOUT_SECONDS = 5.0  # court — on ne veut pas bloquer la pipeline
 
-Category = Literal["bookings", "leads", "alerts", "errors"]
+Category = Literal["bookings", "leads", "alerts", "errors", "summary"]
 
 # Mapping catégorie → env var dédiée. Si non set, on retombe sur SLACK_WEBHOOK_URL.
 _CATEGORY_ENV: dict[str, str] = {
     "bookings": "SLACK_WEBHOOK_BOOKINGS",
     "leads": "SLACK_WEBHOOK_LEADS",
     "alerts": "SLACK_WEBHOOK_ALERTS",
-    "errors": "SLACK_WEBHOOK_ERRORS",  # pannes pipeline (n8n error workflow)
+    "errors": "SLACK_WEBHOOK_ERRORS",    # pannes pipeline (n8n error workflow)
+    "summary": "SLACK_WEBHOOK_SUMMARY",  # résumé quotidien
 }
 
 
