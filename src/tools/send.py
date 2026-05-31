@@ -17,9 +17,17 @@ Logique :
   5. Update messages : status='queued', provider='instantly',
      provider_message_id=<lead_id Instantly>, scheduled_at=now().
 
-L'envoi réel se fera selon le schedule de la campagne Instantly. Un futur
-WF-8 (webhook) flippera status → 'sent' / 'delivered' / 'bounced' quand
-Instantly nous notifiera.
+L'envoi réel se fera selon le schedule de la campagne Instantly.
+
+⚠️ LIMITE CONNUE (audit 2026-05-31, #5 — sync différé) : il n'existe encore
+AUCUN mécanisme qui ramène le statut d'envoi depuis Instantly. Les messages
+restent donc en `status='queued'` indéfiniment ; ils ne passent jamais
+automatiquement à 'sent' / 'delivered' / 'bounced'. Conséquences :
+  - les hard bounces ne sont PAS ajoutés automatiquement à `suppression_list` ;
+  - les métriques "envoyés vs livrés vs bouncés" ne sont pas peuplées.
+Tant que ce sync n'est pas bâti (à faire dès les 1ers envois réels, quand le
+payload Instantly /emails type=sent + bounce sera observable), surveiller les
+bounces manuellement dans le dashboard Instantly. Voir docs/go-live-checklist.md.
 """
 from __future__ import annotations
 
