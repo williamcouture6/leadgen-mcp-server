@@ -304,6 +304,43 @@ async def list_emails(
         raise InstantlyError(f"Instantly /emails not JSON: {r.text[:200]}") from e
 
 
+async def get_lead(lead_id: str) -> dict[str, Any] | None:
+    """Récupère un lead par son id Instantly via GET /api/v2/leads/{id}.
+
+    Utilisé par WF-6 sync-status pour réconcilier le statut d'un message outbound.
+    Au push (add_lead_to_campaign), on a stocké l'id du LEAD dans
+    messages.provider_message_id — PAS l'id de l'email envoyé. On interroge donc
+    directement le lead (statut, compteurs sent/reply/bounce), ce qui contourne le
+    piège « id lead ≠ id email ».
+
+    Returns le dict lead, ou None si 404 (lead inconnu / supprimé du workspace).
+    Raises InstantlyError sur autre 4xx/5xx ou réseau après retries.
+
+    Ref: https://developer.instantly.ai/api/v2/lead/getlead
+    """
+    lid = (lead_id or "").strip()
+    if not lid:
+        raise InstantlyError("get_lead: lead_id vide")
+    url = f"{INSTANTLY_API_BASE}/leads/{lid}"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            r = await _http_get_with_retry(client, url, headers=_headers())
+        except httpx.HTTPError as e:
+            raise InstantlyError(
+                f"HTTP error Instantly get_lead after retries: {type(e).__name__}: {e}"
+            ) from e
+    if r.status_code == 404:
+        return None
+    if r.status_code >= 400:
+        raise InstantlyError(
+            f"Instantly /leads/{{id}} status {r.status_code}: {r.text[:300]}"
+        )
+    try:
+        return r.json()
+    except Exception as e:  # noqa: BLE001
+        raise InstantlyError(f"Instantly get_lead not JSON: {r.text[:200]}") from e
+
+
 async def get_campaign(campaign_id: str | None = None) -> dict[str, Any]:
     """Récupère les métadonnées d'une campagne. Utile pour healthcheck pré-envoi."""
     cid = (campaign_id or _campaign_id()).strip()

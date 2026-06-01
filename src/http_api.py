@@ -26,6 +26,7 @@ from .tools import personalize as personalize_tools
 from .tools import reply as reply_tools
 from .tools import research as research_tools
 from .tools import send as send_tools
+from .tools import send_status as send_status_tools
 
 
 def _expected_token() -> str | None:
@@ -1593,6 +1594,29 @@ async def send_healthcheck() -> dict[str, Any]:
         return {"ok": True, "campaign_id": camp.get("id"), "name": camp.get("name")}
     except Exception as e:  # noqa: BLE001 — endpoint diag, on veut tout voir
         return {"ok": False, "error_type": type(e).__name__, "error": str(e)[:500]}
+
+
+@app.post(
+    "/wf6/sync-status",
+    dependencies=[Depends(_require_auth)],
+    response_model=send_status_tools.SyncStatusOut,
+)
+async def wf6_sync_status(
+    payload: send_status_tools.SyncStatusIn,
+) -> send_status_tools.SyncStatusOut:
+    """Réconcilie le statut d'envoi des messages 'queued' avec Instantly (audit #5).
+
+    Pour chaque message outbound encore 'queued', interroge le lead Instantly
+    (par l'id stocké dans provider_message_id) et flippe le statut :
+    sent / bounced / replied. Sur hard bounce → ajoute l'email à suppression_list
+    (reason='hard_bounce') ; sur unsubscribe → suppression (opt_out) + contact
+    opted_out. Idempotent (ne touche que les 'queued').
+
+    `dry_run=true` : retourne les outcomes sans écrire en DB (QA / 1ère validation
+    du mapping des champs Instantly). Cron-friendly : à appeler ~toutes les 15 min
+    pendant les fenêtres d'envoi.
+    """
+    return await send_status_tools.sync_send_status(payload)
 
 
 # ---------------- Reply (Phase 2 — WF-7) ----------------

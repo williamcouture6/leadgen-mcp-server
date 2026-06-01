@@ -457,6 +457,48 @@ async def insert_contact(payload: ContactIn) -> InsertContactOut:
     return InsertContactOut(status="inserted", contact_id=contact_id)
 
 
+async def add_to_suppression(
+    *,
+    email: str | None = None,
+    domain: str | None = None,
+    reason: str = "manual",
+    source: str | None = None,
+    notes: str | None = None,
+) -> bool:
+    """Ajoute une adresse/domaine à `suppression_list` (idempotent sur email).
+
+    `suppression_list` est le point d'enforcement anti-renvoi : `send.py` vérifie
+    email + domaine contre cette table avant chaque push Instantly. `reason` doit
+    être une valeur de l'enum `suppression_reason` (opt_out, hard_bounce,
+    spam_complaint, dncl, manual, competitor).
+
+    NON bloquant : avale toute erreur (la suppression est un garde-fou, ne doit
+    jamais faire crasher le flow appelant). Retourne True si l'insert a réussi.
+    """
+    if not email and not domain:
+        return False
+    row: dict[str, Any] = {"reason": reason}
+    if email:
+        row["email"] = email
+    if domain:
+        row["domain"] = domain
+    if source:
+        row["source"] = source
+    if notes:
+        row["notes"] = notes
+    try:
+        if email:
+            # Idempotent : unique sur email → ré-insert silencieux.
+            await db.insert(
+                "suppression_list", row, on_conflict="email", ignore_duplicates=True
+            )
+        else:
+            await db.insert("suppression_list", row)
+        return True
+    except Exception:  # noqa: BLE001 — jamais bloquant
+        return False
+
+
 async def mark_company_enriched(company_id: str, status: str = "enriched") -> dict[str, Any]:
     return {
         "updated": len(

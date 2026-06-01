@@ -19,15 +19,12 @@ Logique :
 
 L'envoi réel se fera selon le schedule de la campagne Instantly.
 
-⚠️ LIMITE CONNUE (audit 2026-05-31, #5 — sync différé) : il n'existe encore
-AUCUN mécanisme qui ramène le statut d'envoi depuis Instantly. Les messages
-restent donc en `status='queued'` indéfiniment ; ils ne passent jamais
-automatiquement à 'sent' / 'delivered' / 'bounced'. Conséquences :
-  - les hard bounces ne sont PAS ajoutés automatiquement à `suppression_list` ;
-  - les métriques "envoyés vs livrés vs bouncés" ne sont pas peuplées.
-Tant que ce sync n'est pas bâti (à faire dès les 1ers envois réels, quand le
-payload Instantly /emails type=sent + bounce sera observable), surveiller les
-bounces manuellement dans le dashboard Instantly. Voir docs/go-live-checklist.md.
+SYNC DU STATUT (audit #5 — fermé 2026-05-31) : la réconciliation du statut
+d'envoi est faite par `tools/send_status.py` (`POST /wf6/sync-status`, cron
+WF-6b). Il interroge le LEAD Instantly via le `provider_message_id` stocké ici
+et flippe `messages.status` → 'sent' / 'bounced' / 'replied', + ajoute les hard
+bounces à `suppression_list`. Le mapping des champs Instantly reste à valider
+sur le 1er vrai bounce (cf `classify_lead_outcome` + docs/go-live-checklist.md).
 """
 from __future__ import annotations
 
