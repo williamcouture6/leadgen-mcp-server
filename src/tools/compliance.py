@@ -62,6 +62,7 @@ def _llm_judge(
     subject: str,
     research_json: dict[str, Any] | None,
     social_proof: list[dict[str, Any]] | None,
+    contact: dict[str, Any] | None = None,
     model: str = _DEFAULT_MODEL,
     max_tokens: int = 2500,
 ) -> dict[str, Any]:
@@ -74,7 +75,13 @@ def _llm_judge(
         f"## Email à juger\n\n"
         f"**Sujet**: {subject}\n\n"
         f"**Corps**:\n{body}\n\n"
-        f"## research_json (faits vérifiables sur la cible)\n"
+        f"## Destinataire (contact vérifié — source de vérité de l'identité)\n"
+        f"```json\n{json.dumps(contact or {}, ensure_ascii=False, indent=2)}\n```\n"
+        f"Le prénom/nom/titre ci-dessus viennent de la fiche contact vérifiée "
+        f"(`email_source`: apollo = enrichi+vérifié, website_scrape = site officiel). "
+        f"Ils sont ANCRÉS par cette fiche — ne les traite JAMAIS comme un fait inventé "
+        f"ni un contact_mismatch même s'ils n'apparaissent pas dans le research_json.\n\n"
+        f"## research_json (faits vérifiables sur l'ENTREPRISE — pas l'identité du contact)\n"
         f"```json\n{json.dumps(research_json or {}, ensure_ascii=False, indent=2)}\n```\n\n"
         f"## social_proof disponible\n"
         f"```json\n{json.dumps(social_proof or [], ensure_ascii=False, indent=2)}\n```\n"
@@ -129,6 +136,7 @@ async def compliance_check(
     research_json: dict[str, Any] | None,
     social_proof: list[dict[str, Any]],
     available_slots: list[dict[str, Any]],
+    contact: dict[str, Any] | None = None,
     skip_llm: bool = False,
     model: str = _DEFAULT_MODEL,
 ) -> ComplianceCheckOut:
@@ -172,7 +180,7 @@ async def compliance_check(
     if not skip_llm:
         try:
             llm_verdict = await asyncio.to_thread(
-                _llm_judge, body, subject, research_json, social_proof, model,
+                _llm_judge, body, subject, research_json, social_proof, contact, model,
             )
         except Exception as e:  # noqa: BLE001
             llm_verdict = {"error": f"LLM judge failed: {type(e).__name__}: {e}"}

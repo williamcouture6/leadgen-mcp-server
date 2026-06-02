@@ -1357,7 +1357,7 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
     contact_rows = await db.select(
         "contacts",
         params={
-            "select": "id,company_id",
+            "select": "id,company_id,first_name,last_name,title,email_verification_source",
             "id": f"eq.{contact_id}",
             "limit": "1",
         },
@@ -1369,6 +1369,16 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             error_text="contact_not_found",
         )
     company_id = contact_rows[0].get("company_id")
+    # Destinataire vérifié = source de vérité de l'identité (prénom/titre), distincte du
+    # research_json (scrape du site/page équipe). Sans ça, le juge LLM flagge à tort un
+    # contact Apollo (OPT) absent de la page équipe comme "inventé". Track-agnostic :
+    # email_source = apollo (OPT) | website_scrape (REACTI). Voir compliance.md §7.
+    contact = {
+        "first_name": contact_rows[0].get("first_name"),
+        "last_name": contact_rows[0].get("last_name"),
+        "title": contact_rows[0].get("title"),
+        "email_source": contact_rows[0].get("email_verification_source"),
+    }
 
     company_rows = await db.select(
         "companies",
@@ -1422,6 +1432,7 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             subject=msg.get("subject") or "",
             template_used=template_used,
             research_json=research_json,
+            contact=contact,
             social_proof=social_proof,
             available_slots=available_slots,
             skip_llm=payload.skip_llm,
