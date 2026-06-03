@@ -1467,10 +1467,16 @@ class RunWf5In(BaseModel):
 
     Limite : drafts avec `compliance_check_passed IS NULL` AND `status='draft'`.
     Re-traite ceux dont les notes contiennent "llm_error" (transient).
+
+    `concurrency` : nb de drafts jugés en parallèle (sémaphore bornée). Garde
+    l'appel `/wf5/run` court — 20 en série ≈ 130s déclenchait un 502 edge Railway.
+    `inter_message_sleep_seconds` : conservé pour rétro-compat, ignoré (la
+    sémaphore régule désormais la charge Anthropic).
     """
     limit: int = 20
     skip_llm: bool = False
     model: str = "claude-sonnet-4-6"
+    concurrency: int = 4
     inter_message_sleep_seconds: float = 2.0
 
 
@@ -1511,31 +1517,40 @@ async def run_wf5(payload: RunWf5In) -> RunWf5Out:
         },
     )
 
+    sem = asyncio.Semaphore(max(1, payload.concurrency))
+
+    async def _judge_one(
+        draft: dict[str, Any],
+    ) -> tuple[dict[str, Any], compliance_tools.ComplianceCheckOut | None, str | None]:
+        async with sem:
+            try:
+                res = await compliance_check(
+                    ComplianceCheckIn(
+                        message_id=draft["id"],
+                        skip_llm=payload.skip_llm,
+                        model=payload.model,
+                        persist=True,
+                    )
+                )
+                return draft, res, None
+            except Exception as e:  # noqa: BLE001
+                return draft, None, repr(e)
+
+    # Juge les drafts en parallèle (borné par `concurrency`) — garde l'appel HTTP
+    # n8n unique ET court, vs ~130s en série qui déclenchait un 502 edge Railway.
+    results = await asyncio.gather(*(_judge_one(d) for d in drafts))
+
     items: list[RunWf5Item] = []
     approved = needs_revision = blocked = errors = 0
-    sleep_s = max(0.0, payload.inter_message_sleep_seconds)
-
-    for idx, draft in enumerate(drafts):
-        try:
-            res = await compliance_check(
-                ComplianceCheckIn(
-                    message_id=draft["id"],
-                    skip_llm=payload.skip_llm,
-                    model=payload.model,
-                    persist=True,
-                )
-            )
-        except Exception as e:  # noqa: BLE001
+    for draft, res, err in results:
+        if res is None:
             errors += 1
             items.append(RunWf5Item(
                 message_id=draft["id"], subject=draft.get("subject"),
                 verdict="error", send_decision="DO_NOT_SEND",
-                error_text=repr(e),
+                error_text=err,
             ))
-            if sleep_s > 0 and idx < len(drafts) - 1:
-                await asyncio.sleep(sleep_s)
             continue
-
         if res.verdict == "approved":
             approved += 1
         elif res.verdict == "needs_revision":
@@ -1544,15 +1559,11 @@ async def run_wf5(payload: RunWf5In) -> RunWf5Out:
             blocked += 1
         else:
             errors += 1
-
         items.append(RunWf5Item(
             message_id=draft["id"], subject=draft.get("subject"),
             verdict=res.verdict, send_decision=res.send_decision,
             duration_ms=res.duration_ms, error_text=res.error_text,
         ))
-
-        if sleep_s > 0 and idx < len(drafts) - 1:
-            await asyncio.sleep(sleep_s)
 
     return RunWf5Out(
         processed=len(items), approved=approved,
