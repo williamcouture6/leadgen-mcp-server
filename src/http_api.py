@@ -883,20 +883,22 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
 
 
 class RunWf3In(BaseModel):
-    """Pass complet WF-3 : prend N companies sans research_json, les traite séquentiellement.
+    """Pass complet WF-3 : prend N companies sans research_json, les traite en parallèle borné.
 
-    On reste séquentiel volontairement — l'API Anthropic et Google Places ont des
-    rate limits, et un cron quotidien sur 10-20 companies tolère bien 30s par item.
+    `concurrency` : nb de companies recherchées en parallèle (sémaphore bornée). Garde
+    l'appel `/wf3/run` court — 10 en série ≈ 270-300s déclenchait un 502 edge Railway
+    (timeout ~300s). En parallèle borné à 4, un lot de 10 tient en ~80-100s. Le retry
+    interne de `_call_llm` (tenacity backoff) absorbe les 529 Anthropic transitoires ;
+    plus besoin d'espacer les appels manuellement.
 
-    `inter_company_sleep_seconds` (défaut 3s) espace les appels Anthropic pour éviter
-    les pics qui déclenchent des 529 Overloaded en cascade. Combiné au retry interne
-    de `_call_llm`, on absorbe les saturations transitoires sans laisser de companies
-    en erreur. 0 = pas de pause (pour test).
+    `inter_company_sleep_seconds` : conservé pour rétro-compat de l'API, mais ignoré
+    depuis le passage en parallèle (le sémaphore borne déjà la pression sur Anthropic).
     """
     limit: int = 10
     model: str = "claude-sonnet-4-6"
     require_website: bool = True
-    inter_company_sleep_seconds: float = 3.0
+    concurrency: int = 4
+    inter_company_sleep_seconds: float = 3.0  # déprécié — ignoré (cf. docstring)
     track: str = "OPT"  # OPT | REACTI — isole le backlog research par track
 
 
@@ -924,26 +926,34 @@ async def run_wf3(payload: RunWf3In) -> RunWf3Out:
         limit=payload.limit, require_website=payload.require_website, track=payload.track
     )
 
+    sem = asyncio.Semaphore(max(1, payload.concurrency))
+
+    async def _research_one(
+        co: dict[str, Any],
+    ) -> tuple[dict[str, Any], "ResearchCompanyByIdOut | None", str | None]:
+        async with sem:
+            try:
+                res = await research_company_by_id(
+                    ResearchCompanyByIdIn(company_id=co["id"], model=payload.model)
+                )
+                return co, res, None
+            except Exception as e:  # noqa: BLE001
+                return co, None, repr(e)
+
+    # Recherche les companies en parallèle (borné par `concurrency`) — garde l'appel
+    # HTTP n8n unique ET court, vs ~270-300s en série qui déclenchait un 502 edge Railway.
+    results = await asyncio.gather(*(_research_one(co) for co in backlog))
+
     items: list[RunWf3Item] = []
     succeeded = failed = skipped = 0
-    sleep_s = max(0.0, payload.inter_company_sleep_seconds)
-
-    for idx, co in enumerate(backlog):
-        try:
-            res = await research_company_by_id(
-                ResearchCompanyByIdIn(company_id=co["id"], model=payload.model)
-            )
-        except Exception as e:  # noqa: BLE001
+    for co, res, err in results:
+        if res is None:
             failed += 1
             items.append(RunWf3Item(
                 company_id=co["id"], name=co.get("name"),
-                status="error", error_text=repr(e),
+                status="error", error_text=err,
             ))
-            # Continue avec sleep même en cas d'erreur (évite hammer si problème global).
-            if sleep_s > 0 and idx < len(backlog) - 1:
-                await asyncio.sleep(sleep_s)
             continue
-
         if res.status == "ok":
             succeeded += 1
         elif res.status.startswith("skipped"):
@@ -955,10 +965,6 @@ async def run_wf3(payload: RunWf3In) -> RunWf3Out:
             status=res.status, duration_ms=res.duration_ms,
             error_text=res.error_text,
         ))
-        # Petit délai entre companies pour ne pas saturer Anthropic ni Google Places.
-        # 3s = compromis raisonnable (10 companies → +30s total, négligeable sur cron).
-        if sleep_s > 0 and idx < len(backlog) - 1:
-            await asyncio.sleep(sleep_s)
 
     return RunWf3Out(
         processed=len(items), succeeded=succeeded, failed=failed,
