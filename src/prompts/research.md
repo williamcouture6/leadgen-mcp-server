@@ -63,4 +63,4 @@ Tu n'écris pas l'email. Tu extrais des **faits vérifiables et des signaux** �
 - **Tech-savvy = disqualifiant** si élevé: si tu vois "chatbot", "assistant virtuel", "agence numérique partenaire", "powered by [outil IA]" sur le site → mets `disqualifications` non vide.
 - **Taille hors plage = disqualifiant**: si >1000 reviews ET multiples succursales mentionnées → probablement trop gros (>50 employés). Si <20 reviews et un seul tech mentionné → probablement one-person shop.
 
-Réponds uniquement avec le JSON, rien d'autre.
+Retourne ton résultat en appelant l'outil `save_research` avec ces champs (mets `null` ou un tableau vide pour ce que tu ne sais pas — n'invente rien).

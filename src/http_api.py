@@ -266,6 +266,11 @@ APOLLO_INDUSTRIES_NEVER_ENRICH = frozenset({
 # Seuil 300 = catch Stripe/Shopify/Square/Yocale tout en gardant les chaînes QC.
 APOLLO_MAX_EMPLOYEES_THRESHOLD = 300
 
+# Au-delà de ce nombre d'échecs research cumulés sur une même company, on la
+# disqualifie pour qu'elle arrête de boucler dans le backlog WF-3 (voir handler
+# d'erreur de /research/company).
+_RESEARCH_MAX_FAILURES = 3
+
 
 def _domain_from_website(website: str | None) -> str | None:
     """Extrait 'acme.com' depuis 'https://www.acme.com/whatever'.
@@ -815,6 +820,29 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
                     error_text=repr(e),
                 )
             )
+        except Exception:  # noqa: BLE001
+            pass
+        # Garde-fou anti-coincement : `list_companies_to_research` re-sélectionne
+        # toute company avec research_json=null, donc un échec récurrent (JSON
+        # cassé, site/place inaccessible) revient chaque jour et bloque un slot du
+        # batch indéfiniment. Au-delà de _RESEARCH_MAX_FAILURES échecs cumulés,
+        # on disqualifie pour la sortir du backlog (exclu via status neq.disqualified).
+        try:
+            prior_failures = await db.select(
+                "agent_runs",
+                params={
+                    "select": "id",
+                    "agent": "eq.research",
+                    "company_id": f"eq.{payload.company_id}",
+                    "error_text": "not.is.null",
+                    "limit": str(_RESEARCH_MAX_FAILURES + 1),
+                },
+            )
+            if len(prior_failures) >= _RESEARCH_MAX_FAILURES:
+                await db_tools.mark_company_disqualified(
+                    payload.company_id,
+                    f"research_failed_repeatedly ({len(prior_failures)}x): {e!r}"[:500],
+                )
         except Exception:  # noqa: BLE001
             pass
         return ResearchCompanyByIdOut(

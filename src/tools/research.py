@@ -330,6 +330,86 @@ def _parse_json(text: str) -> dict[str, Any]:
     return json.loads(match.group(0))
 
 
+# Outil structuré : force Claude à renvoyer le research via un tool_use dont l'`input`
+# est déjà un dict JSON valide (parsé par le SDK). Élimine la classe de bugs
+# JSONDecodeError causée par des guillemets non-échappées dans du texte libre
+# (ex: une citation d'avis Google recopiée par le modèle). Le schéma calque
+# `prompts/research.md` — mêmes clés, donc le Personalization Agent en aval est
+# inchangé. Champs volontairement permissifs (null/array vide autorisés) pour ne
+# jamais bloquer le modèle quand il manque une info.
+_RESEARCH_TOOL_NAME = "save_research"
+_RESEARCH_TOOL: dict[str, Any] = {
+    "name": _RESEARCH_TOOL_NAME,
+    "description": (
+        "Enregistre le research structuré de l'entreprise. Utilise null ou un "
+        "tableau vide si une info est inconnue — n'invente rien."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "company_summary": {"type": ["string", "null"]},
+            "services_offered": {"type": "array", "items": {"type": "string"}},
+            "size_signals": {
+                "type": ["object", "null"],
+                "properties": {
+                    "estimated_employees_range": {"type": ["string", "null"]},
+                    "evidence": {"type": ["string", "null"]},
+                },
+            },
+            "decideur_candidats": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "nom_complet": {"type": ["string", "null"]},
+                        "titre": {"type": ["string", "null"]},
+                        "source_url": {"type": ["string", "null"]},
+                    },
+                },
+            },
+            "pain_points_detected": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "pain": {"type": ["string", "null"]},
+                        "evidence": {"type": ["string", "null"]},
+                        "source": {"type": ["string", "null"]},
+                    },
+                },
+            },
+            "recent_review_snippet": {
+                "type": ["object", "null"],
+                "properties": {
+                    "quote": {"type": ["string", "null"]},
+                    "rating": {"type": ["integer", "null"]},
+                    "relative_time": {"type": ["string", "null"]},
+                },
+            },
+            "tech_savvy_score": {
+                "type": ["object", "null"],
+                "properties": {
+                    "score": {"type": ["string", "null"]},
+                    "reasoning": {"type": ["string", "null"]},
+                },
+            },
+            "form_test_hint": {
+                "type": ["object", "null"],
+                "properties": {
+                    "has_quote_form": {"type": ["boolean", "null"]},
+                    "has_chat_widget": {"type": ["boolean", "null"]},
+                    "auto_response_likely": {"type": ["boolean", "null"]},
+                    "notes": {"type": ["string", "null"]},
+                },
+            },
+            "disqualifications": {"type": "array", "items": {"type": "string"}},
+            "personalization_hooks": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["company_summary"],
+    },
+}
+
+
 class LLMUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
@@ -397,12 +477,26 @@ def _call_llm(
         max_tokens=max_tokens,
         temperature=0.2,
         system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+        tools=[_RESEARCH_TOOL],
+        tool_choice={"type": "tool", "name": _RESEARCH_TOOL_NAME},
         messages=[{"role": "user", "content": user}],
     )
-    text = "".join(b.text for b in resp.content if b.type == "text")
+    # Chemin principal : tool_use.input est déjà un dict JSON valide (parsé par le SDK).
+    tool_block = next(
+        (b for b in resp.content if getattr(b, "type", None) == "tool_use"
+         and getattr(b, "name", None) == _RESEARCH_TOOL_NAME),
+        None,
+    )
+    if tool_block is not None and isinstance(tool_block.input, dict):
+        research_json = tool_block.input
+    else:
+        # Fallback défensif : si l'API ne renvoyait pas de tool_use (ne devrait pas
+        # arriver avec tool_choice forcé), on retombe sur le parsing texte historique.
+        text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+        research_json = _parse_json(text)
     usage = resp.usage
     return LLMResult(
-        research_json=_parse_json(text),
+        research_json=research_json,
         model=model,
         usage=LLMUsage(
             input_tokens=getattr(usage, "input_tokens", 0) or 0,
