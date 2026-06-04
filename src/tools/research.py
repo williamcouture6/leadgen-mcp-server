@@ -91,7 +91,7 @@ TECH_KEYWORDS = (
     "hubspot", "salesforce", "intercom", "drift", "zendesk",
 )
 
-# Email scraping (fallback pour les PME indépendantes non couvertes par Apollo).
+# Email scraping — source unique des courriels du pipeline (site officiel de la PME).
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 EMAIL_BLOCKLIST_LOCAL = {
     "noreply", "no-reply", "donotreply", "do-not-reply", "mailer-daemon",
@@ -427,7 +427,7 @@ def _is_transient_anthropic_error(exc: BaseException) -> bool:
     """True si l'erreur Anthropic est transitoire et mérite un retry.
 
     Catch surtout les 529 OverloadedError + 429 RateLimitError + erreurs réseau.
-    Apollo et Anthropic émettent des 529 pendant les pics de charge globaux —
+    Anthropic émet des 529 pendant les pics de charge globaux —
     on retry avec backoff au lieu de laisser la company en `status='error'`.
     """
     if isinstance(exc, (RateLimitError, APIConnectionError)):

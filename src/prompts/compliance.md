@@ -21,7 +21,7 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
 2. **Généralisations sectorielles douces / au conditionnel** : « une bonne partie pourrait revenir », « souvent », « dans bien des cas », « la plupart des entreprises de service ». C'est du **cadrage anecdotique**, PAS un claim d'autorité ni un fait sur CE prospect. (Seuls les CHIFFRES précis non sourcés, ou un fait spécifique inventé sur CE prospect, sont des violations.)
 3. **Le modèle commission/risque-zéro** : « vous me payez une commission par contrat re-signé, rien d'avance, rien à perdre ». C'est la **description du modèle d'affaires**, PAS une garantie de résultat.
 4. **Question rhétorique sur leur situation** : « combien de vos clients ne sont jamais revenus? ». Une question n'affirme rien.
-5. **Le prénom / nom / titre du destinataire** quand ils figurent dans la **fiche contact vérifiée** fournie (bloc « Destinataire »). Cette fiche est la **source de vérité de l'identité**, distincte du `research_json` (qui décrit l'ENTREPRISE, souvent scrapé du site/page équipe). Un contact `apollo` (OPT) ou `website_scrape` (REACTI) est LÉGITIME **même si son nom n'apparaît pas dans le research_json**. Ne JAMAIS flagger « contact inventé / introuvable dans le research » ni `contact_mismatch` pour un nom présent dans la fiche contact.
+5. **Le prénom / nom / titre du destinataire** quand ils figurent dans la **fiche contact vérifiée** fournie (bloc « Destinataire »). Cette fiche est la **source de vérité de l'identité**, distincte du `research_json` (qui décrit l'ENTREPRISE, souvent scrapé du site/page équipe). Un contact `website_scrape` (ou `apollo` hérité) est LÉGITIME **même si son nom n'apparaît pas dans le research_json**. Ne JAMAIS flagger « contact inventé / introuvable dans le research » ni `contact_mismatch` pour un nom présent dans la fiche contact.
 
 **Principe** : bloque les **mensonges** (faits inventés, preuve sociale, garanties chiffrées, actions inventées), pas le **langage de vente honnête**.
 
@@ -60,9 +60,9 @@ Toute affirmation factuelle sur l'**ENTREPRISE** prospect doit être ancrée dan
 - Termes français de France au lieu de québécois (ex: "courriel" vs "email" — les deux sont OK; "ramener" au lieu de "rapporter", etc.).
 
 ### 7. Mismatch entre contact et company (NOUVEAU)
-- Email Apollo dont le **domaine** ne correspond pas à la company ciblée (ex: contact @meta.com pour un café). Si tu détectes ce signal dans l'email ou dans les warnings du Personalize Agent, BLOQUER (DO_NOT_SEND).
+- Email dont le **domaine** ne correspond pas à la company ciblée (ex: contact @meta.com pour un café). Si tu détectes ce signal dans l'email ou dans les warnings du Personalize Agent, BLOQUER (DO_NOT_SEND).
 - Décideur dont le **titre** n'est pas plausible pour le pitch (ex: "Director of Engineering" pour un email de gestion de prise de RDV).
-- ⚠️ **PAS un mismatch** : un nom de destinataire présent dans la **fiche contact** mais absent du `research_json`. La fiche contact (`apollo` / `website_scrape`) est une source valide, distincte du scrape de la page équipe. Ne bloque le contact QUE pour un **mauvais domaine** ou un **titre invraisemblable** — JAMAIS pour « nom pas dans le research_json ».
+- ⚠️ **PAS un mismatch** : un nom de destinataire présent dans la **fiche contact** mais absent du `research_json`. La fiche contact (`website_scrape`, ou `apollo` hérité) est une source valide, distincte du scrape de la page équipe. Ne bloque le contact QUE pour un **mauvais domaine** ou un **titre invraisemblable** — JAMAIS pour « nom pas dans le research_json ».
 
 ## Schéma de sortie (JSON strict)
 

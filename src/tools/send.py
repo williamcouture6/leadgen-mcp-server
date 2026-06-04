@@ -193,11 +193,10 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
         )
 
     # 2b) Defense — platform / big tech email domain.
-    # Filet final après les 4 défenses amont (blocklist WF-1, blocklist WF-2,
-    # Apollo industry guard, domain-match check). Si malgré tout un contact
-    # @meta.com / @doordash.com / etc. est arrivé en DB (import manuel,
-    # ancienne pollution avant cleanup du 14 mai, edge case), on bloque ici
-    # AVANT l'action irréversible (push Instantly = email envoyé).
+    # Filet final après la blocklist domaine en amont (WF-1 sourcing + scrape WF-3).
+    # Si malgré tout un contact @meta.com / @doordash.com / etc. est arrivé en DB
+    # (import manuel, ancienne pollution avant cleanup du 14 mai, contact legacy
+    # Apollo, edge case), on bloque ici AVANT l'action irréversible (push Instantly).
     blocked, reason = is_email_on_blocked_domain(msg.get("to_email"))
     if blocked:
         # Marquer le message 'failed' pour qu'il ne soit pas re-tenté.

@@ -13,7 +13,7 @@ Serveur MCP custom (FastMCP, Python) qui expose les outils unifiés du pipeline 
 | `db.list_recent_companies` | Liste les companies récentes pour vérif manuelle |
 | `maps.search_places` | Google Places Nearby Search + Details (avec pagination) |
 
-Tools Phase 1B (après purchase Apollo) : `enrich.apollo_match`, `db.insert_contact`.
+Tool contacts : `db.insert_contact` (contacts insérés par WF-3 à partir des emails scrapés du site officiel — Apollo retiré).
 
 ## Endpoints HTTP supplémentaires (Phase 2 — WF-3 Research)
 

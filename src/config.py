@@ -24,7 +24,6 @@ class Settings(BaseModel):
     google_places_api_key: str = Field(
         default_factory=lambda: os.environ["GOOGLE_PLACES_API_KEY"]
     )
-    apollo_api_key: str | None = Field(default_factory=lambda: os.environ.get("APOLLO_API_KEY"))
     log_level: str = Field(default_factory=lambda: os.environ.get("LOG_LEVEL", "info"))
 
 

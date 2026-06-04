@@ -16,11 +16,9 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
-from .lib.platform_domains import PLATFORM_DOMAINS_NEVER_USE
 from .tools import booking as booking_tools
 from .tools import compliance as compliance_tools
 from .tools import db as db_tools
-from .tools import enrich as enrich_tools
 from .tools import maps as maps_tools
 from .tools import personalize as personalize_tools
 from .tools import reply as reply_tools
@@ -203,417 +201,11 @@ async def search_places(payload: maps_tools.SearchPlacesIn) -> dict[str, Any]:
     return (await maps_tools.search_places(payload)).model_dump()
 
 
-# ---------------- Contacts (Phase 1B) ----------------
+# ---------------- Contacts ----------------
 
 @app.post("/contacts/insert", dependencies=[Depends(_require_auth)])
 async def insert_contact(payload: db_tools.ContactIn) -> dict[str, Any]:
     return (await db_tools.insert_contact(payload)).model_dump()
-
-
-@app.get("/companies/to-enrich", dependencies=[Depends(_require_auth)])
-async def companies_to_enrich(limit: int = 50, track: str = "OPT") -> list[dict[str, Any]]:
-    return await db_tools.list_companies_to_enrich(limit=limit, track=track)
-
-
-# ---------------- Enrich (Apollo, Phase 1B) ----------------
-
-@app.post("/enrich/apollo/org", dependencies=[Depends(_require_auth)])
-async def enrich_org(payload: enrich_tools.EnrichOrgIn) -> dict[str, Any]:
-    return (await enrich_tools.enrich_org(payload)).model_dump()
-
-
-@app.post("/enrich/apollo/decision-makers", dependencies=[Depends(_require_auth)])
-async def enrich_decision_makers(
-    payload: enrich_tools.SearchDecisionMakersIn,
-) -> dict[str, Any]:
-    return (await enrich_tools.search_decision_makers(payload)).model_dump()
-
-
-@app.post("/enrich/apollo/match", dependencies=[Depends(_require_auth)])
-async def enrich_match(payload: enrich_tools.MatchPersonIn) -> dict[str, Any]:
-    return (await enrich_tools.match_person(payload)).model_dump()
-
-
-# ---------------- WF-2 orchestration (Apollo enrichment, Phase 1B) ----------------
-
-# Industries Apollo qui signalent qu'on a enrichi une plateforme/saas/marketplace
-# au lieu d'une PME commerce local ou services pro. Si Apollo retourne ces
-# industries pour un prospect QC (cafés/restos/salons/plombiers/etc.), c'est
-# quasi-certain qu'on est sur une plateforme tierce — rejet.
-APOLLO_INDUSTRIES_NEVER_ENRICH = frozenset({
-    "information technology & services",
-    "internet",
-    "computer software",
-    "software",
-    "saas",
-    "online media",
-    "marketplaces",
-    "e-learning",
-    "computer & network security",
-    "computer hardware",
-    "telecommunications",
-    "venture capital & private equity",
-    "investment management",
-    "investment banking",
-    "banking",  # PME indé n'est pas une banque
-    "financial services",
-})
-
-# Cap de taille : nos cibles sont des PME indépendantes (1-30 employés).
-# Si Apollo retourne > N employés, c'est presque sûr une plateforme ou une
-# multinationale qui partage le domaine par accident. Marge: chaînes locales
-# légit (Brûleries FARO ~50, Café Dépôt 120, Boulangerie Ange 3300 réelle).
-# Seuil 300 = catch Stripe/Shopify/Square/Yocale tout en gardant les chaînes QC.
-APOLLO_MAX_EMPLOYEES_THRESHOLD = 300
-
-# Au-delà de ce nombre d'échecs research cumulés sur une même company, on la
-# disqualifie pour qu'elle arrête de boucler dans le backlog WF-3 (voir handler
-# d'erreur de /research/company).
-_RESEARCH_MAX_FAILURES = 3
-
-
-def _domain_from_website(website: str | None) -> str | None:
-    """Extrait 'acme.com' depuis 'https://www.acme.com/whatever'.
-
-    Retourne `None` si le domaine extrait est une plateforme générique
-    (`facebook.com`, `instagram.com`, etc.) — auquel cas la company n'a pas
-    de vrai domaine et NE DOIT PAS être enrichie via Apollo (qui renverrait
-    la plateforme elle-même, ex. Meta Inc.).
-    """
-    if not website:
-        return None
-    from urllib.parse import urlparse
-    parsed = urlparse(website if "://" in website else f"https://{website}")
-    host = parsed.netloc.split(":")[0].lower()
-    if host.startswith("www."):
-        host = host[4:]
-    if not host:
-        return None
-    if host in PLATFORM_DOMAINS_NEVER_USE:
-        return None
-    return host
-
-
-class EnrichCompanyByIdIn(BaseModel):
-    company_id: str
-    max_contacts: int = 2
-    reveal_personal_emails: bool = False  # True = consomme credits Apollo
-
-
-class EnrichCompanyByIdOut(BaseModel):
-    company_id: str
-    status: str  # "ok" | "no_domain" | "no_apollo_org" | "no_decision_makers" | "error"
-    domain: str | None = None
-    apollo_org_id: str | None = None
-    contacts_inserted: int = 0
-    contacts_duplicate: int = 0
-    contacts_skipped_no_email: int = 0
-    contacts_skipped_domain_mismatch: int = 0
-    error_text: str | None = None
-
-
-def _email_domain_matches(email: str | None, expected_domain: str | None) -> bool:
-    """True si le domaine de l'email correspond au domaine attendu (ou en est un
-    sous-domaine). Défense en profondeur : si Apollo retourne un email avec un
-    domaine qui ne ressemble pas à celui qu'on a passé à enrich_org, on rejette
-    l'insert.
-
-    Exemples :
-    - email=`mfabi@cafefaro.com`, expected=`cafefaro.com` → True (match exact)
-    - email=`john@mail.cafefaro.com`, expected=`cafefaro.com` → True (sous-domaine)
-    - email=`ssingh@meta.com`, expected=`cafefaro.com` → False (mismatch flagrant)
-    - email=`ssingh@meta.com`, expected=`facebook.com` → False (Apollo n'a même
-      pas répondu avec le domaine qu'on lui a passé — la blocklist en amont
-      empêche normalement ce cas, mais défense en profondeur).
-    """
-    if not email or "@" not in email or not expected_domain:
-        return False
-    dom = email.rsplit("@", 1)[1].lower()
-    exp = expected_domain.lower()
-    if dom == exp:
-        return True
-    if dom.endswith("." + exp):
-        return True
-    return False
-
-
-@app.post(
-    "/wf2/run-company",
-    dependencies=[Depends(_require_auth)],
-    response_model=EnrichCompanyByIdOut,
-)
-async def enrich_company_by_id(payload: EnrichCompanyByIdIn) -> EnrichCompanyByIdOut:
-    """Enrichit UNE company : org enrich → search décideurs → match emails → insert contacts.
-
-    Étapes :
-      1. Résout domain (champ `domain` direct, sinon dérivé de `website`).
-      2. `organizations/enrich` → récupère organization_id Apollo + taille.
-      3. `mixed_people/search` (organization_ids=[id], titles=décideurs) → top N personnes.
-      4. Pour chaque personne sans email vérifié : `people/match` pour révéler l'email.
-      5. Insert contacts (dédup company_id+email).
-      6. Mark company 'enriched' (ou 'disqualified' si échec dur).
-    """
-    co = await db_tools.get_company(payload.company_id)
-    if not co:
-        return EnrichCompanyByIdOut(
-            company_id=payload.company_id, status="error", error_text="company_not_found",
-        )
-
-    # Le domain stocké peut déjà être une plateforme (`facebook.com`, etc.) à cause
-    # d'un sourcing antérieur — re-filtrer ici pour éviter d'enrichir via Apollo.
-    existing_domain = (co.get("domain") or "").lower() or None
-    if existing_domain and existing_domain in PLATFORM_DOMAINS_NEVER_USE:
-        existing_domain = None
-    domain = existing_domain or _domain_from_website(co.get("website"))
-    if not domain:
-        await db_tools.mark_company_disqualified(
-            payload.company_id, "enrich_failed_no_domain_or_platform_only"
-        )
-        return EnrichCompanyByIdOut(
-            company_id=payload.company_id, status="no_domain",
-            error_text="ni `domain` ni `website` exploitable (ou plateforme générique facebook/instagram/etc.)",
-        )
-
-    # 1) Org enrich
-    try:
-        org = await enrich_tools.enrich_org(enrich_tools.EnrichOrgIn(domain=domain))
-    except Exception as e:  # noqa: BLE001
-        return EnrichCompanyByIdOut(
-            company_id=payload.company_id, status="error",
-            domain=domain, error_text=f"apollo_org_enrich: {e!r}",
-        )
-
-    if not org.organization_id:
-        await db_tools.mark_company_disqualified(
-            payload.company_id, "enrich_failed_apollo_no_org"
-        )
-        return EnrichCompanyByIdOut(
-            company_id=payload.company_id, status="no_apollo_org",
-            domain=domain,
-        )
-
-    # 1.5) Guard contre les plateformes/big-tech qui auraient échappé à la blocklist.
-    # Si Apollo retourne une org dont l'industry est tech/saas/marketplace OU dont
-    # la taille dépasse le profil PME indépendante (>300 emp), on rejette : presque
-    # sûr que le `domain` est une plateforme tierce hébergeant la PME (booking,
-    # directory, builder de site, etc.) et Apollo nous a renvoyé la plateforme,
-    # pas le commerce local qu'on visait. WF-3 (scraping) prendra la relève si
-    # le site brut publie un email.
-    org_industry = (org.industry or "").lower().strip()
-    org_employees = org.estimated_num_employees or 0
-    is_blocked_industry = org_industry in APOLLO_INDUSTRIES_NEVER_ENRICH
-    is_oversize = org_employees > APOLLO_MAX_EMPLOYEES_THRESHOLD
-    if is_blocked_industry or is_oversize:
-        reason_parts = []
-        if is_blocked_industry:
-            reason_parts.append(f"industry={org_industry!r}")
-        if is_oversize:
-            reason_parts.append(f"employees={org_employees}>{APOLLO_MAX_EMPLOYEES_THRESHOLD}")
-        await db_tools.mark_company_disqualified(
-            payload.company_id,
-            f"apollo_org_is_platform_or_oversize ({', '.join(reason_parts)})",
-        )
-        # Reset le domain pour éviter ré-enrichissement futur.
-        await db_tools.update_company_apollo_fields(
-            payload.company_id, domain=None, estimated_employees=org_employees,
-        )
-        return EnrichCompanyByIdOut(
-            company_id=payload.company_id, status="no_apollo_org",
-            domain=domain, apollo_org_id=org.organization_id,
-            error_text=f"apollo_org_platform_guard: {', '.join(reason_parts)}",
-        )
-
-    # Patch domain + taille sur la company (utile si domain était null).
-    await db_tools.update_company_apollo_fields(
-        payload.company_id,
-        domain=domain if not co.get("domain") else None,
-        estimated_employees=org.estimated_num_employees,
-    )
-
-    # 2) Search décideurs
-    try:
-        search_out = await enrich_tools.search_decision_makers(
-            enrich_tools.SearchDecisionMakersIn(
-                organization_id=org.organization_id,
-                per_page=max(payload.max_contacts, 3),
-            )
-        )
-    except Exception as e:  # noqa: BLE001
-        return EnrichCompanyByIdOut(
-            company_id=payload.company_id, status="error",
-            domain=domain, apollo_org_id=org.organization_id,
-            error_text=f"apollo_people_search: {e!r}",
-        )
-
-    if not search_out.people:
-        # Pas un échec dur — l'entreprise existe mais Apollo n'a pas de décideur.
-        # On marque 'enriched' (le travail est fait) avec 0 contacts.
-        await db_tools.mark_company_enriched(payload.company_id, "enriched")
-        return EnrichCompanyByIdOut(
-            company_id=payload.company_id, status="no_decision_makers",
-            domain=domain, apollo_org_id=org.organization_id,
-        )
-
-    # 3) Pour chaque personne du top N : récupère email (déjà fourni ou via match).
-    # NB: Apollo Basic obfusque last_name dans search (ex: "Ro***i") → on match
-    # systématiquement via apollo_id pour révéler email + last_name complet.
-    inserted = duplicate = skipped = domain_mismatch = 0
-    for person in search_out.people[: payload.max_contacts]:
-        first_name = person.first_name
-        last_name = person.last_name
-        email = person.email
-        email_status = person.email_status
-        title = person.title
-        phone = person.phone
-        linkedin = person.linkedin_url
-
-        needs_match = (
-            not email
-            or email_status not in ("verified", "guessed", "likely_to_engage")
-            or not last_name  # obfusqué dans search → forcer match
-        )
-        if needs_match and (person.apollo_id or (first_name and last_name)):
-            try:
-                m = await enrich_tools.match_person(
-                    enrich_tools.MatchPersonIn(
-                        apollo_id=person.apollo_id,
-                        first_name=first_name if not person.apollo_id else None,
-                        last_name=last_name if not person.apollo_id else None,
-                        organization_name=co.get("name") if not person.apollo_id else None,
-                        domain=domain if not person.apollo_id else None,
-                        reveal_personal_emails=payload.reveal_personal_emails,
-                    )
-                )
-                if m.matched:
-                    email = m.email or email
-                    email_status = m.email_status or email_status
-                    title = m.title or title
-                    phone = m.phone or phone
-                    linkedin = m.linkedin_url or linkedin
-                    first_name = m.first_name or first_name
-                    last_name = m.last_name or last_name
-            except Exception:  # noqa: BLE001
-                # Pas bloquant — on insère ce qu'on a (sans email ça sera skip_no_email).
-                pass
-
-        # Défense en profondeur : si l'email Apollo n'est pas sur le domaine qu'on
-        # a passé à enrich_org, on rejette. Catch les cas où une plateforme
-        # inconnue échappe à la blocklist (ex: domain=`unknownsocial.com` →
-        # Apollo renvoie une org tierce → email @autrechose.com). WF-3 ramassera
-        # l'email scrapé du vrai site si dispo.
-        if email and not _email_domain_matches(email, domain):
-            domain_mismatch += 1
-            continue
-
-        res = await db_tools.insert_contact(
-            db_tools.ContactIn(
-                company_id=payload.company_id,
-                first_name=first_name,
-                last_name=last_name,
-                email=email,
-                email_verified=(email_status == "verified"),
-                email_verification_source="apollo" if email else None,
-                phone=phone,
-                linkedin_url=linkedin,
-                title=title,
-                seniority=person.seniority,
-                is_decision_maker=True,
-                source="apollo",
-                raw_payload={"apollo_id": person.apollo_id, "email_status": email_status},
-            )
-        )
-        if res.status == "inserted":
-            inserted += 1
-        elif res.status == "duplicate":
-            duplicate += 1
-        else:
-            skipped += 1
-
-    await db_tools.mark_company_enriched(payload.company_id, "enriched")
-
-    return EnrichCompanyByIdOut(
-        company_id=payload.company_id, status="ok",
-        domain=domain, apollo_org_id=org.organization_id,
-        contacts_inserted=inserted,
-        contacts_duplicate=duplicate,
-        contacts_skipped_no_email=skipped,
-        contacts_skipped_domain_mismatch=domain_mismatch,
-    )
-
-
-class RunWf2In(BaseModel):
-    """Pass complet WF-2 : prend N companies status='sourced', les enrichit séquentiellement.
-
-    Apollo Basic = 2 500 credits/mois. ~3 credits par company. Limite réelle MVP = throughput
-    Instantly (warmup), pas Apollo.
-    """
-    limit: int = 20
-    track: str = "OPT"  # OPT | REACTI — isole le backlog enrichi par track
-    max_contacts: int = 2
-    reveal_personal_emails: bool = False
-
-
-class RunWf2Item(BaseModel):
-    company_id: str
-    name: str | None = None
-    status: str
-    contacts_inserted: int = 0
-    error_text: str | None = None
-
-
-class RunWf2Out(BaseModel):
-    processed: int
-    enriched: int
-    disqualified: int
-    failed: int
-    total_contacts_inserted: int
-    items: list[RunWf2Item]
-
-
-@app.post("/wf2/run", dependencies=[Depends(_require_auth)], response_model=RunWf2Out)
-async def run_wf2(payload: RunWf2In) -> RunWf2Out:
-    backlog = await db_tools.list_companies_to_enrich(limit=payload.limit, track=payload.track)
-
-    items: list[RunWf2Item] = []
-    enriched = disqualified = failed = total_contacts = 0
-
-    for co in backlog:
-        try:
-            res = await enrich_company_by_id(
-                EnrichCompanyByIdIn(
-                    company_id=co["id"],
-                    max_contacts=payload.max_contacts,
-                    reveal_personal_emails=payload.reveal_personal_emails,
-                )
-            )
-        except Exception as e:  # noqa: BLE001
-            failed += 1
-            items.append(RunWf2Item(
-                company_id=co["id"], name=co.get("name"),
-                status="error", error_text=repr(e),
-            ))
-            continue
-
-        if res.status == "ok" or res.status == "no_decision_makers":
-            enriched += 1
-        elif res.status in ("no_domain", "no_apollo_org"):
-            disqualified += 1
-        else:
-            failed += 1
-        total_contacts += res.contacts_inserted
-        items.append(RunWf2Item(
-            company_id=co["id"], name=co.get("name"),
-            status=res.status,
-            contacts_inserted=res.contacts_inserted,
-            error_text=res.error_text,
-        ))
-
-    return RunWf2Out(
-        processed=len(items), enriched=enriched,
-        disqualified=disqualified, failed=failed,
-        total_contacts_inserted=total_contacts,
-        items=items,
-    )
 
 
 # ---------------- High-level workflow (WF-1 en un appel) ----------------
@@ -744,6 +336,12 @@ async def run_wf1(payload: RunWf1In) -> RunWf1Out:
 
 # ---------------- Research (Phase 2 — WF-3) ----------------
 
+# Au-delà de ce nombre d'échecs research cumulés sur une même company, on la
+# disqualifie pour qu'elle arrête de boucler dans le backlog WF-3 (voir handler
+# d'erreur de /research/company).
+_RESEARCH_MAX_FAILURES = 3
+
+
 @app.get("/companies/to-research", dependencies=[Depends(_require_auth)])
 async def companies_to_research(
     limit: int = 20,
@@ -873,10 +471,11 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
     except Exception:  # noqa: BLE001
         pass
 
-    # Fallback Apollo: insère les emails scrapés du site comme contacts.
-    # Apollo couvre mal les PME indépendantes QC (~10% de match sur cafés/restos).
-    # Les emails du site (info@, contact@, ou nominatifs) comblent le trou.
-    # `email_verified=False` → marqueur que ces emails n'ont pas été validés par Apollo.
+    # Insère les emails scrapés du site comme contacts (source unique du pipeline
+    # depuis le retrait d'Apollo). Les emails du site (info@, contact@, ou
+    # nominatifs) sont la matière première de l'acquisition. Base légale =
+    # `implied_conspicuous` (publication conspicue, voir _consent_basis_for_contact).
+    # `email_verified=False` → ces emails n'ont pas été validés par un fournisseur tiers.
     inserted_scraped = duplicate_scraped = 0
     for em in out.emails_found:
         res = await db_tools.insert_contact(
@@ -1027,9 +626,10 @@ def _contact_for_prompt(contact_row: dict[str, Any]) -> dict[str, Any]:
     """Format minimal du contact pour le prompt — uniquement champs utiles.
 
     `email_source` permet au prompt d'adapter le ton :
-    - 'apollo' (vérifié) : email nominatif, peut tutoyer par prénom.
     - 'website_scrape' + kind='nominative' : email perso du proprio, salutation prudente.
     - 'website_scrape' + kind='generic' : info@/contact@, ne PAS adresser au nom.
+    - 'apollo' : valeur héritée (contacts importés avant le retrait d'Apollo) —
+      traiter comme un contact vérifié nominatif.
     """
     raw = contact_row.get("raw_payload") or {}
     return {
@@ -1405,8 +1005,8 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
     company_id = contact_rows[0].get("company_id")
     # Destinataire vérifié = source de vérité de l'identité (prénom/titre), distincte du
     # research_json (scrape du site/page équipe). Sans ça, le juge LLM flagge à tort un
-    # contact Apollo (OPT) absent de la page équipe comme "inventé". Track-agnostic :
-    # email_source = apollo (OPT) | website_scrape (REACTI). Voir compliance.md §7.
+    # contact absent de la page équipe comme "inventé". Track-agnostic :
+    # email_source = website_scrape (source live) | apollo (héritage). Voir compliance.md §7.
     contact = {
         "first_name": contact_rows[0].get("first_name"),
         "last_name": contact_rows[0].get("last_name"),

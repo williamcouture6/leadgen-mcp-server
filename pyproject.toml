@@ -1,7 +1,7 @@
 [project]
 name = "leadgen-mcp"
 version = "0.1.0"
-description = "Serveur MCP pour pipeline lead gen PME QC — wraps Supabase, Google Places, Apollo, Instantly, Vapi"
+description = "Serveur MCP pour pipeline lead gen PME QC — wraps Supabase, Google Places, Instantly, Vapi"
 requires-python = ">=3.11"
 dependencies = [
     "fastmcp>=0.2.0",

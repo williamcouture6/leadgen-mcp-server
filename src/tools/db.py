@@ -90,7 +90,7 @@ SECTOR_CATALOG: dict[str, list[str]] = {
     ],
     "manufacturier": [
         # Note : Google Places n'est pas idéal pour les manufacturiers
-        # (peu de discoverabilité locale). Phase 1B Apollo prendra le relais.
+        # (peu de discoverabilité locale) — segment à faible yield WF-3.
         "manufacturier alimentaire",
         "manufacturier de boissons",
         "atelier de machinage",
@@ -329,7 +329,7 @@ async def list_recent_companies(limit: int = 20) -> list[dict[str, Any]]:
 
 
 # ----------------------------------------------------------------------
-# Contacts (Phase 1B — utilisé par WF-2 après enrichissement Apollo)
+# Contacts (insérés par WF-3 à partir des emails scrapés du site officiel)
 # ----------------------------------------------------------------------
 
 class ContactIn(BaseModel):
@@ -344,7 +344,7 @@ class ContactIn(BaseModel):
     title: str | None = None
     seniority: str | None = None
     is_decision_maker: bool = False
-    source: str = "apollo"
+    source: str = "website"
     raw_payload: dict[str, Any] | None = None
 
 
@@ -361,9 +361,9 @@ def _consent_basis_for_contact(
     - Email publié manifestement sur le site public de l'entreprise (scraping WF-3)
       → `implied_conspicuous` (CASL 10(9)(b) : publication conspicue + courriel
       pertinent au rôle). On stocke l'URL source comme preuve.
-    - Email via Apollo (fournisseur B2B) ou autre → `legitimate_interest` : on n'a
-      PAS de preuve de publication conspicue, donc on enregistre honnêtement une
-      base plus faible, à confirmer/upgrader si opt-in express obtenu plus tard.
+    - Email d'une autre provenance (fournisseur tiers, import manuel, legacy Apollo)
+      → `legitimate_interest` : on n'a PAS de preuve de publication conspicue, donc
+      on enregistre honnêtement une base plus faible, à confirmer/upgrader plus tard.
     """
     src = (email_verification_source or source or "").lower()
     if "website" in src or "scrape" in src:
@@ -499,24 +499,11 @@ async def add_to_suppression(
         return False
 
 
-async def mark_company_enriched(company_id: str, status: str = "enriched") -> dict[str, Any]:
-    return {
-        "updated": len(
-            await db.update(
-                "companies",
-                {"status": status, "last_enriched_at": datetime.now(timezone.utc).isoformat()},
-                filters={"id": f"eq.{company_id}"},
-            )
-        )
-    }
-
-
 async def mark_company_disqualified(company_id: str, reason: str) -> dict[str, Any]:
-    """Marque une company comme disqualifiée (échec dur d'enrichissement, hors-ICP, etc.).
+    """Marque une company comme disqualifiée (échec research répété, hors-ICP, etc.).
 
-    `list_companies_to_enrich` filtre sur status='sourced' donc une disqualified
-    sortira automatiquement du backlog WF-2 (et du backlog WF-3 via le filtre
-    `status neq.disqualified`).
+    Le backlog WF-3 (`list_companies_to_research`) exclut `status='disqualified'`,
+    donc une company disqualifiée sort automatiquement du backlog.
     """
     return {
         "updated": len(
@@ -531,32 +518,6 @@ async def mark_company_disqualified(company_id: str, reason: str) -> dict[str, A
             )
         )
     }
-
-
-async def update_company_apollo_fields(
-    company_id: str,
-    *,
-    domain: str | None = None,
-    estimated_employees: int | None = None,
-) -> dict[str, Any]:
-    """Patch les colonnes companies enrichies par Apollo (domain manquant, taille).
-
-    On ne touche pas au `status` ici — c'est `mark_company_enriched` qui le fait
-    à la fin du flow WF-2.
-    """
-    patch: dict[str, Any] = {}
-    if domain:
-        patch["domain"] = domain
-    if estimated_employees is not None:
-        patch["estimated_employees"] = estimated_employees
-    if not patch:
-        return {"updated": 0}
-    rows = await db.update(
-        "companies",
-        patch,
-        filters={"id": f"eq.{company_id}"},
-    )
-    return {"updated": len(rows)}
 
 
 async def get_company(company_id: str) -> dict[str, Any] | None:
@@ -578,8 +539,9 @@ async def get_company(company_id: str) -> dict[str, Any] | None:
 def _contact_priority_score(contact: dict[str, Any]) -> int:
     """Score de priorité (plus bas = meilleur) pour choisir 1 contact par company.
 
-    Apollo verified > Apollo > scrape nominative same-domain > scrape nominative
-    personal-domain > scrape generic > other.
+    scrape nominative same-domain > scrape nominative personal-domain > scrape
+    generic > other. Les valeurs `apollo` (héritage : contacts importés avant le
+    retrait d'Apollo) restent prioritaires comme contacts vérifiés.
 
     Évite d'envoyer plusieurs emails à la même entreprise (brûle la company).
     Le contact retenu est celui qui a la plus forte probabilité de joindre un
@@ -731,24 +693,6 @@ async def insert_message_draft(payload: MessageDraftIn) -> dict[str, Any]:
     row["status"] = "draft"
     rows = await db.insert("messages", row)
     return {"message_id": rows[0]["id"] if rows else None}
-
-
-async def list_companies_to_enrich(limit: int = 50, track: str = "OPT") -> list[dict[str, Any]]:
-    """Companies status='sourced' du `track` donné à passer dans WF-2 (enrichment).
-
-    Filtre `track` (défaut OPT) = garde-fou anti double-fichage : l'enrichment OPT
-    ne touche jamais les rows REACTI et vice-versa.
-    """
-    return await db.select(
-        "companies",
-        params={
-            "select": "id,name,domain,website,city,icp_segment,industry,track",
-            "status": "eq.sourced",
-            "track": f"eq.{track}",
-            "order": "created_at.asc",
-            "limit": str(limit),
-        },
-    )
 
 
 # ----------------------------------------------------------------------

@@ -78,7 +78,7 @@ def _llm_judge(
         f"## Destinataire (contact vérifié — source de vérité de l'identité)\n"
         f"```json\n{json.dumps(contact or {}, ensure_ascii=False, indent=2)}\n```\n"
         f"Le prénom/nom/titre ci-dessus viennent de la fiche contact vérifiée "
-        f"(`email_source`: apollo = enrichi+vérifié, website_scrape = site officiel). "
+        f"(`email_source`: website_scrape = site officiel ; apollo = contact vérifié hérité). "
         f"Ils sont ANCRÉS par cette fiche — ne les traite JAMAIS comme un fait inventé "
         f"ni un contact_mismatch même s'ils n'apparaissent pas dans le research_json.\n\n"
         f"## research_json (faits vérifiables sur l'ENTREPRISE — pas l'identité du contact)\n"

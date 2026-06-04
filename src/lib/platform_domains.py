@@ -5,23 +5,21 @@ Deux blocklists distinctes, fonctionnellement complémentaires :
 
 1. `PLATFORM_DOMAINS_NEVER_USE` — hosts de pages que Google Places
    peut retourner comme "website" d'une PME (Facebook, Instagram, DoorDash,
-   Yelp, builders…). Utilisé en amont (WF-1 sourcing + WF-2 enrichment)
-   pour empêcher de stocker `domain=facebook.com` et donc d'enrichir
-   Apollo sur Meta.
+   Yelp, builders…). Utilisé en amont (WF-1 sourcing + scrape WF-3) pour
+   empêcher de stocker `domain=facebook.com` et donc de scraper les emails
+   de la plateforme au lieu de ceux de la PME.
 
 2. `BIG_TECH_EMAIL_DOMAINS` — domaines corporate de big tech / SaaS qu'on
    ne veut jamais contacter, mais qui n'apparaissent pas comme "websites"
    de PME (`@meta.com` est le corporate Meta, distinct de `facebook.com`
    qui est le produit affiché par Google Places). Pour ces domains-là, la
-   menace n'est pas qu'on enrichisse Apollo dessus, c'est qu'un contact
-   bigtech se retrouve en DB par autre voie (import manuel, edge case,
-   ancienne pollution) et que l'envoi parte.
+   menace est qu'un contact bigtech se retrouve en DB par autre voie
+   (import manuel, edge case, ancienne pollution) et que l'envoi parte.
 
 3. `EMAIL_DOMAINS_NEVER_SEND` = union des 2 — utilisé par la défense
    finale dans `tools/send.py` avant push Instantly. Filet de sécurité
-   après les 4 défenses amont (blocklist domain x2, industry guard,
-   domain-match Apollo) — si un contact bigtech a échappé à tout ça,
-   on bloque ici avant l'action irréversible.
+   après la blocklist domaine en amont — si un contact bigtech a échappé
+   à tout ça, on bloque ici avant l'action irréversible.
 
 Historique : bug 2026-05-14 a vu 16 contacts @meta.com pollués pour
 des cafés. Défenses amont déployées (commits b1063ce → 89cee42), DB

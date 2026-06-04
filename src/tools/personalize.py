@@ -2,7 +2,7 @@
 
 Génère un cold email personnalisé (Template A ou B) à partir de :
   1. `research_json` de la company (produit par WF-3)
-  2. Données contact (Apollo : prénom, nom, titre, email)
+  2. Données contact (scrape WF-3 du site officiel : prénom si dispo, titre, email)
   3. Liste de créneaux Cal.com (source de vérité du CTA — voir [[feedback_cta_real_availability]])
   4. Liste de social_proof (clients référence — voir [[project_zero_client_references]])
 
@@ -64,14 +64,14 @@ def _format_input_for_llm(
 
     if contact:
         parts.append(
-            "\n## apollo_contact (Apollo enrichment)\n"
+            "\n## contact (fiche contact vérifiée)\n"
             f"```json\n{json.dumps(contact, ensure_ascii=False, indent=2)}\n```"
         )
     else:
         parts.append(
-            "\n## apollo_contact\n`null` — Apollo n'a pas matché. "
+            "\n## contact\n`null` — aucun contact email trouvé. "
             "Utilise les `decideur_candidats` du research_json pour le prénom si disponible, "
-            "sinon écris 'Bonjour,' sans nom. Mets un warning 'Email pas trouvé via Apollo — fallback manuel requis'."
+            "sinon écris 'Bonjour,' sans nom. Mets un warning 'Aucun email trouvé — fallback manuel requis (formulaire de contact)'."
         )
 
     if social_proof:
@@ -115,7 +115,7 @@ def _parse_json(text: str) -> dict[str, Any]:
 class PersonalizeIn(BaseModel):
     research_json: dict[str, Any]
     company: dict[str, Any]  # nom, website, city, etc. (extrait de la row companies)
-    contact: dict[str, Any] | None = None  # apollo_contact normalisé (first_name, last_name, email, title)
+    contact: dict[str, Any] | None = None  # fiche contact normalisée (first_name, last_name, email, title)
     social_proof: list[dict[str, Any]] = []
     template_choice: str = "A"  # "A" ou "B"
     available_slots: list[dict[str, Any]] = []  # output de get_available_slots

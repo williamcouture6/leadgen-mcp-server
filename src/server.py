@@ -12,7 +12,6 @@ from typing import Literal
 from fastmcp import FastMCP
 
 from .tools import db as db_tools
-from .tools import enrich as enrich_tools
 from .tools import maps as maps_tools
 
 mcp: FastMCP = FastMCP(
@@ -118,65 +117,14 @@ async def search_places(
 
 
 # ----------------------------------------------------------------------
-# Tools enrich.* (Phase 1B — Apollo)
+# Tools contacts.*
 # ----------------------------------------------------------------------
-
-@mcp.tool(name="enrich_apollo_org")
-async def enrich_apollo_org(domain: str) -> dict:
-    """Apollo organizations/enrich — fonctionne sur trial. Cache 90j."""
-    out = await enrich_tools.enrich_org(enrich_tools.EnrichOrgIn(domain=domain))
-    return out.model_dump()
-
-
-@mcp.tool(name="enrich_apollo_decision_makers")
-async def enrich_apollo_decision_makers(
-    organization_id: str | None = None,
-    organization_name: str | None = None,
-    titles: list[str] | None = None,
-    per_page: int = 5,
-) -> dict:
-    """Apollo mixed_people/search — paid plan only. Retourne les décideurs."""
-    out = await enrich_tools.search_decision_makers(
-        enrich_tools.SearchDecisionMakersIn(
-            organization_id=organization_id,
-            organization_name=organization_name,
-            titles=titles or enrich_tools.DEFAULT_DECISION_MAKER_TITLES,
-            per_page=per_page,
-        )
-    )
-    return out.model_dump()
-
-
-@mcp.tool(name="enrich_apollo_match_person")
-async def enrich_apollo_match_person(
-    first_name: str,
-    last_name: str,
-    organization_name: str | None = None,
-    domain: str | None = None,
-) -> dict:
-    """Apollo people/match — paid plan only. Email + phone d'une personne."""
-    out = await enrich_tools.match_person(
-        enrich_tools.MatchPersonIn(
-            first_name=first_name,
-            last_name=last_name,
-            organization_name=organization_name,
-            domain=domain,
-        )
-    )
-    return out.model_dump()
-
 
 @mcp.tool(name="db_insert_contact")
 async def insert_contact(payload: dict) -> dict:
     """Insert un contact (dédup sur company_id+email)."""
     out = await db_tools.insert_contact(db_tools.ContactIn(**payload))
     return out.model_dump()
-
-
-@mcp.tool(name="db_list_companies_to_enrich")
-async def list_companies_to_enrich(limit: int = 50) -> list[dict]:
-    """Companies status='sourced' à traiter par WF-2."""
-    return await db_tools.list_companies_to_enrich(limit=limit)
 
 
 # ----------------------------------------------------------------------
