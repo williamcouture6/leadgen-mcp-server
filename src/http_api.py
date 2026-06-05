@@ -108,8 +108,17 @@ class DailySummaryIn(BaseModel):
 @app.post("/summary/daily", dependencies=[Depends(_require_auth)])
 async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     """Résumé quotidien de l'activité pipeline par track (sourcées/emails/drafts/
-    envoyés/réponses) + RDV → Slack. Compté depuis minuit America/Toronto.
-    Appelé par un cron n8n en fin de journée."""
+    poussés/envoyés/réponses) + RDV → Slack. Compté depuis minuit America/Toronto.
+    Appelé par un cron n8n en fin de journée.
+
+    Distinction importante :
+      - `poussés`  = leads ajoutés à la campagne Instantly (messages.status='queued').
+                     Le lead est DANS la campagne mais le courriel n'est pas encore
+                     parti (ou la campagne est en pause). NE PAS lire ça comme « envoyé ».
+      - `envoyés`  = courriel réellement parti, confirmé par le WF sync-status
+                     (messages.status in sent/delivered/bounced/replied).
+    Avant ce correctif (2026-06-04), `envoyés` comptait status!='draft' et gonflait
+    les `queued` comme des envois — d'où des « envoyés 10 » alors que rien n'était parti."""
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
 
@@ -133,18 +142,25 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         sourced = await _cnt("companies", t)
         emails = await _cnt("contacts", t)
         drafts = await _cnt("messages", {**t, "direction": "eq.outbound", "status": "eq.draft"})
+        # 'poussés' = lead ajouté à la campagne Instantly, courriel pas encore confirmé parti
+        pushed = await _cnt(
+            "messages", {**t, "direction": "eq.outbound", "status": "eq.queued"},
+            date_field="scheduled_at",
+        )
+        # 'envoyés' = courriel réellement parti (confirmé par le WF sync-status Instantly)
         sent = await _cnt(
-            "messages", {**t, "direction": "eq.outbound", "status": "neq.draft"},
+            "messages",
+            {**t, "direction": "eq.outbound", "status": "in.(sent,delivered,bounced,replied)"},
             date_field="scheduled_at",
         )
         replies = await _cnt("messages", {**t, "direction": "eq.inbound"})
         totals[tk] = {
             "sourced": sourced, "emails": emails, "drafts": drafts,
-            "sent": sent, "replies": replies,
+            "pushed": pushed, "sent": sent, "replies": replies,
         }
         lines.append(
             f"*{tk}* — sourcées {sourced} · emails {emails} · drafts {drafts} · "
-            f"envoyés {sent} · réponses {replies}"
+            f"poussés {pushed} · envoyés {sent} · réponses {replies}"
         )
 
     bookings = await _cnt("booking_events", {})
