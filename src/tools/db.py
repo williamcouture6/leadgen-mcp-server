@@ -15,6 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from .. import supabase_client as db
+from ..lib.pricing import estimated_cost_usd
 
 
 # ----------------------------------------------------------------------
@@ -766,5 +767,14 @@ async def record_agent_run(payload: AgentRunIn) -> dict[str, Any]:
     row = payload.model_dump(exclude_none=True)
     row["started_at"] = now
     row["finished_at"] = now
+    cost = estimated_cost_usd(
+        payload.model,
+        input_tokens=payload.input_tokens,
+        output_tokens=payload.output_tokens,
+        cache_read_tokens=payload.cache_read_tokens,
+        cache_creation_tokens=payload.cache_creation_tokens,
+    )
+    if cost is not None:
+        row["estimated_cost_usd"] = cost
     rows = await db.insert("agent_runs", row)
     return {"agent_run_id": rows[0]["id"] if rows else None}

@@ -44,6 +44,7 @@ from .. import supabase_client as db
 from ..lib import instantly as instantly_lib
 from ..lib import slack as slack_lib
 from ..lib.calcom import CalcomError, format_slots_for_prompt, get_available_slots
+from ..lib.pricing import estimated_cost_usd
 
 # ----------------------------------------------------------------------
 # Config
@@ -464,6 +465,15 @@ async def _record_agent_run(
             "cache_read_tokens": usage.get("cache_read_input_tokens"),
             "cache_creation_tokens": usage.get("cache_creation_input_tokens"),
         })
+        cost = estimated_cost_usd(
+            model,
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+            cache_read_tokens=usage.get("cache_read_input_tokens"),
+            cache_creation_tokens=usage.get("cache_creation_input_tokens"),
+        )
+        if cost is not None:
+            row["estimated_cost_usd"] = cost
     try:
         rows = await db.insert("agent_runs", row)
         return rows[0]["id"] if rows else None
