@@ -9,6 +9,7 @@ from __future__ import annotations
 from src.lib.owner_match import (
     classify_scraped_contact,
     email_matches_name,
+    summarize_company_decideur,
 )
 
 
@@ -100,3 +101,53 @@ def test_decision_maps_to_contactin_fields():
     d = classify_scraped_contact(_email("jean.tremblay", "nominative"), decideurs)
     assert (d.first_name, d.last_name, d.title) == ("Jean", "Tremblay", "Propriétaire")
     assert (d.owner_confidence == "confirmed") is True   # -> is_decision_maker True
+
+
+# ----------------------------------------------- Résumé décideur (companies)
+
+def test_summary_confirme_via_nominative_match():
+    decideurs = [{"nom_complet": "Jean Tremblay", "titre": "Propriétaire",
+                  "source_url": "https://x.com/a-propos", "confidence": "medium"}]
+    emails = [_email("jean.tremblay", "nominative")]
+    confirme, potentiel = summarize_company_decideur(decideurs, emails)
+    assert confirme == {"nom_complet": "Jean Tremblay", "titre": "Propriétaire",
+                        "source_url": "https://x.com/a-propos"}
+    assert potentiel is None
+
+
+def test_summary_confirme_via_single_high():
+    decideurs = [{"nom_complet": "Marie Gagnon", "titre": "Présidente",
+                  "source_url": "https://x.com", "confidence": "high"}]
+    confirme, potentiel = summarize_company_decideur(decideurs, [_email("info", "generic")])
+    assert confirme["nom_complet"] == "Marie Gagnon"
+    assert "confidence" not in confirme        # confirmé = pas de niveau, c'est un fait
+    assert potentiel is None
+
+
+def test_summary_potentiel_best_candidate_with_confidence():
+    # Pas de match nominatif, pas de high unique -> meilleur candidat en potentiel.
+    decideurs = [
+        {"nom_complet": "Paul Côté", "titre": "Gérant", "source_url": "g", "confidence": "low"},
+        {"nom_complet": "Luc Roy", "titre": "Directeur", "source_url": "s", "confidence": "medium"},
+    ]
+    confirme, potentiel = summarize_company_decideur(decideurs, [_email("info", "generic")])
+    assert confirme is None
+    assert potentiel == {"nom_complet": "Luc Roy", "titre": "Directeur",
+                         "source_url": "s", "confidence": "medium"}
+
+
+def test_summary_two_highs_ambiguous_goes_potentiel():
+    decideurs = [
+        {"nom_complet": "Marie Gagnon", "titre": "Co-propriétaire", "source_url": "a", "confidence": "high"},
+        {"nom_complet": "Luc Roy", "titre": "Co-propriétaire", "source_url": "b", "confidence": "high"},
+    ]
+    confirme, potentiel = summarize_company_decideur(decideurs, [_email("info", "generic")])
+    assert confirme is None
+    assert potentiel["confidence"] == "high"   # fort, mais ambigu donc pas confirmé
+
+
+def test_summary_nothing_when_no_decideur():
+    confirme, potentiel = summarize_company_decideur([], [_email("info", "generic")])
+    assert confirme is None and potentiel is None
+    confirme2, potentiel2 = summarize_company_decideur(None, None)
+    assert confirme2 is None and potentiel2 is None

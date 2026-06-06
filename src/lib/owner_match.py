@@ -142,3 +142,47 @@ def classify_scraped_contact(
             )
 
     return ScrapedContactDecision("unknown")
+
+
+_CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
+
+
+def _decideur_fields(d: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "nom_complet": d.get("nom_complet"),
+        "titre": d.get("titre"),
+        "source_url": d.get("source_url"),
+    }
+
+
+def summarize_company_decideur(
+    decideur_candidats: list[dict[str, Any]] | None,
+    emails_found: list[dict[str, Any]] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Résume le décideur d'une company en `(decideur_confirme, decideur_potentiel)`.
+
+    Exclusif : au plus un des deux est non-None. Réutilise le matching déterministe
+    et la confiance des `decideur_candidats` (high|medium|low).
+      1. email nominatif matché à un décideur          -> confirme (fait, sans confidence)
+      2. un seul décideur confidence=high              -> confirme
+      3. sinon, meilleur candidat (rang high>medium>low) -> potentiel (avec confidence)
+      4. aucun candidat nommé                           -> (None, None)
+    """
+    decideurs = [d for d in (decideur_candidats or []) if (d or {}).get("nom_complet")]
+    if not decideurs:
+        return None, None
+
+    for em in emails_found or []:
+        if em.get("kind") == "nominative":
+            matched = _match_nominative(em.get("local", ""), decideurs)
+            if matched:
+                return _decideur_fields(matched), None
+
+    high = _single_high_confidence(decideurs)
+    if high:
+        return _decideur_fields(high), None
+
+    best = max(decideurs, key=lambda d: _CONFIDENCE_RANK.get(d.get("confidence"), 0))
+    potentiel = _decideur_fields(best)
+    potentiel["confidence"] = best.get("confidence")
+    return None, potentiel
