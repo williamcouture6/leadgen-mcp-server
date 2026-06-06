@@ -186,7 +186,6 @@ class CompanyIn(BaseModel):
     icp_segment: str | None = None
     industry: str | None = None
     google_types: list[str] = Field(default_factory=list)
-    estimated_employees: int | None = None
     google_rating: float | None = None
     google_reviews_count: int | None = None
     source: str = "google_places"
