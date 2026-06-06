@@ -345,6 +345,8 @@ class ContactIn(BaseModel):
     title: str | None = None
     seniority: str | None = None
     is_decision_maker: bool = False
+    owner_confidence: str | None = None   # 'confirmed' | 'potential' | 'unknown'
+    potential_owner: dict[str, Any] | None = None
     source: str = "website"
     raw_payload: dict[str, Any] | None = None
 

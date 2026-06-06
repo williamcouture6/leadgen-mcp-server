@@ -92,3 +92,11 @@ def test_unknown_generic_no_decideur():
     assert d.first_name is None
     assert d.last_name is None
     assert d.potential_owner is None
+
+
+def test_decision_maps_to_contactin_fields():
+    # Garde-fou : la décision se mappe proprement sur les champs ContactIn.
+    decideurs = [{"nom_complet": "Jean Tremblay", "titre": "Propriétaire", "confidence": "high"}]
+    d = classify_scraped_contact(_email("jean.tremblay", "nominative"), decideurs)
+    assert (d.first_name, d.last_name, d.title) == ("Jean", "Tremblay", "Propriétaire")
+    assert (d.owner_confidence == "confirmed") is True   # -> is_decision_maker True
