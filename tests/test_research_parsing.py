@@ -104,3 +104,11 @@ def test_tool_schema_keys_match_prompt_contract() -> None:
         "personalization_hooks",
     ):
         assert key in props, f"clé manquante dans le schéma tool: {key}"
+
+
+def test_decideur_candidats_schema_has_confidence() -> None:
+    # Le matcher owner_confidence (cas b) s'appuie sur ce champ.
+    props = research._RESEARCH_TOOL["input_schema"]["properties"]
+    dc_item = props["decideur_candidats"]["items"]["properties"]
+    assert "confidence" in dc_item, "decideur_candidats doit exposer 'confidence'"
+    assert dc_item["confidence"]["enum"] == ["high", "medium", "low"]

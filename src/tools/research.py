@@ -364,6 +364,7 @@ _RESEARCH_TOOL: dict[str, Any] = {
                         "nom_complet": {"type": ["string", "null"]},
                         "titre": {"type": ["string", "null"]},
                         "source_url": {"type": ["string", "null"]},
+                        "confidence": {"enum": ["high", "medium", "low"]},
                     },
                 },
             },
