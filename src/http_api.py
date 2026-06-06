@@ -25,6 +25,7 @@ from .tools import reply as reply_tools
 from .tools import research as research_tools
 from .tools import send as send_tools
 from .tools import send_status as send_status_tools
+from .lib.owner_match import classify_scraped_contact
 
 
 def _expected_token() -> str | None:
@@ -490,20 +491,29 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
         pass
 
     # Insère les emails scrapés du site comme contacts (source unique du pipeline
-    # depuis le retrait d'Apollo). Les emails du site (info@, contact@, ou
-    # nominatifs) sont la matière première de l'acquisition. Base légale =
-    # `implied_conspicuous` (publication conspicue, voir _consent_basis_for_contact).
+    # depuis le retrait d'Apollo). Le `owner_confidence` (confirmed/potential/unknown)
+    # est décidé par `classify_scraped_contact` à partir des `decideur_candidats`
+    # extraits par le Research Agent. confirmed => nom attaché (fait) ; potential =>
+    # nom deviné isolé dans potential_owner ; unknown => aucun nom. Tous sont insérés
+    # (aucune quarantaine) ; c'est le template WF-4 qui varie selon owner_confidence.
+    # Base légale = implied_conspicuous (voir _consent_basis_for_contact).
     # `email_verified=False` → ces emails n'ont pas été validés par un fournisseur tiers.
+    decideurs = (out.research_json or {}).get("decideur_candidats") or []
     inserted_scraped = duplicate_scraped = 0
     for em in out.emails_found:
+        decision = classify_scraped_contact(em, decideurs)
         res = await db_tools.insert_contact(
             db_tools.ContactIn(
                 company_id=payload.company_id,
                 email=em["email"],
                 email_verified=False,
                 email_verification_source="website_scrape",
-                title=None,
-                is_decision_maker=(em["kind"] != "other"),
+                first_name=decision.first_name,
+                last_name=decision.last_name,
+                title=decision.title,
+                is_decision_maker=(decision.owner_confidence == "confirmed"),
+                owner_confidence=decision.owner_confidence,
+                potential_owner=decision.potential_owner,
                 source="website",
                 raw_payload={
                     "kind": em["kind"],  # nominative | generic | other

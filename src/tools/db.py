@@ -186,7 +186,6 @@ class CompanyIn(BaseModel):
     icp_segment: str | None = None
     industry: str | None = None
     google_types: list[str] = Field(default_factory=list)
-    estimated_employees: int | None = None
     google_rating: float | None = None
     google_reviews_count: int | None = None
     source: str = "google_places"
@@ -345,6 +344,8 @@ class ContactIn(BaseModel):
     title: str | None = None
     seniority: str | None = None
     is_decision_maker: bool = False
+    owner_confidence: str | None = None   # 'confirmed' | 'potential' | 'unknown'
+    potential_owner: dict[str, Any] | None = None
     source: str = "website"
     raw_payload: dict[str, Any] | None = None
 
@@ -601,7 +602,8 @@ async def list_contacts_to_personalize(
         params={
             "select": (
                 "id,first_name,last_name,email,email_verified,title,company_id,"
-                "status,email_verification_source,raw_payload,track"
+                "status,email_verification_source,raw_payload,track,"
+                "owner_confidence,potential_owner"
             ),
             "email": "not.is.null",
             "status": "in.(new,ready)",

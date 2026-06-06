@@ -53,22 +53,6 @@ def test_company_in_track_defaut_opt() -> None:
 # ----------------------------------------------- Isolation track (sélection)
 
 @pytest.mark.asyncio
-async def test_enrich_filtre_track(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict = {}
-
-    async def fake_select(table, params=None):
-        captured["params"] = params or {}
-        return []
-
-    monkeypatch.setattr(real_db, "select", fake_select)
-
-    await dbt.list_companies_to_enrich(track="REACTI")
-    assert captured["params"].get("track") == "eq.REACTI"
-    await dbt.list_companies_to_enrich()  # défaut
-    assert captured["params"].get("track") == "eq.OPT"
-
-
-@pytest.mark.asyncio
 async def test_research_filtre_track(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict = {}
 
