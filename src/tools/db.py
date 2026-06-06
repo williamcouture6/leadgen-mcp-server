@@ -15,6 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from .. import supabase_client as db
+from ..lib.owner_match import summarize_company_decideur
 from ..lib.pricing import estimated_cost_usd
 
 
@@ -761,13 +762,23 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
 async def update_company_research(
     company_id: str,
     research_json: dict[str, Any],
+    emails_found: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Patch companies.research_json (+ colonnes flat lead_potential_*).
+    """Patch companies.research_json (+ colonnes flat lead_potential_* et décideur).
 
     N'écrase pas le status — la sourcing flow le gère séparément. On met à jour
-    le payload du Research Agent et, si présent, le score de potentiel extrait.
+    le payload du Research Agent, le score de potentiel extrait, et le décideur
+    résumé (decideur_confirme/decideur_potentiel, mutuellement exclusifs) calculé
+    depuis decideur_candidats + les emails nominatifs scrapés.
     """
-    patch: dict[str, Any] = {"research_json": research_json}
+    confirme, potentiel = summarize_company_decideur(
+        (research_json or {}).get("decideur_candidats"), emails_found
+    )
+    patch: dict[str, Any] = {
+        "research_json": research_json,
+        "decideur_confirme": confirme,
+        "decideur_potentiel": potentiel,
+    }
     patch.update(extract_lead_potential_patch(research_json))
     rows = await db.update(
         "companies",

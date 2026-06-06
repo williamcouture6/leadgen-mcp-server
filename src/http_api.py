@@ -468,7 +468,9 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
             error_text=repr(e),
         )
 
-    await db_tools.update_company_research(payload.company_id, out.research_json)
+    await db_tools.update_company_research(
+        payload.company_id, out.research_json, emails_found=out.emails_found
+    )
     try:
         await db_tools.record_agent_run(
             db_tools.AgentRunIn(
