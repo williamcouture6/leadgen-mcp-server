@@ -726,16 +726,50 @@ async def list_companies_to_research(
     return await db.select("companies", params=params)
 
 
+def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
+    """Extrait les colonnes flat `lead_potential_*` du research_json.
+
+    Le Research Agent note le potentiel du lead dans
+    `research_json["lead_potential"] = {score: 0-100, reasoning: str}`. On copie
+    ces valeurs en colonnes dédiées de `companies` pour pouvoir trier/filtrer en
+    SQL sans fouiller le JSON.
+
+    Retourne un dict à fusionner dans le patch UPDATE. Vide si le score est
+    absent ou invalide (on ne touche alors pas les colonnes — elles restent à
+    leur valeur précédente / null).
+    """
+    if not isinstance(research_json, dict):
+        return {}
+    lp = research_json.get("lead_potential")
+    if not isinstance(lp, dict):
+        return {}
+    score = lp.get("score")
+    # bool est une sous-classe d'int — on l'exclut explicitement.
+    if not isinstance(score, int) or isinstance(score, bool):
+        return {}
+    if not (0 <= score <= 100):
+        return {}
+    patch: dict[str, Any] = {"lead_potential_score": score}
+    reason = lp.get("reasoning")
+    if isinstance(reason, str):
+        patch["lead_potential_reason"] = reason[:500]
+    return patch
+
+
 async def update_company_research(
     company_id: str,
     research_json: dict[str, Any],
 ) -> dict[str, Any]:
-    """Patch companies.research_json. N'écrase pas le status — la sourcing flow
-    le gère séparément. On met juste à jour le payload du Research Agent.
+    """Patch companies.research_json (+ colonnes flat lead_potential_*).
+
+    N'écrase pas le status — la sourcing flow le gère séparément. On met à jour
+    le payload du Research Agent et, si présent, le score de potentiel extrait.
     """
+    patch: dict[str, Any] = {"research_json": research_json}
+    patch.update(extract_lead_potential_patch(research_json))
     rows = await db.update(
         "companies",
-        {"research_json": research_json},
+        patch,
         filters={"id": f"eq.{company_id}"},
     )
     return {"updated": len(rows)}

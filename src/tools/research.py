@@ -404,6 +404,13 @@ _RESEARCH_TOOL: dict[str, Any] = {
             },
             "disqualifications": {"type": "array", "items": {"type": "string"}},
             "personalization_hooks": {"type": "array", "items": {"type": "string"}},
+            "lead_potential": {
+                "type": ["object", "null"],
+                "properties": {
+                    "score": {"type": ["integer", "null"]},      # 0-100
+                    "reasoning": {"type": ["string", "null"]},     # 1 phrase
+                },
+            },
         },
         "required": ["company_summary"],
     },
@@ -451,6 +458,7 @@ def _call_llm(
     site_block: str,
     model: str = _DEFAULT_MODEL,
     max_tokens: int = 2000,
+    track: str = "OPT",
 ) -> LLMResult:
     """Synchronous Anthropic call. Wrapped via `asyncio.to_thread` from the endpoint.
 
@@ -465,7 +473,9 @@ def _call_llm(
     client = Anthropic(api_key=api_key)
 
     system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
+    track_norm = (track or "OPT").upper()
     user = (
+        f"## Track\n{track_norm}\n\n"
         "## Google Places data\n"
         f"{place_block}\n\n"
         "## Website scrape\n"
@@ -515,6 +525,7 @@ class ResearchCompanyIn(BaseModel):
     google_place_id: str
     website: str | None = None
     model: str = _DEFAULT_MODEL
+    track: str = "OPT"  # OPT | REACTI — sélectionne les critères de scoring du lead
 
 
 class ResearchCompanyOut(BaseModel):
@@ -543,7 +554,9 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
     place_block = _format_place_for_llm(place)
     site_block = _format_site_for_llm(site)
 
-    llm_result = await asyncio.to_thread(_call_llm, place_block, site_block, payload.model)
+    llm_result = await asyncio.to_thread(
+        _call_llm, place_block, site_block, payload.model, 2000, payload.track
+    )
 
     return ResearchCompanyOut(
         research_json=llm_result.research_json,

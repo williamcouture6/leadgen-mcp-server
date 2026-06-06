@@ -373,6 +373,7 @@ async def companies_to_research(
 class ResearchCompanyByIdIn(BaseModel):
     company_id: str
     model: str = "claude-sonnet-4-6"
+    track: str = "OPT"  # OPT | REACTI — sélectionne les critères de scoring du lead
 
 
 class ResearchCompanyByIdOut(BaseModel):
@@ -421,6 +422,7 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
                 google_place_id=co["google_place_id"],
                 website=co.get("website"),
                 model=payload.model,
+                track=payload.track,
             )
         )
     except Exception as e:  # noqa: BLE001
@@ -577,7 +579,9 @@ async def run_wf3(payload: RunWf3In) -> RunWf3Out:
         async with sem:
             try:
                 res = await research_company_by_id(
-                    ResearchCompanyByIdIn(company_id=co["id"], model=payload.model)
+                    ResearchCompanyByIdIn(
+                        company_id=co["id"], model=payload.model, track=payload.track
+                    )
                 )
                 return co, res, None
             except Exception as e:  # noqa: BLE001

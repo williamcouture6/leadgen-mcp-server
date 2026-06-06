@@ -53,9 +53,27 @@ Tu n'écris pas l'email. Tu extrais des **faits vérifiables et des signaux** �
   ],
   "personalization_hooks": [
     "1-3 angles factuels et spécifiques que l'agent Personalization peut utiliser. Ex: 'mentionne leur 4.9 ★ avec 154 avis', 'mentionne le service d'urgence 24/7 affiché sur la page d'accueil', 'mentionne la review du 12 mars qui dit X'"
-  ]
+  ],
+  "lead_potential": {
+    "score": 0-100,
+    "reasoning": "1 phrase factuelle qui justifie le score (pas d'invention)"
+  }
 }
 ```
+
+## Score de potentiel du lead (`lead_potential`)
+
+Note de 0 à 100 à quel point ce prospect vaut la peine d'être contacté **selon le track indiqué en haut du message (`## Track`)**. Barème: **0-30 = écarter, 30-60 = moyen, 60-100 = prioritaire**. Mets `null` seulement si tu n'as vraiment aucune donnée.
+
+**Si Track = REACTI** (PME de service résidentiel récurrent: déneigement, tonte de pelouse, piscine, extermination, lavage de vitres — l'offre = réactiver leur base de clients dormants):
+- **Haut potentiel**: service clairement saisonnier/récurrent (un client revient chaque année), **grosse base de clients** (beaucoup d'avis = beaucoup de clients servis), zone desservie dense, processus manuel visible (pas de plateforme de booking/CRM moderne sur le site). Le **déneigement** est l'entrée idéale → bonus.
+- **Bas potentiel**: trop petit (1 personne sans base de clients récurrente), service ponctuel non récurrent (rénovation one-shot), ou déjà très outillé (plateforme de réservation/abonnement automatisée déjà en place).
+
+**Si Track = OPT** (PME santé/pro QC: dentiste, physio, clinique privée — l'offre = optimisation de processus, assistant téléphonique 24/7):
+- **Haut potentiel**: douleur process visible dans les avis (délais, attente téléphonique, no-shows, difficulté à joindre), taille 5-100 employés, faible maturité tech, site avec formulaire mais sans assistant/chatbot.
+- **Bas potentiel**: chaîne corporative / franchise, trop gros (>100 empl.), ou déjà fortement automatisé (chatbot, assistant virtuel, agence numérique partenaire visible).
+
+Le `reasoning` doit citer le ou les signaux concrets qui justifient ton chiffre.
 
 ## Notes spécifiques au playbook "services résidentiels"
 
