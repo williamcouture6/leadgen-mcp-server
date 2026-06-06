@@ -69,9 +69,11 @@ def _format_input_for_llm(
         )
     else:
         parts.append(
-            "\n## contact\n`null` — aucun contact email trouvé. "
-            "Utilise les `decideur_candidats` du research_json pour le prénom si disponible, "
-            "sinon écris 'Bonjour,' sans nom. Mets un warning 'Aucun email trouvé — fallback manuel requis (formulaire de contact)'."
+            "\n## contact\n`null` — aucun contact email trouvé "
+            "(`owner_confidence` à traiter comme `unknown`). N'invente PAS de nom : "
+            "écris une salutation neutre `Bonjour,` et applique le **mode large/routage** "
+            "(voir section « Mode d'adresse »). Mets un warning "
+            "'Aucun email trouvé — fallback manuel requis (formulaire de contact)'."
         )
 
     if social_proof:

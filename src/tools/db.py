@@ -603,7 +603,8 @@ async def list_contacts_to_personalize(
         params={
             "select": (
                 "id,first_name,last_name,email,email_verified,title,company_id,"
-                "status,email_verification_source,raw_payload,track"
+                "status,email_verification_source,raw_payload,track,"
+                "owner_confidence,potential_owner"
             ),
             "email": "not.is.null",
             "status": "in.(new,ready)",
