@@ -845,7 +845,7 @@ async def update_company_research(
 
 
 class AgentRunIn(BaseModel):
-    agent: Literal["research", "personalization", "qualification", "call_prep", "compliance"]
+    agent: Literal["research", "personalization", "qualification", "call_prep", "compliance", "reacti_discover"]
     model: str
     company_id: str | None = None
     contact_id: str | None = None
