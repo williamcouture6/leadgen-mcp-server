@@ -69,3 +69,28 @@ async def test_update_company_research_sets_potentiel(monkeypatch: pytest.Monkey
     assert patch["decideur_confirme"] is None
     assert patch["decideur_potentiel"]["nom_complet"] == "Luc Roy"
     assert patch["decideur_potentiel"]["confidence"] == "medium"
+
+
+@pytest.mark.asyncio
+async def test_update_company_research_promotes_status_enriched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Succès research => status passe à 'enriched', mais jamais sur une boîte
+    déjà disqualified/suppressed (gardé par le filtre PostgREST)."""
+    import src.tools.db as dbt
+
+    captured: dict = {}
+
+    async def fake_update(table, patch, *, filters):
+        captured["patch"] = patch
+        captured["filters"] = filters
+        return [{"id": "co-3"}]
+
+    monkeypatch.setattr(dbt.db, "update", fake_update)
+
+    await dbt.update_company_research("co-3", {"company_summary": "x"}, emails_found=[])
+
+    assert captured["patch"]["status"] == "enriched"
+    # Le filtre protège les boîtes écartées : on ne re-promeut pas un statut terminal.
+    assert captured["filters"]["status"] == "not.in.(disqualified,suppressed)"
+    assert captured["filters"]["id"] == "eq.co-3"

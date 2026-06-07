@@ -4,7 +4,7 @@ Phase 1 (sourcing) :
 - next_sourcing_target : trouve le prochain (city, sector) à scraper (cooldown 30j)
 - start_sourcing_run : crée une trace de pass (status=running)
 - complete_sourcing_run : marque completed/failed avec métriques
-- insert_company : insert avec dédup 3 clés (google_place_id, neq, dedup_key)
+- insert_company : insert avec dédup 2 clés (google_place_id, dedup_key)
 - list_recent_companies : pour vérif manuelle après WF-1
 """
 from __future__ import annotations
@@ -272,7 +272,7 @@ async def complete_sourcing_run(payload: CompleteRunIn) -> dict[str, Any]:
 
 async def insert_company(payload: CompanyIn) -> InsertCompanyOut:
     """Insert avec dédup. Retourne 'duplicate' si une clé conflit."""
-    # Pré-check sur les 2 clés business (google_place_id, neq).
+    # Pré-check sur la clé business google_place_id (fallback dedup_key en INSERT).
     if payload.google_place_id:
         existing = await db.select(
             "companies",
@@ -764,12 +764,17 @@ async def update_company_research(
     research_json: dict[str, Any],
     emails_found: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Patch companies.research_json (+ colonnes flat lead_potential_* et décideur).
+    """Patch companies.research_json (+ colonnes flat lead_potential_* et décideur)
+    et promeut le status à 'enriched'.
 
-    N'écrase pas le status — la sourcing flow le gère séparément. On met à jour
-    le payload du Research Agent, le score de potentiel extrait, et le décideur
-    résumé (decideur_confirme/decideur_potentiel, mutuellement exclusifs) calculé
-    depuis decideur_candidats + les emails nominatifs scrapés.
+    Met à jour le payload du Research Agent, le score de potentiel extrait, et le
+    décideur résumé (decideur_confirme/decideur_potentiel, mutuellement exclusifs)
+    calculé depuis decideur_candidats + les emails nominatifs scrapés.
+
+    `status` passe à 'enriched' (signal fiable « a été researché » — `last_enriched_at`
+    horodaté au passage). Le filtre `status not.in.(disqualified,suppressed)` protège
+    les boîtes terminales : on ne ressuscite jamais un lead écarté, et l'UPDATE entier
+    (research_json inclus) est donc sauté pour ces boîtes — voulu, elles sont hors pipeline.
     """
     confirme, potentiel = summarize_company_decideur(
         (research_json or {}).get("decideur_candidats"), emails_found
@@ -778,12 +783,17 @@ async def update_company_research(
         "research_json": research_json,
         "decideur_confirme": confirme,
         "decideur_potentiel": potentiel,
+        "status": "enriched",
+        "last_enriched_at": datetime.now(timezone.utc).isoformat(),
     }
     patch.update(extract_lead_potential_patch(research_json))
     rows = await db.update(
         "companies",
         patch,
-        filters={"id": f"eq.{company_id}"},
+        filters={
+            "id": f"eq.{company_id}",
+            "status": "not.in.(disqualified,suppressed)",
+        },
     )
     return {"updated": len(rows)}
 
