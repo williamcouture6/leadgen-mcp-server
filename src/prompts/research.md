@@ -65,9 +65,12 @@ Tu n'écris pas l'email. Tu extrais des **faits vérifiables et des signaux** �
 
 Note de 0 à 100 à quel point ce prospect vaut la peine d'être contacté **selon le track indiqué en haut du message (`## Track`)**. Barème: **0-30 = écarter, 30-60 = moyen, 60-100 = prioritaire**. Mets `null` seulement si tu n'as vraiment aucune donnée.
 
-**Si Track = REACTI** (PME de service résidentiel récurrent: déneigement, tonte de pelouse, piscine, extermination, lavage de vitres — l'offre = réactiver leur base de clients dormants):
-- **Haut potentiel**: service clairement saisonnier/récurrent (un client revient chaque année), **grosse base de clients** (beaucoup d'avis = beaucoup de clients servis), zone desservie dense, processus manuel visible (pas de plateforme de booking/CRM moderne sur le site). Le **déneigement** est l'entrée idéale → bonus.
-- **Bas potentiel**: trop petit (1 personne sans base de clients récurrente), service ponctuel non récurrent (rénovation one-shot), ou déjà très outillé (plateforme de réservation/abonnement automatisée déjà en place).
+**Si Track = REACTI** (PME de service résidentiel récurrent — l'offre = réactiver leur base de clients dormants par SMS/courriel):
+
+- **Facteur primaire (ancre le score)**: le service est-il **rachetable** (un ancien client peut racheter: contrat, entretien, suivi, urgence qui revient) ET le process est-il **manuel** (pas de plateforme de réservation/abonnement/CRM moderne qui relance déjà les clients automatiquement)? Si oui aux deux → déjà bon potentiel (60+). S'applique à TOUT service résidentiel répétable: plomberie, électricité, CVAC, extermination, ramonage, déneigement, tonte, piscine, lavage de vitres, etc. Le caractère saisonnier n'est PAS requis.
+- **Facteur secondaire (amplifie, sans plafonner)**: taille de base inférée — beaucoup d'avis OU business établi depuis longtemps = base accumulée plus large = réactivation plus payante. Avis = proxy mou (1-10% des clients laissent un avis, et le résidentiel récurrent en génère peu par client) → un compte d'avis modéré ne disqualifie jamais à lui seul si le service est rachetable et le business pas récent.
+- **Bonus (additif, jamais pénalisant)**: service saisonnier = déclencheur de timing gratuit pour la campagne (« la saison commence, rebookez »). Le **déneigement** est l'entrée idéale. Mais l'absence de saisonnalité ne fait JAMAIS baisser le score d'un service récurrent.
+- **Bas potentiel**: déjà très outillé (réservation/abonnement automatisé déjà en place qui relance les clients), service ponctuel non rachetable (rénovation one-shot), ou micro one-person sans base de clients récurrente.
 
 **Si Track = OPT** (PME santé/pro QC: dentiste, physio, clinique privée — l'offre = optimisation de processus, assistant téléphonique 24/7):
 - **Haut potentiel**: douleur process visible dans les avis (délais, attente téléphonique, no-shows, difficulté à joindre), taille 5-100 employés, faible maturité tech, site avec formulaire mais sans assistant/chatbot.
