@@ -25,6 +25,7 @@ from .tools import reply as reply_tools
 from .tools import research as research_tools
 from .tools import send as send_tools
 from .tools import send_status as send_status_tools
+from .tools import reacti_discover as reacti_discover_tools
 from .lib.owner_match import classify_scraped_contact
 
 
@@ -628,6 +629,206 @@ async def run_wf3(payload: RunWf3In) -> RunWf3Out:
     return RunWf3Out(
         processed=len(items), succeeded=succeeded, failed=failed,
         skipped=skipped, items=items,
+    )
+
+
+# ---------------- REACTI discovery (WF-reacti-2 — PME sans site web) ----------------
+
+class ReactiDiscoverIn(BaseModel):
+    company_id: str
+    model: str = "claude-sonnet-4-6"
+
+
+class ReactiDiscoverOut(BaseModel):
+    company_id: str
+    status: str  # "found" | "no_web_presence" | "error" | "company_not_found"
+    contacts_inserted: int = 0
+    contacts_duplicate: int = 0
+    website_backfilled: bool = False
+    error_text: str | None = None
+
+
+@app.post(
+    "/reacti/discover-contact",
+    dependencies=[Depends(_require_auth)],
+    response_model=ReactiDiscoverOut,
+)
+async def reacti_discover_contact(payload: ReactiDiscoverIn) -> ReactiDiscoverOut:
+    """Découverte de contact pour UNE PME REACTI sans site web.
+
+    Web search Anthropic → courriel public ? Si oui → insert_contact (base légale
+    honnête) + backfill website. Sinon → status='no_web_presence'. La company
+    reste 'sourced' en cas de succès (research la promeut à 'enriched' ensuite).
+    """
+    import asyncio
+
+    matches = await db_tools.db.select(
+        "companies",
+        params={
+            "select": "id,name,city,address,raw_payload,website,track",
+            "id": f"eq.{payload.company_id}",
+            "limit": "1",
+        },
+    )
+    if not matches:
+        return ReactiDiscoverOut(company_id=payload.company_id, status="company_not_found")
+    co = matches[0]
+
+    try:
+        llm = await asyncio.to_thread(
+            reacti_discover_tools._call_discovery_llm,
+            name=co.get("name") or "",
+            city=co.get("city"),
+            address=co.get("address"),
+            phone=(co.get("raw_payload") or {}).get("nationalPhoneNumber"),
+            model=payload.model,
+        )
+    except Exception as e:  # noqa: BLE001
+        try:
+            await db_tools.record_agent_run(
+                db_tools.AgentRunIn(
+                    agent="reacti_discover", model=payload.model,
+                    company_id=payload.company_id, error_text=repr(e),
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return ReactiDiscoverOut(
+            company_id=payload.company_id, status="error", error_text=repr(e),
+        )
+
+    actions = reacti_discover_tools.decide_discovery_actions(llm.discovery)
+
+    # Audit (non bloquant)
+    try:
+        await db_tools.record_agent_run(
+            db_tools.AgentRunIn(
+                agent="reacti_discover", model=llm.model,
+                company_id=payload.company_id,
+                input_payload={"name": co.get("name"), "city": co.get("city")},
+                output_payload=llm.discovery,
+                input_tokens=llm.usage.input_tokens,
+                output_tokens=llm.usage.output_tokens,
+                cache_read_tokens=llm.usage.cache_read_input_tokens,
+                cache_creation_tokens=llm.usage.cache_creation_input_tokens,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    if actions.new_status == "no_web_presence":
+        await db_tools.db.update(
+            "companies",
+            {"status": "no_web_presence"},
+            filters={"id": f"eq.{payload.company_id}"},
+        )
+        return ReactiDiscoverOut(
+            company_id=payload.company_id, status="no_web_presence",
+        )
+
+    inserted = duplicate = 0
+    for c in actions.contacts:
+        res = await db_tools.insert_contact(
+            db_tools.ContactIn(
+                company_id=payload.company_id,
+                email=c["email"],
+                email_verified=False,
+                email_verification_source=c["email_verification_source"],
+                source="reacti_discovery",
+                raw_payload={"kind": c["kind"], "source_url": c.get("source_url")},
+            )
+        )
+        if res.status == "inserted":
+            inserted += 1
+        elif res.status == "duplicate":
+            duplicate += 1
+
+    website_backfilled = False
+    if actions.website_backfill and not co.get("website"):
+        await db_tools.db.update(
+            "companies",
+            {"website": actions.website_backfill},
+            filters={"id": f"eq.{payload.company_id}"},
+        )
+        website_backfilled = True
+
+    return ReactiDiscoverOut(
+        company_id=payload.company_id,
+        status="found",
+        contacts_inserted=inserted,
+        contacts_duplicate=duplicate,
+        website_backfilled=website_backfilled,
+    )
+
+
+class RunReactiWf2In(BaseModel):
+    limit: int = 10
+    model: str = "claude-sonnet-4-6"
+    concurrency: int = 3
+
+
+class RunReactiWf2Item(BaseModel):
+    company_id: str
+    name: str | None = None
+    status: str
+    error_text: str | None = None
+
+
+class RunReactiWf2Out(BaseModel):
+    processed: int
+    found: int
+    no_web_presence: int
+    failed: int
+    items: list[RunReactiWf2Item]
+
+
+@app.post(
+    "/reacti/wf2/run",
+    dependencies=[Depends(_require_auth)],
+    response_model=RunReactiWf2Out,
+)
+async def run_reacti_wf2(payload: RunReactiWf2In) -> RunReactiWf2Out:
+    """Pass complet WF-reacti-2 : N companies REACTI à découvrir, en parallèle borné."""
+    import asyncio
+
+    backlog = await db_tools.list_companies_to_discover(limit=payload.limit)
+    sem = asyncio.Semaphore(max(1, payload.concurrency))
+
+    async def _one(co: dict[str, Any]):
+        async with sem:
+            try:
+                res = await reacti_discover_contact(
+                    ReactiDiscoverIn(company_id=co["id"], model=payload.model)
+                )
+                return co, res, None
+            except Exception as e:  # noqa: BLE001
+                return co, None, repr(e)
+
+    results = await asyncio.gather(*(_one(co) for co in backlog))
+
+    items: list[RunReactiWf2Item] = []
+    found = no_web = failed = 0
+    for co, res, err in results:
+        if res is None:
+            failed += 1
+            items.append(RunReactiWf2Item(
+                company_id=co["id"], name=co.get("name"), status="error", error_text=err,
+            ))
+            continue
+        if res.status == "found":
+            found += 1
+        elif res.status == "no_web_presence":
+            no_web += 1
+        else:
+            failed += 1
+        items.append(RunReactiWf2Item(
+            company_id=co["id"], name=co.get("name"),
+            status=res.status, error_text=res.error_text,
+        ))
+
+    return RunReactiWf2Out(
+        processed=len(backlog), found=found, no_web_presence=no_web,
+        failed=failed, items=items,
     )
 
 

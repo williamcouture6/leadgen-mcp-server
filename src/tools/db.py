@@ -364,12 +364,17 @@ def _consent_basis_for_contact(
     - Email publié manifestement sur le site public de l'entreprise (scraping WF-3)
       → `implied_conspicuous` (CASL 10(9)(b) : publication conspicue + courriel
       pertinent au rôle). On stocke l'URL source comme preuve.
-    - Email d'une autre provenance (fournisseur tiers, import manuel, legacy Apollo)
+    - Email trouvé sur la page propre de l'entreprise via découverte web (WF-reacti-2,
+      source `reacti_discovery_own_page`) → même base `implied_conspicuous` : le
+      courriel était publié publiquement par l'entreprise elle-même (page Facebook/GMB
+      confirmée comme page officielle), même logique que le scraping WF-3.
+    - Email d'une autre provenance (fournisseur tiers, import manuel, legacy Apollo,
+      annuaire tiers `reacti_discovery_directory`)
       → `legitimate_interest` : on n'a PAS de preuve de publication conspicue, donc
       on enregistre honnêtement une base plus faible, à confirmer/upgrader plus tard.
     """
     src = (email_verification_source or source or "").lower()
-    if "website" in src or "scrape" in src:
+    if "website" in src or "scrape" in src or "own_page" in src:
         return "implied_conspicuous"
     return "legitimate_interest"
 
@@ -709,24 +714,65 @@ async def list_companies_to_research(
     require_website: bool = True,
     track: str = "OPT",
 ) -> list[dict[str, Any]]:
-    """Companies sans research_json. On exige par défaut un website : pas de site =
-    pas assez de matière pour un research utile, le coût LLM est gaspillé.
+    """Companies sans research_json.
 
-    `status='disqualified'` est aussi exclu pour ne pas brûler de tokens sur des
-    leads écartés. Filtre `track` (défaut OPT) = isolation OPT/REACTI.
+    OPT : exige un website (`require_website=True`) — pas de site = pas de matière.
+    REACTI : peut tourner avec `require_website=False` pour traiter les boîtes sans
+    site dont la découverte (WF-reacti-2) a trouvé un contact. Dans ce mode, on
+    exige tout de même `website NOT NULL OR a >=1 contact` (anti-gaspillage : une
+    boîte sans contact ni site n'a rien à personnaliser en aval).
+
+    Exclut les statuts terminaux (disqualified, no_web_presence).
     """
     params: dict[str, str] = {
         "select": "id,name,domain,website,city,icp_segment,industry,google_place_id,status,track",
         "research_json": "is.null",
         "google_place_id": "not.is.null",
-        "status": "neq.disqualified",
+        "status": "not.in.(disqualified,no_web_presence)",
         "track": f"eq.{track}",
         "order": "created_at.asc",
         "limit": str(limit),
     }
     if require_website:
         params["website"] = "not.is.null"
-    return await db.select("companies", params=params)
+    rows = await db.select("companies", params=params)
+    if require_website or not rows:
+        return rows
+
+    # Mode no-website : garder website NOT NULL OU company avec >=1 contact.
+    candidate_ids = [r["id"] for r in rows if not r.get("website")]
+    with_contact: set[str] = set()
+    if candidate_ids:
+        contacts = await db.select(
+            "contacts",
+            params={
+                "select": "company_id",
+                "company_id": f"in.({','.join(candidate_ids)})",
+            },
+        )
+        with_contact = {c["company_id"] for c in contacts}
+    return [r for r in rows if r.get("website") or r["id"] in with_contact]
+
+
+async def list_companies_to_discover(
+    limit: int = 20,
+    track: str = "REACTI",
+) -> list[dict[str, Any]]:
+    """Backlog WF-reacti-2 : companies REACTI encore 'sourced', sans website ni
+    research_json. Ce sont les boîtes pour lesquelles tenter une découverte web.
+    """
+    return await db.select(
+        "companies",
+        params={
+            "select": "id,name,city,address,raw_payload,status,track",
+            "track": f"eq.{track}",
+            "website": "is.null",
+            "research_json": "is.null",
+            "status": "eq.sourced",
+            "order": "created_at.asc",
+            "limit": str(limit),
+        },
+    )
 
 
 def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
@@ -799,7 +845,7 @@ async def update_company_research(
 
 
 class AgentRunIn(BaseModel):
-    agent: Literal["research", "personalization", "qualification", "call_prep", "compliance"]
+    agent: Literal["research", "personalization", "qualification", "call_prep", "compliance", "reacti_discover"]
     model: str
     company_id: str | None = None
     contact_id: str | None = None
