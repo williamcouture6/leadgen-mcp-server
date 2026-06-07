@@ -96,6 +96,22 @@ def test_no_tool_block_means_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.discovery["emails"] == []
 
 
+def test_truncated_tool_use_is_not_trusted(monkeypatch: pytest.MonkeyPatch) -> None:
+    # stop_reason='max_tokens' = le save_discovery peut être tronqué (input partiel).
+    # On ne doit JAMAIS le traiter comme une vraie trouvaille → fallback vide.
+    payload = {"found": True, "confidence": "high",
+               "emails": [{"email": "info@x.ca"}]}
+    resp = _Resp([_Block(type="tool_use", name="save_discovery", input=payload)])
+    resp.stop_reason = "max_tokens"
+    _patch_client(monkeypatch, resp)
+
+    result = rd._call_discovery_llm(
+        name="Tronqué", city="Sherbrooke", address=None, phone=None,
+    )
+    assert result.discovery["found"] is False
+    assert result.discovery["emails"] == []
+
+
 def test_decide_low_confidence_marks_no_web_presence() -> None:
     discovery = {
         "found": True, "discovered_url": "https://x", "page_kind": "facebook",

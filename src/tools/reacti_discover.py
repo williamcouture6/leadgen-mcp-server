@@ -122,8 +122,11 @@ def _call_discovery_llm(
     )
 
     resp = client.messages.create(
+        # max_tokens large : le web search natif consomme plusieurs rounds avant le
+        # tool_use final save_discovery. Trop bas → stop_reason='max_tokens' tronque
+        # le tool_use (input partiel) → mauvaise décision silencieuse.
         model=model,
-        max_tokens=1500,
+        max_tokens=2000,
         temperature=0.2,
         system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
         tools=[
@@ -139,7 +142,12 @@ def _call_discovery_llm(
          and getattr(b, "name", None) == _DISCOVERY_TOOL_NAME),
         None,
     )
-    if tool_block is not None and isinstance(tool_block.input, dict):
+    # tool_choice=auto (forcé impossible avec web_search) → le modèle peut finir en
+    # texte seul (rien trouvé) OU être tronqué (stop_reason='max_tokens'). Dans les
+    # deux cas on retombe sur un résultat vide = no_web_presence (faux négatif sûr).
+    # Un save_discovery tronqué ne doit JAMAIS être traité comme une vraie trouvaille.
+    truncated = getattr(resp, "stop_reason", None) == "max_tokens"
+    if tool_block is not None and isinstance(tool_block.input, dict) and not truncated:
         discovery = {**_EMPTY_DISCOVERY, **tool_block.input}
     else:
         discovery = dict(_EMPTY_DISCOVERY)
