@@ -120,9 +120,11 @@ REACTI_SECTOR_CATALOG: dict[str, list[str]] = {
 }
 
 # Sélection du catalogue par track. Défaut OPT = comportement historique.
+# Clé 'agence-ia' = offre vivante (pivot 2026-06-07) ; REACTI_SECTOR_CATALOG garde
+# son nom de variable legacy (= verticales services résidentiels).
 _CATALOGS: dict[str, dict[str, list[str]]] = {
     "OPT": SECTOR_CATALOG,
-    "REACTI": REACTI_SECTOR_CATALOG,
+    "agence-ia": REACTI_SECTOR_CATALOG,
 }
 
 COOLDOWN_DAYS = 30
@@ -756,10 +758,11 @@ async def list_companies_to_research(
 
 async def list_companies_to_discover(
     limit: int = 20,
-    track: str = "REACTI",
+    track: str = "agence-ia",
 ) -> list[dict[str, Any]]:
-    """Backlog WF-reacti-2 : companies REACTI encore 'sourced', sans website ni
+    """Backlog WF-reacti-2 : companies agence-ia encore 'sourced', sans website ni
     research_json. Ce sont les boîtes pour lesquelles tenter une découverte web.
+    (track 'agence-ia' = ex-REACTI renommé, pivot 2026-06-07.)
     """
     return await db.select(
         "companies",

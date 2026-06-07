@@ -27,11 +27,12 @@ def test_reacti_catalog_contient_les_5_verticales() -> None:
 
 def test_catalogs_map_opt_et_reacti() -> None:
     assert dbt._CATALOGS["OPT"] is dbt.SECTOR_CATALOG
-    assert dbt._CATALOGS["REACTI"] is dbt.REACTI_SECTOR_CATALOG
+    # Clé 'agence-ia' (pivot 2026-06-07) ; variable REACTI_SECTOR_CATALOG legacy.
+    assert dbt._CATALOGS["agence-ia"] is dbt.REACTI_SECTOR_CATALOG
 
 
 def test_all_targets_reacti_ne_renvoie_que_verticales_reacti() -> None:
-    sectors = {sector for _city, sector, _icp in dbt._all_targets("REACTI")}
+    sectors = {sector for _city, sector, _icp in dbt._all_targets("agence-ia")}
     assert sectors == REACTI_VERTICALS
 
 
@@ -47,7 +48,7 @@ def test_all_targets_track_inconnu_retombe_sur_opt() -> None:
 
 def test_company_in_track_defaut_opt() -> None:
     assert dbt.CompanyIn(name="X").track == "OPT"
-    assert dbt.CompanyIn(name="Y", track="REACTI").track == "REACTI"
+    assert dbt.CompanyIn(name="Y", track="agence-ia").track == "agence-ia"
 
 
 # ----------------------------------------------- Isolation track (sélection)
@@ -62,13 +63,13 @@ async def test_research_filtre_track(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(real_db, "select", fake_select)
 
-    await dbt.list_companies_to_research(track="REACTI")
-    assert captured["params"].get("track") == "eq.REACTI"
+    await dbt.list_companies_to_research(track="agence-ia")
+    assert captured["params"].get("track") == "eq.agence-ia"
 
 
 @pytest.mark.asyncio
 async def test_personalize_isole_par_track_company(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Un contact dont la company est OPT ne sort PAS quand on demande REACTI."""
+    """Un contact dont la company est OPT ne sort PAS quand on demande agence-ia."""
 
     async def fake_select(table, params=None):
         if table == "contacts":
@@ -79,13 +80,13 @@ async def test_personalize_isole_par_track_company(monkeypatch: pytest.MonkeyPat
         if table == "companies":
             return [
                 {"id": "co-opt", "name": "OPT Co", "track": "OPT", "research_json": {"x": 1}},
-                {"id": "co-rea", "name": "REA Co", "track": "REACTI", "research_json": {"x": 1}},
+                {"id": "co-rea", "name": "REA Co", "track": "agence-ia", "research_json": {"x": 1}},
             ]
         return []  # messages
 
     monkeypatch.setattr(real_db, "select", fake_select)
 
-    out = await dbt.list_contacts_to_personalize(track="REACTI")
+    out = await dbt.list_contacts_to_personalize(track="agence-ia")
     assert {o["contact"]["email"] for o in out} == {"b@rea.ca"}
 
     out_opt = await dbt.list_contacts_to_personalize(track="OPT")
@@ -98,9 +99,9 @@ def test_reacti_personalize_prompt_wired() -> None:
     """Le track REACTI charge prompts/reacti/personalize.md, pas le prompt OPT."""
     import src.tools.personalize as pz
 
-    assert pz._PROMPT_PATHS["OPT"] != pz._PROMPT_PATHS["REACTI"]
-    assert pz._PROMPT_PATHS["REACTI"].exists()
-    txt = pz._PROMPT_PATHS["REACTI"].read_text(encoding="utf-8")
+    assert pz._PROMPT_PATHS["OPT"] != pz._PROMPT_PATHS["agence-ia"]
+    assert pz._PROMPT_PATHS["agence-ia"].exists()
+    txt = pz._PROMPT_PATHS["agence-ia"].read_text(encoding="utf-8")
     assert "REACTI" in txt
     assert "réactivation" in txt.lower()
     # garde-fous critiques présents dans le prompt REACTI

@@ -28,7 +28,9 @@ from pydantic import BaseModel
 _PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "personalize.md"
 _REACTI_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "reacti" / "personalize.md"
 # Sélection du prompt système par track. Défaut OPT = comportement historique.
-_PROMPT_PATHS = {"OPT": _PROMPT_PATH, "REACTI": _REACTI_PROMPT_PATH}
+# Clé 'agence-ia' = offre vivante (pivot 2026-06-07) ; _REACTI_PROMPT_PATH garde
+# son nom de variable legacy (= prompt cold email réactivation/services résidentiels).
+_PROMPT_PATHS = {"OPT": _PROMPT_PATH, "agence-ia": _REACTI_PROMPT_PATH}
 _DEFAULT_MODEL = "claude-sonnet-4-6"
 
 

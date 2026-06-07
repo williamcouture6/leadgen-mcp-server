@@ -27,7 +27,7 @@ async def test_list_companies_to_discover_filters(monkeypatch):
 
     assert rows == [{"id": "1", "name": "X"}]
     p = captured["companies"]
-    assert p["track"] == "eq.REACTI"
+    assert p["track"] == "eq.agence-ia"
     assert p["website"] == "is.null"
     assert p["research_json"] == "is.null"
     assert p["status"] == "eq.sourced"
@@ -47,7 +47,7 @@ async def test_research_reacti_no_website_excludes_contactless(monkeypatch):
     monkeypatch.setattr(db_tools.db, "select", fake)
 
     rows = await db_tools.list_companies_to_research(
-        limit=10, require_website=False, track="REACTI",
+        limit=10, require_website=False, track="agence-ia",
     )
 
     ids = {r["id"] for r in rows}

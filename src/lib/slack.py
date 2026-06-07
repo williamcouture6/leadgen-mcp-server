@@ -120,7 +120,8 @@ def _track_prefix(track: str | None) -> str:
     ET le header pour qu'on sache d'un coup d'œil d'où vient l'event.
     """
     t = (track or "").strip().upper()
-    return f"[{t}] " if t in ("OPT", "REACTI") else ""
+    # AGENCE-IA = offre vivante (pivot 2026-06-07) ; REACTI gardé (compat héritage).
+    return f"[{t}] " if t in ("OPT", "REACTI", "AGENCE-IA") else ""
 
 
 def build_hot_lead_blocks(

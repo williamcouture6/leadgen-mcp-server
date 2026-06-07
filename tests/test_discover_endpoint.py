@@ -22,13 +22,13 @@ async def _noop(*a, **k):
 
 @pytest.fixture
 def patch_company(monkeypatch):
-    """Stub db.select pour retourner UNE company REACTI sans site."""
+    """Stub db.select pour retourner UNE company agence-ia sans site."""
     async def _select(table, *, params=None):
         if table == "companies":
             return [{
                 "id": "c1", "name": "Déneige X", "city": "Sherbrooke",
                 "address": "1 rue X", "raw_payload": {"nationalPhoneNumber": "819-555"},
-                "website": None, "track": "REACTI",
+                "website": None, "track": "agence-ia",
             }]
         return []
     monkeypatch.setattr(http_api.db_tools.db, "select", _select)

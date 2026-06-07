@@ -336,9 +336,10 @@ class RunWf6In(BaseModel):
 
 
 def _campaign_for_track(track: str) -> str | None:
-    """Campagne Instantly selon le track. REACTI → INSTANTLY_CAMPAIGN_ID_REACTI ;
-    OPT/défaut → None (le lib instantly utilise INSTANTLY_CAMPAIGN_ID)."""
-    if track and track.strip().upper() == "REACTI":
+    """Campagne Instantly selon le track. agence-ia → INSTANTLY_CAMPAIGN_ID_REACTI
+    (nom d'env legacy gardé) ; OPT/défaut → None (lib instantly utilise
+    INSTANTLY_CAMPAIGN_ID)."""
+    if track and track.strip().lower() == "agence-ia":
         return os.environ.get("INSTANTLY_CAMPAIGN_ID_REACTI", "").strip() or None
     return None
 

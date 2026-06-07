@@ -103,7 +103,7 @@ async def post_alert(payload: AlertIn) -> dict[str, Any]:
 
 class DailySummaryIn(BaseModel):
     category: str = "summary"          # canal Slack du résumé (SLACK_WEBHOOK_SUMMARY)
-    tracks: list[str] = ["OPT", "REACTI"]
+    tracks: list[str] = ["OPT", "agence-ia"]
     post: bool = True                  # False = renvoie les chiffres sans poster (test)
 
 
