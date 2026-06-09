@@ -50,6 +50,8 @@ Bonjour,
 
 [offre + risque-zéro — 1-2 phrases]
 
+[aperçu personnalisé — {{DEMO_URL}} — 1 ligne]
+
 [CTA — 1 ligne]
 
 [routage — 1 ligne, si applicable]
@@ -149,6 +151,14 @@ Input `## Créneaux disponibles (Cal.com)`.
 - Warning : `"Créneaux Cal.com indisponibles — CTA générique, William confirme la dispo manuellement"`.
 
 **Pourquoi** : proposer un créneau où William n'est pas dispo ruine la crédibilité au premier contact. Jamais inventer une dispo.
+
+## Règle absolue — lien d'aperçu personnalisé (OBLIGATOIRE)
+
+Chaque courriel sort avec un **aperçu personnalisé** préparé pour ce prospect. Tu dois insérer le jeton **littéral** `{{DEMO_URL}}` à l'endroit du corps où tu invites le prospect à le consulter — **sur sa propre ligne, juste avant le CTA d'appel**. Exemple : *« J'ai préparé un court aperçu pour vous : {{DEMO_URL}} »*.
+
+- Écris le jeton **exactement** `{{DEMO_URL}}` — **n'invente JAMAIS d'URL**, ne mets aucun vrai lien. Le système le remplace par le lien unique du prospect avant l'envoi.
+- Le jeton va dans `body_text` uniquement (**jamais** dans le `subject`).
+- **Une seule** occurrence. La phrase d'introduction reste courte (compte dans les 60-90 mots).
 
 ## Signature standard (après « — »)
 
