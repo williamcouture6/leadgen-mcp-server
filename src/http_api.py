@@ -27,6 +27,7 @@ from .tools import send as send_tools
 from .tools import send_status as send_status_tools
 from .tools import reacti_discover as reacti_discover_tools
 from .lib.owner_match import classify_scraped_contact
+from .lib.demo_generator import ensure_demo_site, inject_demo_link
 
 
 def _expected_token() -> str | None:
@@ -992,6 +993,17 @@ async def _personalize_one(
 
     message_id: str | None = None
     if persist and subject and body:
+        track = company_row.get("track") or "OPT"
+        demo_url: str | None = None
+        notes = "; ".join(warnings) if warnings else None
+        if track == "agence-ia":
+            try:
+                demo_url = await ensure_demo_site(company_row.get("id"), contact_id)
+                body = inject_demo_link(body, demo_url)
+            except Exception as e:  # noqa: BLE001 — soft-fail : draft sauvé, garde au send retentera
+                warn = f"demo_generation_failed: {e!r} — lien injecté au send"
+                notes = f"{notes}; {warn}" if notes else warn
+                demo_url = None
         try:
             ins = await db_tools.insert_message_draft(
                 db_tools.MessageDraftIn(
@@ -1001,7 +1013,8 @@ async def _personalize_one(
                     to_email=contact_row["email"],
                     generated_by_agent_run=agent_run_id,
                     compliance_check_passed=None,  # WF-5 le valide
-                    compliance_notes=("; ".join(warnings) if warnings else None),
+                    compliance_notes=notes,
+                    demo_url=demo_url,
                 )
             )
             message_id = ins.get("message_id")
@@ -1047,7 +1060,7 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
     companies = await db.select(
         "companies",
         params={
-            "select": "id,name,website,city,icp_segment,industry,research_json",
+            "select": "id,name,website,city,icp_segment,industry,research_json,track",
             "id": f"eq.{contact['company_id']}",
             "limit": "1",
         },

@@ -42,6 +42,10 @@ class TestInjectDemoLink:
 from unittest.mock import AsyncMock, patch
 
 
+def _amock(*, return_value=None):
+    return AsyncMock(return_value=return_value)
+
+
 class TestEnsureDemoSite:
     @pytest.mark.asyncio
     async def test_reuses_existing_demo_site(self) -> None:
@@ -93,3 +97,126 @@ class TestMessageDraftDemoUrl:
         from src.tools.db import MessageDraftIn
         m = MessageDraftIn(contact_id="ct-1", subject="s", body_text="b", to_email="x@y.com")
         assert "demo_url" not in m.model_dump(exclude_none=True)
+
+
+class TestPersonalizeWiring:
+    """Le wiring demo dans _personalize_one : gated agence-ia, soft-fail."""
+
+    def _company(self, track: str) -> dict:
+        return {"id": "co-1", "name": "Plomberie X", "website": None,
+                "city": "Sherbrooke", "icp_segment": None, "industry": None,
+                "research_json": {"k": "v"}, "track": track}
+
+    def _contact(self) -> dict:
+        return {"id": "ct-1", "first_name": "Jean", "last_name": "Roy",
+                "email": "jean@plomberiex.ca", "title": None, "company_id": "co-1"}
+
+    @pytest.mark.asyncio
+    async def test_agence_ia_sets_demo_url_and_link(self, monkeypatch) -> None:
+        from src import http_api
+        from src.tools import personalize as ptools
+
+        # personalize renvoie un body avec le placeholder
+        async def _fake_personalize(payload):
+            return ptools.PersonalizeOut(
+                email={"subject": "Sujet", "body_text": "Allo {{DEMO_URL}}", "warnings": []},
+                template_used="A", contact_used=True, social_proof_count=0,
+                available_slots_at_generation=[], duration_ms=10,
+                model="claude-sonnet-4-6", usage=ptools.LLMUsage(),
+            )
+        monkeypatch.setattr(http_api.personalize_tools, "personalize", _fake_personalize)
+        monkeypatch.setattr(http_api.db_tools, "record_agent_run",
+                            _amock(return_value={"agent_run_id": "ar-1"}))
+        monkeypatch.setattr(http_api, "ensure_demo_site",
+                            _amock(return_value="https://couture-ia.com/demo/TOK"))
+
+        captured = {}
+        async def _capture_insert(payload):
+            captured["body"] = payload.body_text
+            captured["demo_url"] = payload.demo_url
+            return {"message_id": "m-1"}
+        monkeypatch.setattr(http_api.db_tools, "insert_message_draft", _capture_insert)
+
+        out = await http_api._personalize_one(
+            self._contact(), self._company("agence-ia"),
+            template_choice="A", model="claude-sonnet-4-6", persist=True,
+            available_slots=[], social_proof=[],
+        )
+        assert out.status == "ok"
+        assert captured["demo_url"] == "https://couture-ia.com/demo/TOK"
+        assert "{{DEMO_URL}}" not in captured["body"]
+        assert "https://couture-ia.com/demo/TOK" in captured["body"]
+
+    @pytest.mark.asyncio
+    async def test_opt_track_skips_demo(self, monkeypatch) -> None:
+        from src import http_api
+        from src.tools import personalize as ptools
+
+        async def _fake_personalize(payload):
+            return ptools.PersonalizeOut(
+                email={"subject": "S", "body_text": "Pas de placeholder ici", "warnings": []},
+                template_used="A", contact_used=True, social_proof_count=0,
+                available_slots_at_generation=[], duration_ms=10,
+                model="claude-sonnet-4-6", usage=ptools.LLMUsage(),
+            )
+        monkeypatch.setattr(http_api.personalize_tools, "personalize", _fake_personalize)
+        monkeypatch.setattr(http_api.db_tools, "record_agent_run",
+                            _amock(return_value={"agent_run_id": "ar-1"}))
+        ensure = _amock(return_value="https://x/demo/T")
+        monkeypatch.setattr(http_api, "ensure_demo_site", ensure)
+
+        captured = {}
+        async def _capture_insert(payload):
+            captured["demo_url"] = payload.demo_url
+            captured["body"] = payload.body_text
+            return {"message_id": "m-1"}
+        monkeypatch.setattr(http_api.db_tools, "insert_message_draft", _capture_insert)
+
+        out = await http_api._personalize_one(
+            self._contact(), self._company("OPT"),
+            template_choice="A", model="claude-sonnet-4-6", persist=True,
+            available_slots=[], social_proof=[],
+        )
+        assert out.status == "ok"
+        ensure.assert_not_called()
+        assert captured["demo_url"] is None
+        assert captured["body"] == "Pas de placeholder ici"
+
+    @pytest.mark.asyncio
+    async def test_demo_failure_soft_fails(self, monkeypatch) -> None:
+        from src import http_api
+        from src.tools import personalize as ptools
+
+        async def _fake_personalize(payload):
+            return ptools.PersonalizeOut(
+                email={"subject": "S", "body_text": "Allo {{DEMO_URL}}", "warnings": []},
+                template_used="A", contact_used=True, social_proof_count=0,
+                available_slots_at_generation=[], duration_ms=10,
+                model="claude-sonnet-4-6", usage=ptools.LLMUsage(),
+            )
+        monkeypatch.setattr(http_api.personalize_tools, "personalize", _fake_personalize)
+        monkeypatch.setattr(http_api.db_tools, "record_agent_run",
+                            _amock(return_value={"agent_run_id": "ar-1"}))
+
+        async def _boom(*a, **k):
+            raise RuntimeError("agence not exposed")
+        monkeypatch.setattr(http_api, "ensure_demo_site", _boom)
+
+        captured = {}
+        async def _capture_insert(payload):
+            captured["demo_url"] = payload.demo_url
+            captured["body"] = payload.body_text
+            captured["notes"] = payload.compliance_notes
+            return {"message_id": "m-1"}
+        monkeypatch.setattr(http_api.db_tools, "insert_message_draft", _capture_insert)
+
+        out = await http_api._personalize_one(
+            self._contact(), self._company("agence-ia"),
+            template_choice="A", model="claude-sonnet-4-6", persist=True,
+            available_slots=[], social_proof=[],
+        )
+        # draft inséré quand même, sans demo_url, placeholder laissé, warning posé
+        assert out.status == "ok"
+        assert captured["demo_url"] is None
+        assert "{{DEMO_URL}}" in captured["body"]
+        assert "demo" in (captured["notes"] or "").lower()
