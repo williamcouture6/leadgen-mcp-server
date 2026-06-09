@@ -37,6 +37,7 @@ from pydantic import BaseModel
 
 from .. import supabase_client as db
 from ..lib import instantly as instantly_lib
+from ..lib import slack
 from ..lib.compliance_checks import check_warmup_window
 from ..lib.demo_generator import DEMO_URL_PLACEHOLDER, ensure_demo_site, inject_demo_link
 from ..lib.platform_domains import is_email_on_blocked_domain
@@ -44,6 +45,8 @@ from ..lib.platform_domains import is_email_on_blocked_domain
 DAILY_CAP_DEFAULT = 10
 DAILY_CAP_ENV = "INSTANTLY_DAILY_CAP"
 SEND_TIMEZONE = "America/Toronto"
+# Anti-spam de l'alerte demo (P3) : 1 ping #alertes par message coincé, pas par run.
+DEMO_ALERT_MARKER = "demo_alert_sent"
 
 
 # ----------------------------------------------------------------------
@@ -256,6 +259,26 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
                 msg["demo_url"] = demo_url
                 msg["body_text"] = new_body
             except Exception as e:  # noqa: BLE001 — pas de push sans lien
+                existing_notes = msg.get("compliance_notes") or ""
+                if DEMO_ALERT_MARKER not in existing_notes:
+                    await slack.notify(
+                        text=(
+                            f":rotating_light: Demo non générée — email bloqué.\n"
+                            f"message_id={payload.message_id} contact_id={msg['contact_id']} "
+                            f"company_id={contact.get('company_id')}\nerreur: {e!r}\n"
+                            f"(Vérifier que le schéma `agence` est exposé à l'API REST.)"
+                        ),
+                        category="alerts",
+                        context="p3_demo_guard",
+                    )
+                    new_notes = f"{existing_notes} | {DEMO_ALERT_MARKER}".strip(" |")
+                    try:
+                        await db.update(
+                            "messages", {"compliance_notes": new_notes},
+                            filters={"id": f"eq.{payload.message_id}"},
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
                 return SendMessageOut(
                     message_id=payload.message_id, status="skipped_no_demo",
                     skipped_reason=f"demo_generation_failed: {e!r}",

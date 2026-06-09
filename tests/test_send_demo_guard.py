@@ -115,3 +115,62 @@ async def test_opt_track_guard_inactive(monkeypatch) -> None:
     out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
     assert out.status == "ok"
     ensure.assert_not_called()  # OPT n'a pas de démo
+
+
+_ALERT_MARKER = "demo_alert_sent"
+
+
+@pytest.mark.asyncio
+async def test_persistent_failure_pings_alerts_once(monkeypatch) -> None:
+    from src.tools import send
+
+    selects = [
+        [_msg(compliance_notes=None)],
+        [{"id": "ct-1", "first_name": "Jean", "last_name": "Roy",
+          "email": "jean@plomberiex.ca", "company_id": "co-1"}],
+        [{"name": "Plomberie X", "domain": "plomberiex.ca"}],
+    ]
+    monkeypatch.setattr(send.db, "select", AsyncMock(side_effect=selects))
+    notes_written = {}
+    async def _update(table, patch, **kw):
+        notes_written.update(patch)
+        return [{}]
+    monkeypatch.setattr(send.db, "update", _update)
+    async def _boom(*a, **k):
+        raise RuntimeError("agence not exposed")
+    monkeypatch.setattr(send, "ensure_demo_site", _boom)
+
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(send.slack, "notify", notify)
+
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+    assert out.status == "skipped_no_demo"
+    # ping #alertes émis
+    notify.assert_awaited_once()
+    assert notify.await_args.kwargs["category"] == "alerts"
+    # marqueur anti-spam posé dans compliance_notes
+    assert _ALERT_MARKER in (notes_written.get("compliance_notes") or "")
+
+
+@pytest.mark.asyncio
+async def test_persistent_failure_no_second_ping(monkeypatch) -> None:
+    from src.tools import send
+
+    selects = [
+        [_msg(compliance_notes=f"deja vu | {_ALERT_MARKER}")],
+        [{"id": "ct-1", "first_name": "Jean", "last_name": "Roy",
+          "email": "jean@plomberiex.ca", "company_id": "co-1"}],
+        [{"name": "Plomberie X", "domain": "plomberiex.ca"}],
+    ]
+    monkeypatch.setattr(send.db, "select", AsyncMock(side_effect=selects))
+    monkeypatch.setattr(send.db, "update", AsyncMock(return_value=[{}]))
+    async def _boom(*a, **k):
+        raise RuntimeError("agence not exposed")
+    monkeypatch.setattr(send, "ensure_demo_site", _boom)
+
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(send.slack, "notify", notify)
+
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+    assert out.status == "skipped_no_demo"
+    notify.assert_not_awaited()  # marqueur déjà là => pas de 2e ping
