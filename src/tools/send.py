@@ -38,6 +38,7 @@ from pydantic import BaseModel
 from .. import supabase_client as db
 from ..lib import instantly as instantly_lib
 from ..lib.compliance_checks import check_warmup_window
+from ..lib.demo_generator import DEMO_URL_PLACEHOLDER, ensure_demo_site, inject_demo_link
 from ..lib.platform_domains import is_email_on_blocked_domain
 
 DAILY_CAP_DEFAULT = 10
@@ -60,7 +61,7 @@ class SendMessageIn(BaseModel):
 
 class SendMessageOut(BaseModel):
     message_id: str
-    status: str  # ok | skipped_warmup | skipped_not_eligible | skipped_suppressed | error
+    status: str  # ok | skipped_warmup | skipped_not_eligible | skipped_suppressed | skipped_platform_domain | skipped_no_demo | error
     provider_message_id: str | None = None
     skipped_reason: str | None = None
     error_text: str | None = None
@@ -149,7 +150,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     msgs = await db.select(
         "messages",
         params={
-            "select": "id,subject,body_text,to_email,status,direction,compliance_check_passed,contact_id",
+            "select": "id,subject,body_text,to_email,status,direction,compliance_check_passed,contact_id,demo_url,track,compliance_notes",
             "id": f"eq.{payload.message_id}",
             "limit": "1",
         },
@@ -238,6 +239,27 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
         params={"select": "name,domain", "id": f"eq.{contact['company_id']}", "limit": "1"},
     ) if contact.get("company_id") else []
     company = company_rows[0] if company_rows else {}
+
+    # 3b) Garde demo (P3) — aucun email agence-ia ne part sans lien démo unique.
+    # Si manquant, on retente la frappe ici ; échec persistant => skip sans push.
+    if (msg.get("track") or "OPT") == "agence-ia":
+        needs_demo = (not msg.get("demo_url")) or (DEMO_URL_PLACEHOLDER in (msg.get("body_text") or ""))
+        if needs_demo:
+            try:
+                demo_url = await ensure_demo_site(contact.get("company_id"), msg["contact_id"])
+                new_body = inject_demo_link(msg.get("body_text") or "", demo_url)
+                await db.update(
+                    "messages",
+                    {"demo_url": demo_url, "body_text": new_body},
+                    filters={"id": f"eq.{payload.message_id}"},
+                )
+                msg["demo_url"] = demo_url
+                msg["body_text"] = new_body
+            except Exception as e:  # noqa: BLE001 — pas de push sans lien
+                return SendMessageOut(
+                    message_id=payload.message_id, status="skipped_no_demo",
+                    skipped_reason=f"demo_generation_failed: {e!r}",
+                )
 
     # 4) Defense — suppression list (post-draft, pre-push). Un opt-out reçu
     # après la création du draft doit bloquer ici.
@@ -360,6 +382,7 @@ class RunWf6Out(BaseModel):
     skipped_warmup: int
     skipped_suppressed: int
     skipped_platform_domain: int = 0
+    skipped_no_demo: int = 0
     skipped_other: int
     errors: int
     daily_cap: int
@@ -387,7 +410,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         )
 
     items: list[RunWf6Item] = []
-    pushed = sk_cap = sk_warm = sk_supp = sk_plat = sk_other = errors = 0
+    pushed = sk_cap = sk_warm = sk_supp = sk_plat = sk_nodemo = sk_other = errors = 0
 
     if effective_limit <= 0:
         return RunWf6Out(
@@ -436,6 +459,8 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             sk_supp += 1
         elif res.status == "skipped_platform_domain":
             sk_plat += 1
+        elif res.status == "skipped_no_demo":
+            sk_nodemo += 1
         elif res.status == "skipped_not_eligible":
             sk_other += 1
         else:
@@ -460,6 +485,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         skipped_warmup=sk_warm,
         skipped_suppressed=sk_supp,
         skipped_platform_domain=sk_plat,
+        skipped_no_demo=sk_nodemo,
         skipped_other=sk_other,
         errors=errors,
         daily_cap=daily_cap,
