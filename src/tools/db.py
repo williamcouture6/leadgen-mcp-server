@@ -694,6 +694,7 @@ class MessageDraftIn(BaseModel):
     generated_by_agent_run: str | None = None
     compliance_check_passed: bool | None = None
     compliance_notes: str | None = None
+    demo_url: str | None = None
 
 
 async def insert_message_draft(payload: MessageDraftIn) -> dict[str, Any]:

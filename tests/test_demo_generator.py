@@ -77,3 +77,19 @@ class TestEnsureDemoSite:
         assert row["company_id"] == "co-1"
         assert row["contact_id"] == "ct-1"
         assert row["token"] and row["url_unique"].endswith(row["token"])
+
+
+class TestMessageDraftDemoUrl:
+    def test_demo_url_field_included_when_set(self) -> None:
+        from src.tools.db import MessageDraftIn
+        m = MessageDraftIn(
+            contact_id="ct-1", subject="s", body_text="b",
+            to_email="x@y.com", demo_url="https://couture-ia.com/demo/t",
+        )
+        dumped = m.model_dump(exclude_none=True)
+        assert dumped["demo_url"] == "https://couture-ia.com/demo/t"
+
+    def test_demo_url_omitted_when_none(self) -> None:
+        from src.tools.db import MessageDraftIn
+        m = MessageDraftIn(contact_id="ct-1", subject="s", body_text="b", to_email="x@y.com")
+        assert "demo_url" not in m.model_dump(exclude_none=True)
