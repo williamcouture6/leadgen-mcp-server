@@ -37,3 +37,43 @@ class TestInjectDemoLink:
         from src.lib.demo_generator import inject_demo_link
         out = inject_demo_link("", "https://x/demo/t")
         assert "https://x/demo/t" in out
+
+
+from unittest.mock import AsyncMock, patch
+
+
+class TestEnsureDemoSite:
+    @pytest.mark.asyncio
+    async def test_reuses_existing_demo_site(self) -> None:
+        from src.lib import demo_generator as dg
+
+        existing = [{"url_unique": "https://couture-ia.com/demo/EXISTING"}]
+        with patch.object(dg.db, "select", new=AsyncMock(return_value=existing)) as sel, \
+             patch.object(dg.db, "insert", new=AsyncMock()) as ins:
+            url = await dg.ensure_demo_site("co-1", "ct-1")
+
+        assert url == "https://couture-ia.com/demo/EXISTING"
+        ins.assert_not_called()
+        # filtré par contact_id, sur le schéma agence
+        assert sel.call_args.kwargs["schema"] == "agence"
+
+    @pytest.mark.asyncio
+    async def test_mints_when_none_exists(self) -> None:
+        from src.lib import demo_generator as dg
+
+        async def _fake_insert(table, row, **kwargs):
+            # echo la ligne insérée (PostgREST return=representation)
+            return [row]
+
+        with patch.object(dg.db, "select", new=AsyncMock(return_value=[])), \
+             patch.object(dg.db, "insert", new=AsyncMock(side_effect=_fake_insert)) as ins:
+            url = await dg.ensure_demo_site("co-1", "ct-1")
+
+        assert url.startswith("https://couture-ia.com/demo/")
+        # insert sur le schéma agence, statut genere, token non vide
+        row = ins.call_args.args[1]
+        assert ins.call_args.kwargs["schema"] == "agence"
+        assert row["statut"] == "genere"
+        assert row["company_id"] == "co-1"
+        assert row["contact_id"] == "ct-1"
+        assert row["token"] and row["url_unique"].endswith(row["token"])
