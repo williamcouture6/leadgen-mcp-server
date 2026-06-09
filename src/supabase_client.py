@@ -69,9 +69,13 @@ async def select(
     table: str,
     *,
     params: dict[str, str] | None = None,
+    schema: str | None = None,
 ) -> list[dict[str, Any]]:
+    headers = _headers()
+    if schema:
+        headers["Accept-Profile"] = schema
     async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.get(_rest_url(table), headers=_headers(), params=params or {})
+        r = await client.get(_rest_url(table), headers=headers, params=params or {})
         r.raise_for_status()
         return r.json()
 
@@ -83,8 +87,11 @@ async def insert(
     *,
     on_conflict: str | None = None,
     ignore_duplicates: bool = False,
+    schema: str | None = None,
 ) -> list[dict[str, Any]]:
     headers = _headers()
+    if schema:
+        headers["Content-Profile"] = schema
     params: dict[str, str] = {}
     if on_conflict:
         params["on_conflict"] = on_conflict
@@ -105,10 +112,14 @@ async def update(
     patch: dict[str, Any],
     *,
     filters: dict[str, str],
+    schema: str | None = None,
 ) -> list[dict[str, Any]]:
+    headers = _headers()
+    if schema:
+        headers["Content-Profile"] = schema
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.patch(
-            _rest_url(table), headers=_headers(), params=filters, json=patch
+            _rest_url(table), headers=headers, params=filters, json=patch
         )
         r.raise_for_status()
         return r.json()
