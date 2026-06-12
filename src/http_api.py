@@ -26,6 +26,7 @@ from .tools import research as research_tools
 from .tools import send as send_tools
 from .tools import send_status as send_status_tools
 from .tools import reacti_discover as reacti_discover_tools
+from .tools import brand_kit as brand_kit_tools
 from .lib.owner_match import classify_scraped_contact
 from .lib.demo_generator import ensure_demo_site, inject_demo_link
 
@@ -539,6 +540,34 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
         emails_scraped_inserted=inserted_scraped,
         emails_scraped_duplicate=duplicate_scraped,
     )
+
+
+class BrandKitBuildIn(BaseModel):
+    company_id: str
+    model: str = "claude-sonnet-4-6"
+
+
+class BrandKitBuildOut(BaseModel):
+    company_id: str
+    status: str  # ok | skipped_already_reviewed | company_not_found | error
+    fields_filled: list[str] = []
+    confidence: dict[str, Any] = {}
+    error_text: str | None = None
+
+
+@app.post(
+    "/research/brand-kit",
+    dependencies=[Depends(_require_auth)],
+    response_model=BrandKitBuildOut,
+)
+async def build_company_brand_kit(payload: BrandKitBuildIn) -> BrandKitBuildOut:
+    """Construit companies.brand_kit (on-demand, sous-ensemble démo). Idempotent ;
+    ne réécrit pas un brand_kit corrigé à la main (_meta.reviewed)."""
+    try:
+        out = await brand_kit_tools.build_brand_kit(payload.company_id, model=payload.model)
+    except Exception as e:  # noqa: BLE001
+        return BrandKitBuildOut(company_id=payload.company_id, status="error", error_text=repr(e))
+    return BrandKitBuildOut(**out)
 
 
 class RunWf3In(BaseModel):
