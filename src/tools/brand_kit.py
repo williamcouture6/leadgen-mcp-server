@@ -22,7 +22,8 @@ from PIL import Image
 from .. import supabase_client as db
 from ..config import settings
 from ..lib import brandkit_parse as parse
-from .research import USER_AGENT, fetch_site
+from ..lib import brandkit_assemble as assemble
+from .research import USER_AGENT, fetch_site, fetch_place_details
 
 _PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "brand_kit.md"
 _DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -280,3 +281,90 @@ async def fetch_pexels_image(query: str) -> tuple[bytes, str] | None:
             return ri.content, ri.headers.get("content-type", "image/jpeg").split(";")[0]
         except (httpx.HTTPError, KeyError, ValueError):
             return None
+
+
+_ROLE_FIELDS = {"logo": "logo_candidate_id", "hero": "hero_candidate_id",
+                "team": "team_photo_candidate_id"}
+
+
+def _pick_colors(head_meta: dict[str, Any], jsonld: dict[str, Any],
+                 logo_color: str | None) -> dict[str, Any] | None:
+    theme = head_meta.get("theme_color")
+    if theme:
+        return {"primary": theme, "secondary": None, "_confidence": "high"}
+    if logo_color:
+        return {"primary": logo_color, "secondary": None, "_confidence": "medium"}
+    return None
+
+
+async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[str, Any]:
+    rows = await db.select("companies", params={
+        "select": "id,website,industry,google_place_id,brand_kit",
+        "id": f"eq.{company_id}", "limit": "1",
+    })
+    if not rows:
+        return {"company_id": company_id, "status": "company_not_found",
+                "fields_filled": [], "confidence": {}}
+    co = rows[0]
+    if not assemble.should_write(co.get("brand_kit"), {"_meta": {"reviewed": False}}):
+        return {"company_id": company_id, "status": "skipped_already_reviewed",
+                "fields_filled": [], "confidence": {}}
+
+    website = co.get("website")
+    rich = await fetch_site_rich(website) if website else {
+        "head_meta": {"theme_color": None, "og_image": None, "icon": None,
+                      "twitter_image": None, "description": None},
+        "jsonld": dict(parse.EMPTY_JSONLD), "social": {}, "rbq": None,
+        "candidates": [], "page_text": "",
+    }
+    place = await fetch_place_details(co["google_place_id"]) if co.get("google_place_id") else {}
+
+    candidates = rich["candidates"]
+    llm = _call_brandkit_llm(candidates, rich["page_text"], co.get("industry"), model=model)
+
+    # Résolution des candidate_id → URL source, puis ré-hébergement.
+    by_id = {c["id"]: c["url"] for c in candidates}
+    images: dict[str, str | None] = {}
+    logo_color: str | None = None
+    for role, llm_key in _ROLE_FIELDS.items():
+        cid = llm.get(llm_key)
+        src = by_id.get(cid) if cid is not None else None
+        if src:
+            url = await rehost_one(company_id, role, src)
+            images[role] = url
+            images[f"_source_{role}"] = "medium"
+            if role == "logo" and url:
+                try:
+                    data, _ = await _download_image(src)
+                    logo_color = dominant_color(data)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    # Fallback Pexels pour hero absent (services/valeurs traités via leurs champs si besoin).
+    if not images.get("hero"):
+        px = await fetch_pexels_image(assemble.pexels_query_for_industry(co.get("industry")))
+        if px:
+            data, ctype = px
+            url = await rehost_one(company_id, "hero", "pexels", download=_make_static(data, ctype))
+            if url:
+                images["hero"] = url
+                images["_source_hero"] = "low"
+
+    colors = _pick_colors(rich["head_meta"], rich["jsonld"], logo_color)
+    kit = assemble.assemble_brand_kit(
+        place=place, jsonld=rich["jsonld"], head_meta=rich["head_meta"], llm=llm,
+        images=images, colors=colors, social=rich["social"], rbq=rich["rbq"],
+    )
+
+    if assemble.should_write(co.get("brand_kit"), kit):
+        await db.update("companies", {"brand_kit": kit}, filters={"id": f"eq.{company_id}"})
+
+    fields = [k for k in kit if not k.startswith("_") and k != "confidence"]
+    return {"company_id": company_id, "status": "ok",
+            "fields_filled": fields, "confidence": kit.get("confidence", {})}
+
+
+def _make_static(data: bytes, ctype: str) -> DownloadFn:
+    async def _dl(_url: str) -> tuple[bytes, str]:
+        return data, ctype
+    return _dl
