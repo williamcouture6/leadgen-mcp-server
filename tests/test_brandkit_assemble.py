@@ -24,3 +24,39 @@ def test_phone_and_url_and_hours():
     assert A.reviews_url_from_places(PLACE) == "https://maps.google.com/?cid=123"
     assert A.hours_from_places(PLACE) == "lundi: 08:00–18:00 · mardi: 08:00–18:00"
     assert A.hours_from_places({}) is None
+
+def test_pexels_query_for_industry():
+    assert A.pexels_query_for_industry("toiture") == "roofing contractor"
+    assert A.pexels_query_for_industry("plomberie") == "plumber working"
+    assert A.pexels_query_for_industry(None) == "home renovation contractor"
+
+def test_should_write_rules():
+    assert A.should_write(None, {"_meta": {"reviewed": False}}) is True
+    assert A.should_write({"_meta": {"reviewed": False}}, {}) is True
+    assert A.should_write({"_meta": {"reviewed": True}}, {}) is False
+
+def test_assemble_brand_kit_places_wins_and_confidence():
+    kit = A.assemble_brand_kit(
+        place={"internationalPhoneNumber": "+1 450-555-0192", "reviews": []},
+        jsonld={"same_as": ["https://facebook.com/x"], "telephone": None,
+                "rating": None, "rating_count": None, "logo": None,
+                "opening_hours": [], "address": None, "image": None},
+        head_meta={"theme_color": "#0B5", "og_image": None, "twitter_image": None,
+                   "description": None, "icon": None},
+        llm={"tagline": "Rénovation clé en main", "services": [], "valeurs": [],
+             "faq": [], "stats": {}, "service_areas": ["Laval"], "team": [],
+             "rbq": None, "legal": {}},
+        images={"logo": "https://cdn/logo.png", "hero": "https://cdn/hero.jpg"},
+        colors={"primary": "#0B5", "secondary": None},
+        social={"facebook": "https://facebook.com/x"},
+        rbq="1234-5678-01",
+    )
+    assert kit["phone"] == "+1 450-555-0192"
+    assert kit["tagline"] == "Rénovation clé en main"
+    assert kit["logo_url"] == "https://cdn/logo.png"
+    assert kit["colors"] == {"primary": "#0B5", "secondary": None}
+    assert kit["rbq"] == "1234-5678-01"
+    assert kit["confidence"]["phone"] == "high"
+    assert kit["confidence"]["tagline"] == "medium"
+    assert kit["_meta"]["reviewed"] is False
+    assert kit["_meta"]["build_version"] == A.BUILD_VERSION
