@@ -48,3 +48,7 @@ def test_mcp_tools_registered() -> None:
     # on fait un check best-effort sans dépendre de l'API privée.
     # On vérifie au moins que le serveur a un nom.
     assert mcp.name == "leadgen-mcp"
+
+
+def test_pillow_importable():
+    from PIL import Image  # noqa: F401
