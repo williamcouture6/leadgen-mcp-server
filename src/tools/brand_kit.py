@@ -18,12 +18,18 @@ from typing import Any
 import httpx
 from anthropic import Anthropic
 from PIL import Image
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from .. import supabase_client as db
 from ..config import settings
 from ..lib import brandkit_parse as parse
 from ..lib import brandkit_assemble as assemble
-from .research import USER_AGENT, fetch_site, fetch_place_details
+from .research import (
+    USER_AGENT,
+    _is_transient_anthropic_error,
+    fetch_place_details,
+    fetch_site,
+)
 
 _PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "brand_kit.md"
 _DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -108,6 +114,12 @@ _BRANDKIT_TOOL: dict[str, Any] = {
 }
 
 
+@retry(
+    retry=retry_if_exception(_is_transient_anthropic_error),
+    wait=wait_exponential(multiplier=2, min=4, max=60),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
 def _call_brandkit_llm(
     candidates: list[dict[str, Any]],
     page_text: str,
@@ -121,7 +133,8 @@ def _call_brandkit_llm(
     client = Anthropic(api_key=api_key)
     system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
     cand_block = json.dumps(
-        [{"id": c["id"], "kind_hint": c["kind_hint"], "alt": c.get("alt", "")} for c in candidates],
+        [{"id": c["id"], "kind_hint": c.get("kind_hint", "other"), "alt": c.get("alt", "")}
+         for c in candidates],
         ensure_ascii=False,
     )
     user = (
@@ -239,6 +252,31 @@ def _ext_for(ctype: str) -> str:
             "image/gif": "gif", "image/svg+xml": "svg"}.get(ctype, "img")
 
 
+async def _rehost_with_bytes(
+    company_id: str,
+    role: str,
+    src_url: str,
+    *,
+    download: DownloadFn | None = None,
+    upload: UploadFn | None = None,
+) -> tuple[str | None, bytes | None]:
+    """Download src_url → upload bucket → (URL publique, bytes téléchargés). Fail-soft → (None, None).
+
+    Renvoie aussi les bytes pour éviter un 2e download (ex. couleur dominante du logo)."""
+    download = download or _download_image
+    upload = upload or db.upload_object
+    try:
+        data, ctype = await download(src_url)
+    except Exception:  # noqa: BLE001
+        return None, None
+    h = hashlib.sha1(data).hexdigest()[:10]
+    path = f"{company_id}/{role}-{h}.{_ext_for(ctype)}"
+    try:
+        return await upload(_BUCKET, path, data, ctype), data
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
 async def rehost_one(
     company_id: str,
     role: str,
@@ -248,18 +286,10 @@ async def rehost_one(
     upload: UploadFn | None = None,
 ) -> str | None:
     """Download src_url → upload bucket brand-assets → URL publique. Fail-soft → None."""
-    download = download or _download_image
-    upload = upload or db.upload_object
-    try:
-        data, ctype = await download(src_url)
-    except Exception:  # noqa: BLE001
-        return None
-    h = hashlib.sha1(data).hexdigest()[:10]
-    path = f"{company_id}/{role}-{h}.{_ext_for(ctype)}"
-    try:
-        return await upload(_BUCKET, path, data, ctype)
-    except Exception:  # noqa: BLE001
-        return None
+    url, _ = await _rehost_with_bytes(
+        company_id, role, src_url, download=download, upload=upload
+    )
+    return url
 
 
 async def fetch_pexels_image(query: str) -> tuple[bytes, str] | None:
@@ -297,6 +327,33 @@ def _pick_colors(head_meta: dict[str, Any], jsonld: dict[str, Any],
     return None
 
 
+def _empty_rich() -> dict[str, Any]:
+    """Rich vide — site absent OU fetch échoué (dégrade vers un kit Places-only)."""
+    return {
+        "head_meta": {"theme_color": None, "og_image": None, "icon": None,
+                      "twitter_image": None, "description": None},
+        "jsonld": dict(parse.EMPTY_JSONLD), "social": {}, "rbq": None,
+        "candidates": [], "page_text": "",
+    }
+
+
+async def _resolve_card_images(
+    company_id: str,
+    cards: list[dict[str, Any]] | None,
+    by_id: dict[int, str],
+    role: str,
+    out_field: str,
+) -> None:
+    """Résout image_candidate_id → URL ré-hébergée dans out_field, puis retire l'int.
+
+    Le site consomme l'URL (services→image_url, valeurs→imageUrl), jamais l'id.
+    Mutation en place des cartes du LLM."""
+    for card in cards or []:
+        cid = card.pop("image_candidate_id", None)
+        src = by_id.get(cid) if cid is not None else None
+        card[out_field] = await rehost_one(company_id, role, src) if src else None
+
+
 async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[str, Any]:
     rows = await db.select("companies", params={
         "select": "id,website,industry,google_place_id,brand_kit",
@@ -306,49 +363,62 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
         return {"company_id": company_id, "status": "company_not_found",
                 "fields_filled": [], "confidence": {}}
     co = rows[0]
-    if not assemble.should_write(co.get("brand_kit"), {"_meta": {"reviewed": False}}):
+    # Garde anti-clobber : un kit corrigé à la main (_meta.reviewed) n'est jamais réécrit.
+    # (should_write ignore son 2e argument ; {} = sentinelle.) Validé une seule fois ici.
+    if not assemble.should_write(co.get("brand_kit"), {}):
         return {"company_id": company_id, "status": "skipped_already_reviewed",
                 "fields_filled": [], "confidence": {}}
 
+    # Fetch site + Places — fail-soft : une source flaky dégrade le kit, ne l'avorte pas.
     website = co.get("website")
-    rich = await fetch_site_rich(website) if website else {
-        "head_meta": {"theme_color": None, "og_image": None, "icon": None,
-                      "twitter_image": None, "description": None},
-        "jsonld": dict(parse.EMPTY_JSONLD), "social": {}, "rbq": None,
-        "candidates": [], "page_text": "",
-    }
-    place = await fetch_place_details(co["google_place_id"]) if co.get("google_place_id") else {}
+    try:
+        rich = await fetch_site_rich(website) if website else _empty_rich()
+    except Exception:  # noqa: BLE001 — site prospect indispo → kit Places-only
+        rich = _empty_rich()
+    try:
+        place = (await fetch_place_details(co["google_place_id"])
+                 if co.get("google_place_id") else {})
+    except Exception:  # noqa: BLE001
+        place = {}
 
     candidates = rich["candidates"]
-    llm = _call_brandkit_llm(candidates, rich["page_text"], co.get("industry"), model=model)
-
-    # Résolution des candidate_id → URL source, puis ré-hébergement.
     by_id = {c["id"]: c["url"] for c in candidates}
+    try:
+        llm = _call_brandkit_llm(candidates, rich["page_text"], co.get("industry"), model=model)
+    except Exception:  # noqa: BLE001 — LLM indispo (après retry) → kit déterministe seul
+        llm = {}
+
+    # Images top-level (logo/hero/team) : candidate_id → URL ré-hébergée.
     images: dict[str, str | None] = {}
     logo_color: str | None = None
     for role, llm_key in _ROLE_FIELDS.items():
         cid = llm.get(llm_key)
         src = by_id.get(cid) if cid is not None else None
-        if src:
-            url = await rehost_one(company_id, role, src)
-            images[role] = url
-            images[f"_source_{role}"] = "medium"
-            if role == "logo" and url:
-                try:
-                    data, _ = await _download_image(src)
-                    logo_color = dominant_color(data)
-                except Exception:  # noqa: BLE001
-                    pass
+        if not src:
+            continue
+        url, data = await _rehost_with_bytes(company_id, role, src)
+        if not url:
+            continue
+        images[role] = url
+        images[f"_source_{role}"] = "medium"
+        if role == "logo" and data:  # couleur dérivée des bytes déjà téléchargés (pas de 2e fetch)
+            logo_color = dominant_color(data)
 
-    # Fallback Pexels pour hero absent (services/valeurs traités via leurs champs si besoin).
+    # Fallback Pexels pour le hero absent (image la plus visible de la démo).
     if not images.get("hero"):
         px = await fetch_pexels_image(assemble.pexels_query_for_industry(co.get("industry")))
         if px:
             data, ctype = px
-            url = await rehost_one(company_id, "hero", "pexels", download=_make_static(data, ctype))
+            url, _ = await _rehost_with_bytes(
+                company_id, "hero", "pexels", download=_make_static(data, ctype)
+            )
             if url:
                 images["hero"] = url
                 images["_source_hero"] = "low"
+
+    # Images des cartes services/valeurs : candidate_id → URL réelle (jamais l'int brut).
+    await _resolve_card_images(company_id, llm.get("services"), by_id, "service", "image_url")
+    await _resolve_card_images(company_id, llm.get("valeurs"), by_id, "valeur", "imageUrl")
 
     colors = _pick_colors(rich["head_meta"], rich["jsonld"], logo_color)
     kit = assemble.assemble_brand_kit(
@@ -356,8 +426,8 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
         images=images, colors=colors, social=rich["social"], rbq=rich["rbq"],
     )
 
-    if assemble.should_write(co.get("brand_kit"), kit):
-        await db.update("companies", {"brand_kit": kit}, filters={"id": f"eq.{company_id}"})
+    # Garde déjà validée (early return) → on écrit directement.
+    await db.update("companies", {"brand_kit": kit}, filters={"id": f"eq.{company_id}"})
 
     fields = [k for k in kit if not k.startswith("_") and k != "confidence"]
     return {"company_id": company_id, "status": "ok",
