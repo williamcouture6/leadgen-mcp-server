@@ -31,3 +31,40 @@ def test_parse_jsonld_localbusiness():
 
 def test_parse_jsonld_handles_graph_and_missing():
     assert P.parse_jsonld("<html></html>", "https://x.test/") == P.EMPTY_JSONLD
+
+HTML_IMGS = """
+<html><body>
+  <header><img src="/logo.png" alt="Logo Réno Belair"></header>
+  <section class="hero"><img src="https://x.test/hero.jpg" alt="chantier"></section>
+  <img src="/team.jpg" alt="notre équipe">
+  <footer>
+    <a href="https://facebook.com/renobelair">FB</a>
+    <a href="https://instagram.com/renobelair">IG</a>
+    <a href="tel:+14505550192">Appelez</a>
+    Licence RBQ 1234-5678-01
+  </footer>
+</body></html>
+"""
+
+def test_extract_image_candidates_kind_hint():
+    cands = P.extract_image_candidates(HTML_IMGS, "https://x.test/")
+    urls = {c["url"]: c for c in cands}
+    assert urls["https://x.test/logo.png"]["kind_hint"] == "logo"
+    assert urls["https://x.test/hero.jpg"]["kind_hint"] == "hero"
+    assert any(c["kind_hint"] == "team" for c in cands)
+
+def test_dedup_and_id_assigns_sequential_unique():
+    raw = [{"url": "a", "kind_hint": "logo"}, {"url": "a", "kind_hint": "other"},
+           {"url": "b", "kind_hint": "hero"}]
+    out = P.dedup_and_id(raw)
+    assert [c["id"] for c in out] == [0, 1]
+    assert [c["url"] for c in out] == ["a", "b"]
+
+def test_extract_social_links():
+    s = P.extract_social_links(HTML_IMGS)
+    assert s["facebook"] == "https://facebook.com/renobelair"
+    assert s["instagram"] == "https://instagram.com/renobelair"
+
+def test_find_rbq():
+    assert P.find_rbq("Licence RBQ 1234-5678-01 valide") == "1234-5678-01"
+    assert P.find_rbq("aucun numéro ici") is None
