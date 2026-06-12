@@ -7,12 +7,22 @@ Pexels en fallback.
 """
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
 from anthropic import Anthropic
+from PIL import Image
+
+from .. import supabase_client as db
+from ..config import settings
+from ..lib import brandkit_parse as parse
+from .research import USER_AGENT, fetch_site
 
 _PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "brand_kit.md"
 _DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -135,3 +145,138 @@ def _call_brandkit_llm(
     if block is not None and isinstance(block.input, dict):
         return block.input
     return {}
+
+
+_BUCKET = "brand-assets"
+_MAX_IMG_BYTES = 5 * 1024 * 1024
+_PEXELS_SEARCH = "https://api.pexels.com/v1/search"
+
+DownloadFn = Callable[[str], Awaitable[tuple[bytes, str]]]
+UploadFn = Callable[[str, str, bytes, str], Awaitable[str]]
+
+
+async def fetch_site_rich(url: str) -> dict[str, Any]:
+    """Comme research.fetch_site mais conserve le HTML brut + extrait head/JSON-LD/candidats.
+
+    Réutilise fetch_site pour le crawl multi-pages (texte + emails), puis re-fetch
+    le HTML brut de chaque page pour l'extraction d'assets (fetch_site renvoie le
+    texte nettoyé, pas le HTML)."""
+    base = await fetch_site(url)
+    pages = base.get("pages", [])
+    head_meta = {"og_image": None, "twitter_image": None, "theme_color": None,
+                 "description": None, "icon": None}
+    jsonld = dict(parse.EMPTY_JSONLD)
+    candidates: list[dict[str, Any]] = []
+    social: dict[str, str] = {}
+    rbq: str | None = None
+    headers = {"User-Agent": USER_AGENT, "Accept-Language": "fr-CA,fr;q=0.9"}
+
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
+        for i, page in enumerate(pages):
+            page_url = page["url"]
+            try:
+                r = await client.get(page_url)
+                html = r.text
+            except httpx.HTTPError:
+                continue
+            if i == 0:  # homepage = source des head meta + JSON-LD + couleurs
+                head_meta = parse.extract_head_meta(html, page_url)
+                jsonld = parse.parse_jsonld(html, page_url)
+            social.update({k: v for k, v in parse.extract_social_links(html).items() if k not in social})
+            rbq = rbq or parse.find_rbq(page["text"])
+            candidates.extend(parse.extract_image_candidates(html, page_url, where=f"page{i}"))
+
+    # og:image / favicon / logo JSON-LD = candidats supplémentaires
+    for url_extra, kind in ((head_meta["og_image"], "hero"), (jsonld["logo"], "logo"),
+                            (jsonld["image"], "hero"), (head_meta["icon"], "logo")):
+        if url_extra:
+            candidates.append({"url": url_extra, "kind_hint": kind, "alt": "", "where": "meta"})
+
+    return {
+        "status": base.get("status"),
+        "pages": pages,
+        "head_meta": head_meta,
+        "jsonld": jsonld,
+        "social": social,
+        "rbq": rbq,
+        "candidates": parse.dedup_and_id(candidates),
+        "page_text": "\n\n".join(p["text"] for p in pages),
+    }
+
+
+def dominant_color(image_bytes: bytes) -> str | None:
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception:  # noqa: BLE001 — bytes non-image
+        return None
+    img = img.resize((32, 32))
+    pixels = [p for p in img.getdata() if not (p[0] > 240 and p[1] > 240 and p[2] > 240)]
+    if not pixels:
+        return None
+    n = len(pixels)
+    r = sum(p[0] for p in pixels) // n
+    g = sum(p[1] for p in pixels) // n
+    b = sum(p[2] for p in pixels) // n
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+async def _download_image(url: str) -> tuple[bytes, str]:
+    headers = {"User-Agent": USER_AGENT}
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=headers) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        ctype = r.headers.get("content-type", "").split(";")[0].strip()
+        if not ctype.startswith("image/"):
+            raise ValueError(f"not an image: {ctype}")
+        if len(r.content) > _MAX_IMG_BYTES:
+            raise ValueError("image too large")
+        return r.content, ctype
+
+
+def _ext_for(ctype: str) -> str:
+    return {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp",
+            "image/gif": "gif", "image/svg+xml": "svg"}.get(ctype, "img")
+
+
+async def rehost_one(
+    company_id: str,
+    role: str,
+    src_url: str,
+    *,
+    download: DownloadFn | None = None,
+    upload: UploadFn | None = None,
+) -> str | None:
+    """Download src_url → upload bucket brand-assets → URL publique. Fail-soft → None."""
+    download = download or _download_image
+    upload = upload or db.upload_object
+    try:
+        data, ctype = await download(src_url)
+    except Exception:  # noqa: BLE001
+        return None
+    h = hashlib.sha1(data).hexdigest()[:10]
+    path = f"{company_id}/{role}-{h}.{_ext_for(ctype)}"
+    try:
+        return await upload(_BUCKET, path, data, ctype)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def fetch_pexels_image(query: str) -> tuple[bytes, str] | None:
+    key = settings().pexels_api_key
+    if not key:
+        return None
+    headers = {"Authorization": key}
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        try:
+            r = await client.get(_PEXELS_SEARCH, headers=headers,
+                                 params={"query": query, "orientation": "landscape", "per_page": "1"})
+            r.raise_for_status()
+            photos = r.json().get("photos") or []
+            if not photos:
+                return None
+            img_url = photos[0]["src"].get("landscape") or photos[0]["src"].get("large")
+            ri = await client.get(img_url)
+            ri.raise_for_status()
+            return ri.content, ri.headers.get("content-type", "image/jpeg").split(";")[0]
+        except (httpx.HTTPError, KeyError, ValueError):
+            return None
