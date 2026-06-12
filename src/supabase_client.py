@@ -130,3 +130,29 @@ async def rpc(name: str, args: dict[str, Any]) -> Any:
         r = await client.post(_rest_url(f"rpc/{name}"), headers=_headers(), json=args)
         r.raise_for_status()
         return r.json()
+
+
+def _storage_url(path: str) -> str:
+    base = settings().supabase_url.rstrip("/")
+    return f"{base}/storage/v1/{path.lstrip('/')}"
+
+
+@retry(**_RETRY_KW)
+async def upload_object(bucket: str, path: str, data: bytes, content_type: str) -> str:
+    """Upload binaire dans Supabase Storage (service_role) → retourne l'URL publique.
+
+    x-upsert: true => ré-héberger la même clé est idempotent (overwrite)."""
+    s = settings()
+    headers = {
+        "apikey": s.supabase_service_role_key,
+        "Authorization": f"Bearer {s.supabase_service_role_key}",
+        "Content-Type": content_type,
+        "x-upsert": "true",
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            _storage_url(f"object/{bucket}/{path}"), headers=headers, content=data
+        )
+        r.raise_for_status()
+    base = s.supabase_url.rstrip("/")
+    return f"{base}/storage/v1/object/public/{bucket}/{path}"
