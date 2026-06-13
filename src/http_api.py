@@ -29,6 +29,7 @@ from .tools import reacti_discover as reacti_discover_tools
 from .tools import brand_kit as brand_kit_tools
 from .lib.owner_match import classify_scraped_contact
 from .lib.demo_generator import ensure_demo_site, inject_demo_link
+from .lib.sourcing_filters import sourcing_disqualify_reason
 
 
 def _expected_token() -> str | None:
@@ -247,6 +248,7 @@ class RunWf1Out(BaseModel):
     total_results: int
     new_companies_count: int
     duplicates_count: int
+    filtered_junk_count: int = 0
     error_text: str | None = None
 
 
@@ -281,6 +283,7 @@ async def run_wf1(payload: RunWf1In) -> RunWf1Out:
     total_results = 0
     new_count = 0
     dup_count = 0
+    filtered_count = 0
     error_text: str | None = None
 
     try:
@@ -298,6 +301,11 @@ async def run_wf1(payload: RunWf1In) -> RunWf1Out:
 
             for p in out.results:
                 if payload.dry_run:
+                    continue
+                # Junk au sourcing (spa détente, hôtel, chaîne retail…) → skip
+                # l'insert, ne pollue pas companies. Voir lib.sourcing_filters.
+                if sourcing_disqualify_reason(p.name, p.primary_type):
+                    filtered_count += 1
                     continue
                 res = await db_tools.insert_company(
                     db_tools.CompanyIn(
@@ -350,6 +358,7 @@ async def run_wf1(payload: RunWf1In) -> RunWf1Out:
         total_results=total_results,
         new_companies_count=new_count,
         duplicates_count=dup_count,
+        filtered_junk_count=filtered_count,
         error_text=error_text,
     )
 

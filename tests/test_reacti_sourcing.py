@@ -14,7 +14,10 @@ REACTI_VERTICALS = {
     "tonte de gazon",
     "tonte de pelouse",
     "exterminateur",
-    "piscines et spas",
+    # "piscines et spas" scindé 2026-06-12 (le mot "spa" ramenait des spas
+    # bien-être) → installation + entretien, ciblant le contracteur piscine.
+    "installation de piscine",
+    "entretien de piscine",
     "lavage de vitres",
 }
 

@@ -114,7 +114,12 @@ REACTI_SECTOR_CATALOG: dict[str, list[str]] = {
         "tonte de gazon",
         "tonte de pelouse",
         "exterminateur",
-        "piscines et spas",
+        # Anciennement "piscines et spas" — le mot "spa" ramenait des spas
+        # bien-être (Strøm, Nordik, Spa Escale Santé…), 20 entrées hors-cible
+        # (bug 2026-06-12). Resserré vers l'installateur/service récurrent, qui
+        # est le vrai contracteur ICP. lib.sourcing_filters reste le filet.
+        "installation de piscine",
+        "entretien de piscine",
         "lavage de vitres",
     ],
 }
