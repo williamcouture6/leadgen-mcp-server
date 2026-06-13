@@ -39,3 +39,9 @@ def test_validate_env_blank_counts_as_missing(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("ANTHROPIC_API_KEY", "   ")
     res = config.validate_env()
     assert "ANTHROPIC_API_KEY" in res["missing_recommended"]
+
+
+def test_pexels_key_is_recommended_not_required():
+    from src import config
+    assert "PEXELS_API_KEY" in config.RECOMMENDED_ENV
+    assert "PEXELS_API_KEY" not in config.REQUIRED_ENV
