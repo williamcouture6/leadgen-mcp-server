@@ -343,13 +343,14 @@ async def _resolve_card_images(
     by_id: dict[int, str],
     role: str,
     out_field: str,
+    id_field: str = "image_candidate_id",
 ) -> None:
-    """Résout image_candidate_id → URL ré-hébergée dans out_field, puis retire l'int.
+    """Résout id_field (candidate_id) → URL ré-hébergée dans out_field, puis retire l'int.
 
-    Le site consomme l'URL (services→image_url, valeurs→imageUrl), jamais l'id.
-    Mutation en place des cartes du LLM."""
+    Le site consomme l'URL (services→image_url, valeurs→imageUrl, team→photo_url),
+    jamais l'id. Mutation en place des cartes du LLM."""
     for card in cards or []:
-        cid = card.pop("image_candidate_id", None)
+        cid = card.pop(id_field, None)
         src = by_id.get(cid) if cid is not None else None
         card[out_field] = await rehost_one(company_id, role, src) if src else None
 
@@ -416,9 +417,11 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
                 images["hero"] = url
                 images["_source_hero"] = "low"
 
-    # Images des cartes services/valeurs : candidate_id → URL réelle (jamais l'int brut).
+    # Cartes services/valeurs/membres d'équipe : candidate_id → URL réelle (jamais l'int brut).
     await _resolve_card_images(company_id, llm.get("services"), by_id, "service", "image_url")
     await _resolve_card_images(company_id, llm.get("valeurs"), by_id, "valeur", "imageUrl")
+    await _resolve_card_images(company_id, llm.get("team"), by_id, "team", "photo_url",
+                               id_field="photo_candidate_id")
 
     colors = _pick_colors(rich["head_meta"], rich["jsonld"], logo_color)
     kit = assemble.assemble_brand_kit(

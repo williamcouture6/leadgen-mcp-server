@@ -132,6 +132,7 @@ async def test_build_brand_kit_resolves_service_image_ids(monkeypatch):
                 "page_text": "services"}
     def fake_llm(cands, text, industry, **kw):
         return {"services": [{"name": "Salles de bain", "image_candidate_id": 7}],
+                "team": [{"nom": "Kevin B.", "role": "Proprio", "photo_candidate_id": 7}],
                 "valeurs": []}
     async def fake_rehost(cid, role, src, **kw):
         return f"https://cdn/{cid}/{role}.jpg"
@@ -144,9 +145,14 @@ async def test_build_brand_kit_resolves_service_image_ids(monkeypatch):
 
     await BK.build_brand_kit("c1")
 
-    svc = written["patch"]["brand_kit"]["services"][0]
+    kit = written["patch"]["brand_kit"]
+    svc = kit["services"][0]
     assert svc["image_url"] == "https://cdn/c1/service.jpg"
     assert "image_candidate_id" not in svc
+    # team : photo_candidate_id résolu en photo_url (jamais l'int brut).
+    member = kit["team"][0]
+    assert member["photo_url"] == "https://cdn/c1/team.jpg"
+    assert "photo_candidate_id" not in member
 
 
 @pytest.mark.asyncio
