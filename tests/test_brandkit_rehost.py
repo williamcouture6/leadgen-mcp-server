@@ -60,6 +60,28 @@ async def test_rehost_one_uses_injected_uploader():
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_fetch_facebook_brand_parses_public_page():
+    respx.get("https://www.facebook.com/blvitres/").mock(
+        return_value=httpx.Response(
+            200,
+            html='<meta property="og:image" content="https://fb/logo.jpg">'
+                 '<a href="tel:+15142285119">x</a>',
+        )
+    )
+    fb = await BK.fetch_facebook_brand("https://www.facebook.com/blvitres/")
+    assert fb["logo"] == "https://fb/logo.jpg"
+    assert fb["phone"] == "+15142285119"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_fetch_facebook_brand_failsoft_on_error():
+    respx.get("https://www.facebook.com/x/").mock(return_value=httpx.Response(403))
+    assert await BK.fetch_facebook_brand("https://www.facebook.com/x/") == {}
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_upload_object_returns_public_url(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://proj.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "svc")

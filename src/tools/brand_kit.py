@@ -48,6 +48,17 @@ _BRANDKIT_TOOL: dict[str, Any] = {
             "logo_candidate_id": {"type": ["integer", "null"]},
             "hero_candidate_id": {"type": ["integer", "null"]},
             "team_photo_candidate_id": {"type": ["integer", "null"]},
+            "gallery": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "before_candidate_id": {"type": ["integer", "null"]},
+                        "after_candidate_id": {"type": ["integer", "null"]},
+                        "caption": {"type": ["string", "null"]},
+                    },
+                },
+            },
             "services": {
                 "type": "array",
                 "items": {
@@ -292,6 +303,23 @@ async def rehost_one(
     return url
 
 
+async def fetch_facebook_brand(fb_url: str) -> dict[str, Any]:
+    """Best-effort : télécharge la page Facebook publique → logo/site/téléphone.
+
+    Facebook = source clé (logo, URL du site quand inconnue, souvent téléphone).
+    Fail-soft : toute erreur réseau/HTTP → {} (le kit se construit sans FB)."""
+    if not fb_url:
+        return {}
+    headers = {"User-Agent": USER_AGENT, "Accept-Language": "fr-CA,fr;q=0.9"}
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
+        try:
+            r = await client.get(fb_url)
+            r.raise_for_status()
+        except httpx.HTTPError:
+            return {}
+    return parse.parse_facebook_html(r.text)
+
+
 async def fetch_pexels_image(query: str) -> tuple[bytes, str] | None:
     key = settings().pexels_api_key
     if not key:
@@ -311,10 +339,6 @@ async def fetch_pexels_image(query: str) -> tuple[bytes, str] | None:
             return ri.content, ri.headers.get("content-type", "image/jpeg").split(";")[0]
         except (httpx.HTTPError, KeyError, ValueError):
             return None
-
-
-_ROLE_FIELDS = {"logo": "logo_candidate_id", "hero": "hero_candidate_id",
-                "team": "team_photo_candidate_id"}
 
 
 def _pick_colors(head_meta: dict[str, Any], jsonld: dict[str, Any],
@@ -355,9 +379,63 @@ async def _resolve_card_images(
         card[out_field] = await rehost_one(company_id, role, src) if src else None
 
 
+async def _pexels_rehost(company_id: str, role: str, query: str) -> str | None:
+    """Pexels(query) → ré-héberge dans brand-assets → URL publique (ou None, fail-soft)."""
+    px = await fetch_pexels_image(query)
+    if not px:
+        return None
+    data, ctype = px
+    url, _ = await _rehost_with_bytes(
+        company_id, role, "pexels", download=_make_static(data, ctype)
+    )
+    return url
+
+
+async def _ensure_service_images(
+    company_id: str, services: list[dict[str, Any]] | None, industry: str | None
+) -> None:
+    """Une image par service, sans exception : à défaut de candidat réel, fallback Pexels par service."""
+    for svc in services or []:
+        if svc.get("image_url"):
+            continue
+        svc["image_url"] = await _pexels_rehost(
+            company_id, "service", assemble.pexels_query_for_service(svc.get("name"), industry)
+        )
+
+
+async def _ensure_stats_image(company_id: str, kit: dict[str, Any], industry: str | None) -> None:
+    """Image « cinématographique » de fond pour la bande statistiques (toujours fournie)."""
+    img = await _pexels_rehost(company_id, "stats", assemble.pexels_stats_query(industry))
+    if not img:
+        return
+    stats = kit.get("stats") or {}
+    stats["image_url"] = img
+    kit["stats"] = stats
+
+
+async def _build_gallery(
+    company_id: str, llm: dict[str, Any], by_id: dict[int, str], industry: str | None
+) -> list[dict[str, Any]]:
+    """Galerie avant/après — vraie paire choisie par le LLM si dispo, sinon paire Pexels par métier."""
+    for pair in (llm.get("gallery") or []):
+        before = by_id.get(pair.get("before_candidate_id"))
+        after = by_id.get(pair.get("after_candidate_id"))
+        if before and after:
+            b = await rehost_one(company_id, "gallery-before", before)
+            a = await rehost_one(company_id, "gallery-after", after)
+            if b and a:
+                return [{"before_url": b, "after_url": a, "caption": pair.get("caption")}]
+    q_before, q_after = assemble.pexels_gallery_queries(industry)
+    b = await _pexels_rehost(company_id, "gallery-before", q_before)
+    a = await _pexels_rehost(company_id, "gallery-after", q_after)
+    if b and a:
+        return [{"before_url": b, "after_url": a, "caption": None}]
+    return []
+
+
 async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[str, Any]:
     rows = await db.select("companies", params={
-        "select": "id,website,industry,google_place_id,brand_kit",
+        "select": "id,name,address,website,industry,google_place_id,brand_kit",
         "id": f"eq.{company_id}", "limit": "1",
     })
     if not rows:
@@ -365,17 +443,35 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
                 "fields_filled": [], "confidence": {}}
     co = rows[0]
     # Garde anti-clobber : un kit corrigé à la main (_meta.reviewed) n'est jamais réécrit.
-    # (should_write ignore son 2e argument ; {} = sentinelle.) Validé une seule fois ici.
     if not assemble.should_write(co.get("brand_kit"), {}):
         return {"company_id": company_id, "status": "skipped_already_reviewed",
                 "fields_filled": [], "confidence": {}}
 
-    # Fetch site + Places — fail-soft : une source flaky dégrade le kit, ne l'avorte pas.
+    industry = co.get("industry")
     website = co.get("website")
+
+    # Fetch site + Facebook + Places — fail-soft : une source flaky dégrade le kit, ne l'avorte pas.
     try:
         rich = await fetch_site_rich(website) if website else _empty_rich()
     except Exception:  # noqa: BLE001 — site prospect indispo → kit Places-only
         rich = _empty_rich()
+
+    # Facebook (source clé : logo, URL du site quand inconnue, souvent téléphone).
+    fb: dict[str, Any] = {}
+    fb_url = (rich.get("social") or {}).get("facebook")
+    if fb_url:
+        try:
+            fb = await fetch_facebook_brand(fb_url)
+        except Exception:  # noqa: BLE001
+            fb = {}
+    # Site inconnu mais trouvé sur Facebook → re-fetch le site pour récupérer ses assets.
+    if not website and fb.get("website"):
+        website = fb["website"]
+        try:
+            rich = await fetch_site_rich(website)
+        except Exception:  # noqa: BLE001
+            pass
+
     try:
         place = (await fetch_place_details(co["google_place_id"])
                  if co.get("google_place_id") else {})
@@ -385,37 +481,44 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
     candidates = rich["candidates"]
     by_id = {c["id"]: c["url"] for c in candidates}
     try:
-        llm = _call_brandkit_llm(candidates, rich["page_text"], co.get("industry"), model=model)
+        llm = _call_brandkit_llm(candidates, rich["page_text"], industry, model=model)
     except Exception:  # noqa: BLE001 — LLM indispo (après retry) → kit déterministe seul
         llm = {}
 
-    # Images top-level (logo/hero/team) : candidate_id → URL ré-hébergée.
     images: dict[str, str | None] = {}
     logo_color: str | None = None
-    for role, llm_key in _ROLE_FIELDS.items():
+
+    # LOGO — choix DÉTERMINISTE (apple-touch/favicon ≥64 / JSON-LD / Facebook / og:image),
+    # le LLM ne sert que de dernier recours. La couleur dominante en découle.
+    logo_src = parse.pick_logo_url(rich["head_meta"], rich["jsonld"], fb.get("logo"))
+    if not logo_src:
+        cid = llm.get("logo_candidate_id")
+        logo_src = by_id.get(cid) if cid is not None else None
+    if logo_src:
+        url, data = await _rehost_with_bytes(company_id, "logo", logo_src)
+        if url:
+            images["logo"] = url
+            images["_source_logo"] = "medium"
+            if data:
+                logo_color = dominant_color(data)
+
+    # HERO / TEAM — choix LLM par candidate_id.
+    for role, llm_key in (("hero", "hero_candidate_id"), ("team", "team_photo_candidate_id")):
         cid = llm.get(llm_key)
         src = by_id.get(cid) if cid is not None else None
         if not src:
             continue
-        url, data = await _rehost_with_bytes(company_id, role, src)
-        if not url:
-            continue
-        images[role] = url
-        images[f"_source_{role}"] = "medium"
-        if role == "logo" and data:  # couleur dérivée des bytes déjà téléchargés (pas de 2e fetch)
-            logo_color = dominant_color(data)
+        url, _ = await _rehost_with_bytes(company_id, role, src)
+        if url:
+            images[role] = url
+            images[f"_source_{role}"] = "medium"
 
-    # Fallback Pexels pour le hero absent (image la plus visible de la démo).
+    # Fallback Pexels pour le hero absent (image la plus visible — requête par industrie).
     if not images.get("hero"):
-        px = await fetch_pexels_image(assemble.pexels_query_for_industry(co.get("industry")))
-        if px:
-            data, ctype = px
-            url, _ = await _rehost_with_bytes(
-                company_id, "hero", "pexels", download=_make_static(data, ctype)
-            )
-            if url:
-                images["hero"] = url
-                images["_source_hero"] = "low"
+        hero = await _pexels_rehost(company_id, "hero", assemble.pexels_query_for_industry(industry))
+        if hero:
+            images["hero"] = hero
+            images["_source_hero"] = "low"
 
     # Cartes services/valeurs/membres d'équipe : candidate_id → URL réelle (jamais l'int brut).
     await _resolve_card_images(company_id, llm.get("services"), by_id, "service", "image_url")
@@ -424,10 +527,20 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
                                id_field="photo_candidate_id")
 
     colors = _pick_colors(rich["head_meta"], rich["jsonld"], logo_color)
+    company = {"name": co.get("name"), "address": co.get("address")}
     kit = assemble.assemble_brand_kit(
         place=place, jsonld=rich["jsonld"], head_meta=rich["head_meta"], llm=llm,
         images=images, colors=colors, social=rich["social"], rbq=rich["rbq"],
+        company=company, facebook=fb,
     )
+
+    # Garanties d'images (toujours, fallback Pexels par métier) : 1 image/service, fond stats,
+    # galerie avant/après — le site démo affiche ces sections en permanence.
+    await _ensure_service_images(company_id, kit.get("services"), industry)
+    await _ensure_stats_image(company_id, kit, industry)
+    gallery = await _build_gallery(company_id, llm, by_id, industry)
+    if gallery:
+        kit["gallery"] = gallery
 
     # Garde déjà validée (early return) → on écrit directement.
     await db.update("companies", {"brand_kit": kit}, filters={"id": f"eq.{company_id}"})

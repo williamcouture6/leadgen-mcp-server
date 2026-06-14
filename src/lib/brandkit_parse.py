@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -28,6 +28,20 @@ def _abs(base: str, url: str | None) -> str | None:
     return urljoin(base, url.strip())
 
 
+_SIZE_RE = re.compile(r"(\d{2,4})x(\d{2,4})")
+
+
+def _icon_size(sizes_attr: str | None, href: str | None) -> int | None:
+    """Taille (px, côté) d'une icône depuis l'attribut `sizes` ou le nom de fichier.
+
+    Ex. sizes="192x192" → 192 ; href=".../cropped-logo-180x180.png" → 180."""
+    for src in (sizes_attr or "", href or ""):
+        m = _SIZE_RE.search(src)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def extract_head_meta(html: str, base_url: str) -> dict[str, Any]:
     soup = BeautifulSoup(html, "html.parser")
 
@@ -36,11 +50,25 @@ def extract_head_meta(html: str, base_url: str) -> dict[str, Any]:
         return tag.get("content") if tag and tag.get("content") else None
 
     icon = None
+    icons: list[dict[str, Any]] = []
+    apple_candidates: list[tuple[int, str]] = []  # (size, url) pour apple-touch-icon
     for link in soup.find_all("link", href=True):
         rels = " ".join(link.get("rel", [])).lower()
-        if "icon" in rels:
+        if "icon" not in rels:
+            continue
+        url = _abs(base_url, link["href"])
+        if not url:
+            continue
+        size = _icon_size(link.get("sizes"), link["href"])
+        if icon is None:
             icon = link["href"]
-            break
+        icons.append({"url": url, "size": size})
+        if "apple-touch-icon" in rels:
+            apple_candidates.append((size or 0, url))
+
+    apple_touch_icon = (
+        max(apple_candidates, key=lambda t: t[0])[1] if apple_candidates else None
+    )
 
     return {
         "og_image": _abs(base_url, _meta("property", "og:image") or _meta("name", "og:image")),
@@ -48,7 +76,30 @@ def extract_head_meta(html: str, base_url: str) -> dict[str, Any]:
         "theme_color": _meta("name", "theme-color"),
         "description": _meta("name", "description"),
         "icon": _abs(base_url, icon),
+        "apple_touch_icon": apple_touch_icon,
+        "icons": icons,
     }
+
+
+def pick_logo_url(
+    head_meta: dict[str, Any],
+    jsonld: dict[str, Any] | None,
+    facebook_logo: str | None = None,
+) -> str | None:
+    """Choix DÉTERMINISTE du logo (les faits ne dépendent pas du LLM).
+
+    Priorité : apple-touch-icon → plus grande favicon ≥64px → logo JSON-LD →
+    logo page Facebook → og:image en DERNIER recours (souvent une photo, pas un logo)."""
+    if head_meta.get("apple_touch_icon"):
+        return head_meta["apple_touch_icon"]
+    sized = [i for i in (head_meta.get("icons") or []) if (i.get("size") or 0) >= 64]
+    if sized:
+        return max(sized, key=lambda i: i["size"])["url"]
+    if jsonld and jsonld.get("logo"):
+        return jsonld["logo"]
+    if facebook_logo:
+        return facebook_logo
+    return head_meta.get("og_image")
 
 
 def _iter_jsonld_objects(html: str) -> list[dict[str, Any]]:
@@ -215,3 +266,39 @@ def extract_social_links(html: str) -> dict[str, str]:
 def find_rbq(text: str) -> str | None:
     m = RBQ_RE.search(text or "")
     return m.group(1) if m else None
+
+
+_FB_PHONE_RE = re.compile(r'"phone(?:_?number)?"\s*:\s*"([+\d][\d\s().\-]{6,})"')
+
+
+def parse_facebook_html(html: str) -> dict[str, Any]:
+    """Extraction best-effort depuis le HTML public d'une page Facebook.
+
+    Facebook = source clé (logo + URL du site quand inconnue + souvent téléphone).
+    Tout est best-effort : champ absent → None. Jamais d'exception (fail-soft amont)."""
+    soup = BeautifulSoup(html, "html.parser")
+
+    og = soup.find("meta", attrs={"property": "og:image"})
+    logo = og.get("content") if og and og.get("content") else None
+
+    # Site web : Facebook enrobe les liens sortants dans l.php?u=<url encodée>.
+    website = None
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if "l.php" in href and "u=" in href:
+            u = parse_qs(urlparse(href).query).get("u", [None])[0]
+            if u:
+                website = u
+                break
+
+    # Téléphone : lien tel: d'abord, sinon clé JSON embarquée.
+    phone = None
+    tel = soup.find("a", href=re.compile(r"^tel:", re.I))
+    if tel and tel.get("href"):
+        phone = tel["href"].split(":", 1)[1].strip() or None
+    if not phone:
+        m = _FB_PHONE_RE.search(html or "")
+        if m:
+            phone = m.group(1).strip()
+
+    return {"logo": logo, "website": website, "phone": phone, "hours": None}
