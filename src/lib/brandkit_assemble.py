@@ -82,14 +82,24 @@ def _address_match(company_addr: str | None, place_addr: str | None) -> bool:
     return bool((_tokens(company_addr) & _tokens(place_addr)) - _GENERIC_NAME_TOKENS)
 
 
-def places_match_ok(place: dict[str, Any] | None, company: dict[str, Any] | None) -> bool:
-    """True si le résultat Places est bien la company (nom + adresse concordent).
+def places_match(
+    place: dict[str, Any] | None, company: dict[str, Any] | None
+) -> tuple[bool, bool]:
+    """(nom_ok, adresse_ok) entre le résultat Places et la company.
 
-    `company` None → rien à vérifier → True (compat). Sinon nom ET adresse requis."""
+    `company`/`place` absent → rien à vérifier → (True, True) (compat).
+    Le NOM est le garde-fou fort (bon commerce ?) ; l'ADRESSE module la confiance
+    (un commerce peut afficher des adresses divergentes selon les annuaires)."""
     if not place or not company:
-        return True
+        return True, True
     name_ok = _name_match(company.get("name"), (place.get("displayName") or {}).get("text"))
     addr_ok = _address_match(company.get("address"), place.get("formattedAddress"))
+    return name_ok, addr_ok
+
+
+def places_match_ok(place: dict[str, Any] | None, company: dict[str, Any] | None) -> bool:
+    """True si nom ET adresse concordent (match pleinement vérifié)."""
+    name_ok, addr_ok = places_match(place, company)
     return name_ok and addr_ok
 
 
@@ -276,24 +286,28 @@ def assemble_brand_kit(
     kit: dict[str, Any] = {}
     facebook = facebook or {}
 
-    # Faits Places (heures/avis/téléphone/adresse) UNIQUEMENT si le match est confirmé.
-    match_ok = places_match_ok(place, company)
+    # Faits Places : on les ÉCARTE seulement si le NOM ne concorde pas (mauvais commerce).
+    # L'adresse, elle, module la confiance (high si elle concorde aussi, sinon medium) —
+    # un commerce peut afficher des adresses divergentes selon les annuaires, mais ses
+    # heures Google Maps restent autoritatives.
+    name_ok, addr_ok = places_match(place, company)
+    fact_conf = "high" if addr_ok else "medium"
 
-    # Téléphone : Places (si match) → JSON-LD → Facebook.
-    places_phone = phone_from_places(place) if match_ok else None
+    # Téléphone : Places (si bon commerce) → JSON-LD → Facebook.
+    places_phone = phone_from_places(place) if name_ok else None
     kit["phone"] = places_phone or jsonld.get("telephone") or facebook.get("phone")
     if kit["phone"]:
-        confidence["phone"] = "high" if places_phone else "medium"
+        confidence["phone"] = fact_conf if places_phone else "medium"
 
-    # Heures : seulement Places (bon format FR localisé) et seulement si match confirmé.
-    # En cas de doute → vide + pas de confidence (jamais deviner les heures).
-    kit["hours"] = hours_from_places(place) if match_ok else None
+    # Heures : seulement Places (bon format FR localisé), seulement si le NOM concorde.
+    # En cas de mauvais commerce → vide (jamais deviner les heures).
+    kit["hours"] = hours_from_places(place) if name_ok else None
     if kit["hours"]:
-        confidence["hours"] = "high"
+        confidence["hours"] = fact_conf
 
-    # Avis / lien avis : écartés si le match échoue (avis d'un autre commerce).
-    kit["reviews"] = reviews_from_places(place) if match_ok else []
-    kit["reviews_url"] = reviews_url_from_places(place) if match_ok else None
+    # Avis / lien avis : écartés si le NOM ne concorde pas (avis d'un autre commerce).
+    kit["reviews"] = reviews_from_places(place) if name_ok else []
+    kit["reviews_url"] = reviews_url_from_places(place) if name_ok else None
     kit["social"] = social or None
     kit["rbq"] = rbq or llm.get("rbq")
     for f in ("reviews", "reviews_url", "social", "rbq"):

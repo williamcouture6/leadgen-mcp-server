@@ -97,6 +97,39 @@ def test_places_match_none_company_is_compat_true():
     assert A.places_match_ok({"displayName": {"text": "X"}}, None) is True
 
 
+def test_places_match_returns_name_and_addr_flags():
+    place = {"displayName": {"text": "BL Vitres Centre-Est"},
+             "formattedAddress": "11233 Av X, Montréal, QC H1G 4P1"}
+    # bon nom, code postal divergent (annuaire ≠ Google)
+    assert A.places_match(place, {"name": "BL Vitres Centre-Est",
+                                  "address": "9481 Rue De Martigny, QC H1Z 2P1"}) == (True, False)
+    # bon nom + bon code postal
+    assert A.places_match(place, {"name": "BL Vitres Centre-Est",
+                                  "address": "11233 Av X, Montréal, QC H1G 4P1"}) == (True, True)
+    # mauvais commerce
+    assert A.places_match(place, {"name": "Garage Pneus Plus",
+                                  "address": "99 Rue Z, Laval, QC H7A 1B2"})[0] is False
+
+
+def test_assemble_keeps_hours_on_name_match_addr_diff_but_medium():
+    # Nom concorde (bonne entreprise) mais adresse diverge → on GARDE les heures Google Maps
+    # (source autoritative) en abaissant la confidence, jamais les écarter.
+    place = {"displayName": {"text": "BL Vitres Centre-Est"},
+             "formattedAddress": "9481 Rue De Martigny, Montréal, QC H1Z 2P1",
+             "internationalPhoneNumber": "+1 514-228-5119",
+             "regularOpeningHours": {"weekdayDescriptions": ["lundi: 09:00 – 19:00"]},
+             "reviews": []}
+    kit = A.assemble_brand_kit(
+        place=place, jsonld=dict(_EMPTY_JSONLD), head_meta=dict(_EMPTY_HEAD),
+        llm=dict(_EMPTY_LLM), images={}, colors=None, social={}, rbq=None,
+        company={"name": "BL Vitres Centre-Est", "address": "11233 Av X, Montréal, QC H1G 4P1"},
+    )
+    assert kit["hours"] == "lundi: 09:00 – 19:00"
+    assert kit["confidence"]["hours"] == "medium"
+    assert kit["phone"] == "+1 514-228-5119"
+    assert kit["confidence"]["phone"] == "medium"
+
+
 def test_assemble_drops_places_facts_on_mismatch():
     place = {"displayName": {"text": "Autre Commerce"},
              "formattedAddress": "1 rue Z, Québec, QC G1A 1A1",
