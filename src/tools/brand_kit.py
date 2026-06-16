@@ -238,6 +238,7 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
     pages: list[dict[str, str]] = []
     service_pages: list[dict[str, str]] = []
     escalated: list[str] = []
+    _gallery_pairs_all: list[dict[str, Any]] = []
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "fr-CA,fr;q=0.9"}
 
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
@@ -245,7 +246,7 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
         if not home_html:
             return {"status": "error", "pages": [], "head_meta": head_meta, "jsonld": jsonld,
                     "social": {}, "rbq": None, "candidates": [], "page_text": "",
-                    "service_pages": [], "escalated": []}
+                    "service_pages": [], "escalated": [], "gallery_pairs": []}
 
         # Liste à crawler : home (type 'home') + liens internes pertinents, dédupliqués.
         # Dédup insensible au slash final (évite de re-fetcher la home via href="/").
@@ -282,6 +283,7 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
             social.update({k: v for k, v in parse.extract_social_links(html).items() if k not in social})
             rbq = rbq or parse.find_rbq(text)
             candidates.extend(parse.extract_image_candidates(html, page_url, where=page_type))
+            _gallery_pairs_all.extend(parse.extract_gallery_pairs(html, page_url))
 
     # og:image / favicon / logo JSON-LD = candidats supplémentaires
     for url_extra, kind in ((head_meta["og_image"], "hero"), (jsonld["logo"], "logo"),
@@ -300,6 +302,7 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
         "page_text": "\n\n".join(p["text"] for p in pages),
         "service_pages": service_pages,
         "escalated": escalated,
+        "gallery_pairs": _gallery_pairs_all,
     }
 
 
@@ -438,6 +441,7 @@ def _empty_rich() -> dict[str, Any]:
         "jsonld": dict(parse.EMPTY_JSONLD), "social": {}, "rbq": None,
         "candidates": [], "page_text": "", "pages": [],
         "service_pages": [], "escalated": [],
+        "gallery_pairs": [],
     }
 
 
@@ -494,9 +498,17 @@ async def _ensure_stats_image(company_id: str, kit: dict[str, Any], industry: st
 
 
 async def _build_gallery(
-    company_id: str, llm: dict[str, Any], by_id: dict[int, str], industry: str | None
+    company_id: str, llm: dict[str, Any], by_id: dict[int, str], industry: str | None,
+    site_pairs: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Galerie avant/après — vraie paire choisie par le LLM si dispo, sinon paire Pexels par métier."""
+    """Galerie avant/après — ordre : site réel → LLM → Pexels."""
+    # 1) vraie paire du site (slider avant/après) → ré-hébergée
+    for pair in (site_pairs or []):
+        b = await rehost_one(company_id, "gallery-before", pair["before_url"])
+        a = await rehost_one(company_id, "gallery-after", pair["after_url"])
+        if b and a:
+            return [{"before_url": b, "after_url": a, "caption": pair.get("caption")}]
+    # 2) paire choisie par le LLM (candidate_id)
     for pair in (llm.get("gallery") or []):
         before = by_id.get(pair.get("before_candidate_id"))
         after = by_id.get(pair.get("after_candidate_id"))
@@ -505,6 +517,7 @@ async def _build_gallery(
             a = await rehost_one(company_id, "gallery-after", after)
             if b and a:
                 return [{"before_url": b, "after_url": a, "caption": pair.get("caption")}]
+    # 3) fallback Pexels par métier
     q_before, q_after = assemble.pexels_gallery_queries(industry)
     b = await _pexels_rehost(company_id, "gallery-before", q_before)
     a = await _pexels_rehost(company_id, "gallery-after", q_after)
@@ -619,7 +632,8 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
     # galerie avant/après — le site démo affiche ces sections en permanence.
     await _ensure_service_images(company_id, kit.get("services"), industry)
     await _ensure_stats_image(company_id, kit, industry)
-    gallery = await _build_gallery(company_id, llm, by_id, industry)
+    gallery = await _build_gallery(company_id, llm, by_id, industry,
+                                   site_pairs=rich.get("gallery_pairs"))
     if gallery:
         kit["gallery"] = gallery
 

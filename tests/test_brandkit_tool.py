@@ -236,6 +236,19 @@ async def test_build_brand_kit_skips_reviewed(monkeypatch):
     assert out["status"] == "skipped_already_reviewed"
 
 
+@pytest.mark.asyncio
+async def test_build_gallery_prefers_real_site_pair(monkeypatch):
+    async def fake_rehost(cid, role, src, **kw):
+        return f"https://cdn/{role}.jpg"
+    monkeypatch.setattr(BK, "rehost_one", fake_rehost)
+    out = await BK._build_gallery(
+        "c1", llm={}, by_id={}, industry="lavage de vitres",
+        site_pairs=[{"before_url": "https://x/av.jpg", "after_url": "https://x/ap.jpg", "caption": None}],
+    )
+    assert out and out[0]["before_url"] == "https://cdn/gallery-before.jpg"
+    assert out[0]["after_url"] == "https://cdn/gallery-after.jpg"
+
+
 def test_call_llm_includes_service_pages(monkeypatch):
     captured = {}
     class _Msg:
