@@ -332,6 +332,13 @@ def assemble_brand_kit(
     if kit["hours"]:
         confidence["hours"] = fact_conf
 
+    # Secours : aucune heure Places utilisable → openingHours du site (best-effort, low).
+    if not kit.get("hours"):
+        site_hours = hours_from_jsonld(jsonld.get("opening_hours") or [])
+        if site_hours:
+            kit["hours"] = site_hours
+            confidence["hours"] = "low"
+
     # Avis / lien avis : écartés si le NOM ne concorde pas (avis d'un autre commerce).
     kit["reviews"] = reviews_from_places(place) if name_ok else []
     kit["reviews_url"] = reviews_url_from_places(place) if name_ok else None
@@ -372,3 +379,31 @@ def assemble_brand_kit(
     }
     # purge des clés None de premier niveau (sauf structures voulues)
     return {k: v for k, v in kit.items() if v is not None}
+
+
+def derive_review(kit: dict[str, Any]) -> list[dict[str, str]]:
+    """Champs à faire vérifier par un humain (file de revue). Dérivé de confidence + présence."""
+    review: list[dict[str, str]] = []
+    conf = kit.get("confidence", {})
+
+    for field, label in (("hours", "heures"), ("phone", "téléphone")):
+        c = conf.get(field)
+        if not kit.get(field):
+            review.append({"field": field, "reason": f"{label} absent"})
+        elif c and c != "high":
+            review.append({"field": field, "reason": f"{label}: confiance {c} (recouper)"})
+
+    if not kit.get("logo_url"):
+        review.append({"field": "logo_url", "reason": "logo absent (nom en texte)"})
+
+    if conf.get("hero_image_url") == "low":
+        review.append({"field": "hero_image_url", "reason": "hero = image de banque (pas du site)"})
+
+    if conf.get("colors") and conf.get("colors") != "high":
+        review.append({"field": "colors", "reason": "couleurs dérivées (à confirmer)"})
+
+    no_photo = [m for m in (kit.get("team") or []) if not m.get("photo_url")]
+    if no_photo:
+        review.append({"field": "team", "reason": f"{len(no_photo)} membre(s) sans photo"})
+
+    return review

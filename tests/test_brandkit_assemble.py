@@ -195,6 +195,42 @@ def test_hours_from_jsonld_wraps_week():
     assert "mardi: Fermé" in h
 
 
+def test_derive_review_flags():
+    kit = {
+        "hours": "lundi: 09:00 – 17:00", "phone": "+1 514-000-0000",
+        "team": [{"nom": "Kevin", "photo_url": "u"}, {"nom": "Sam", "photo_url": None}],
+        "confidence": {"hours": "medium", "phone": "high", "hero_image_url": "low",
+                       "colors": "medium"},
+        "hero_image_url": "u",
+    }
+    review = A.derive_review(kit)
+    fields = {r["field"] for r in review}
+    assert "hours" in fields          # confiance medium → à vérifier
+    assert "phone" not in fields      # high → pas de flag
+    assert "logo_url" in fields       # absent
+    assert "team" in fields           # 1 membre sans photo
+    assert "hero_image_url" in fields # confiance low (image de banque)
+    assert "colors" in fields         # dérivée (medium)
+
+
+def test_derive_review_clean_kit():
+    kit = {"hours": "x", "phone": "y", "logo_url": "l",
+           "confidence": {"hours": "high", "phone": "high"}}
+    assert A.derive_review(kit) == []
+
+
+def test_assemble_hours_jsonld_fallback_when_no_places():
+    # Pas d'heures Places (place vide) mais openingHours JSON-LD → heures de secours, low.
+    kit = A.assemble_brand_kit(
+        place={}, jsonld={**_EMPTY_JSONLD, "opening_hours": ["Mo-Fr 08:00-17:00"]},
+        head_meta=dict(_EMPTY_HEAD), llm=dict(_EMPTY_LLM),
+        images={}, colors=None, social={}, rbq=None,
+        company={"name": "X", "address": "Y"},
+    )
+    assert kit["hours"].startswith("lundi: 08:00 – 17:00")
+    assert kit["confidence"]["hours"] == "low"
+
+
 def test_assemble_brand_kit_places_wins_and_confidence():
     kit = A.assemble_brand_kit(
         place={"internationalPhoneNumber": "+1 450-555-0192", "reviews": []},
