@@ -149,3 +149,15 @@ def test_parse_facebook_html_phone_from_json_when_no_tel():
 def test_parse_facebook_html_empty_is_all_none():
     fb = P.parse_facebook_html("<html></html>")
     assert fb == {"logo": None, "website": None, "phone": None, "hours": None}
+
+
+def test_classify_page():
+    assert P.classify_page("https://x.test/lavage-de-vitres-residentiel/", "Résidentiel") == "service"
+    assert P.classify_page("https://x.test/nettoyage-gouttieres/", "") == "service"
+    assert P.classify_page("https://x.test/notre-equipe/", "Notre équipe") == "equipe"
+    assert P.classify_page("https://x.test/galerie/", "") == "galerie"
+    assert P.classify_page("https://x.test/realisations/", "") == "galerie"
+    assert P.classify_page("https://x.test/contact/", "Contact") == "contact"
+    assert P.classify_page("https://x.test/blog/", "Blogue") == "blog"
+    assert P.classify_page("https://x.test/", "Accueil") == "home"
+    assert P.classify_page("https://x.test/mentions-legales/", "") == "other"

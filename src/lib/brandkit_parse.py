@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Any
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -269,6 +270,42 @@ def find_rbq(text: str) -> str | None:
 
 
 _FB_PHONE_RE = re.compile(r'"phone(?:_?number)?"\s*:\s*"([+\d][\d\s().\-]{6,})"')
+
+
+# ---------------------------------------------------------------------------
+# Découverte et classification de pages internes (Plan 2A)
+# ---------------------------------------------------------------------------
+
+# `urlparse` is already imported above as `urlparse`; alias for readability.
+_urlparse = urlparse
+
+# Indices d'URL / texte d'ancre (sans accent, minuscule) → type de page.
+_PAGE_TYPE_HINTS: list[tuple[tuple[str, ...], str]] = [
+    (("equipe", "team", "a-propos", "apropos", "propos", "about", "qui-sommes"), "equipe"),
+    (("galerie", "gallery", "realisations", "realisation", "avant-apres", "portfolio", "projets"), "galerie"),
+    (("contact", "nous-joindre", "joindre"), "contact"),
+    (("blog", "blogue", "actualites", "nouvelles", "articles"), "blog"),
+    # 'service' en dernier : c'est le plus large (toute page « métier »).
+    (("service", "residentiel", "commercial", "lavage", "nettoyage", "gouttiere",
+      "pression", "vitre", "fenetre", "soffite", "renovation", "toiture", "plomberie",
+      "electricite", "peinture", "paysagement", "deneigement", "excavation"), "service"),
+]
+
+
+def classify_page(url: str, anchor_text: str = "") -> str:
+    """Type d'une page interne d'après son URL + le texte du lien. 'home' pour la racine."""
+    path = _urlparse(url).path.strip("/")
+    if not path:
+        return "home"
+    blob = f"{path} {anchor_text}"
+    blob = "".join(
+        c for c in unicodedata.normalize("NFKD", blob)
+        if not unicodedata.combining(c)
+    ).lower()
+    for needles, kind in _PAGE_TYPE_HINTS:
+        if any(n in blob for n in needles):
+            return kind
+    return "other"
 
 
 def parse_facebook_html(html: str) -> dict[str, Any]:
