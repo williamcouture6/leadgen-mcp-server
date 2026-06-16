@@ -72,6 +72,26 @@ _BRANDKIT_TOOL: dict[str, Any] = {
                         "inclus": {"type": "array", "items": {"type": "string"}},
                         "image_candidate_id": {"type": ["integer", "null"]},
                         "overlay": {"enum": ["dark", "light", None]},
+                        "process": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "titre": {"type": "string"},
+                                    "texte": {"type": "string"},
+                                },
+                            },
+                        },
+                        "faq": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "question": {"type": "string"},
+                                    "reponse": {"type": "string"},
+                                },
+                            },
+                        },
                     },
                 },
             },

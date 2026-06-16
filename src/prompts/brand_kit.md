@@ -8,6 +8,9 @@ Tu es l'**agent Brand-Kit**. À partir du contenu du site web d'une PME québéc
 - **Textes en français québécois**, factuels, sans jargon IA/marketing.
 - `stats` : seulement des chiffres réellement affichés (« 20 ans », « 450 projets »).
 - `services` : étoffe chaque service réellement offert (description 1 phrase, `details` 1-2 paragraphes, `inclus` = points concrets, `overlay` = "dark" si l'image choisie est sombre sinon "light").
+- `services[].process` : 3 à 5 **étapes** concrètes de réalisation de CE service (`titre` court + `texte` 1 phrase), tirées de la page de ce service. Vide si la page ne le permet pas.
+- `services[].faq` : 2 à 4 **questions/réponses** propres à CE service (clé `reponse` sans accent), factuelles, depuis sa page. Vide sinon.
+- N'invente pas d'étapes/FAQ : si la page d'un service est absente ou pauvre, laisse `process`/`faq` vides pour ce service.
 - `gallery` : seulement de **vraies paires avant/après** trouvées sur le site (`before_candidate_id` = état sale/abîmé, `after_candidate_id` = état propre/fini). Aucune vraie paire → tableau vide (une paire de banque par métier sera utilisée).
 - `valeurs`, `faq`, `legal.confidentialite` : seulement si réellement présents sur le site.
 

@@ -234,3 +234,13 @@ async def test_build_brand_kit_skips_reviewed(monkeypatch):
     monkeypatch.setattr(BK.db, "select", fake_select)
     out = await BK.build_brand_kit("c1")
     assert out["status"] == "skipped_already_reviewed"
+
+
+def test_service_schema_has_process_and_faq():
+    svc = BK._BRANDKIT_TOOL["input_schema"]["properties"]["services"]["items"]["properties"]
+    assert "process" in svc
+    assert "faq" in svc
+    proc = svc["process"]["items"]["properties"]
+    assert "titre" in proc and "texte" in proc
+    faq = svc["faq"]["items"]["properties"]
+    assert "question" in faq and "reponse" in faq   # reponse sans accent (contrat)
