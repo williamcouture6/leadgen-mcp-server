@@ -365,6 +365,35 @@ def should_escalate(html: str) -> bool:
     return real_imgs == 0
 
 
+# Conteneurs de slider/figure avant-après les plus courants (WP & plugins).
+_BA_SELECTORS = (
+    '[class*="twentytwenty"]', '[class*="before-after"]', '[class*="beforeafter"]',
+    '[class*="ba-slider"]', '[class*="comparison"]',
+)
+
+
+def extract_gallery_pairs(html: str, base_url: str) -> list[dict[str, Any]]:
+    """Paires avant/après RÉELLES depuis les conteneurs slider (2 premières <img>)."""
+    soup = BeautifulSoup(html, "html.parser")
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for sel in _BA_SELECTORS:
+        for node in soup.select(sel):
+            imgs = node.find_all("img")
+            srcs = []
+            for im in imgs:
+                s = im.get("src") or im.get("data-src")
+                u = _abs(base_url, s) if s else None
+                if u and not u.startswith("data:"):
+                    srcs.append(u)
+            if len(srcs) >= 2:
+                key = (srcs[0], srcs[1])
+                if key not in seen:
+                    seen.add(key)
+                    out.append({"before_url": srcs[0], "after_url": srcs[1], "caption": None})
+    return out
+
+
 def parse_facebook_html(html: str) -> dict[str, Any]:
     """Extraction best-effort depuis le HTML public d'une page Facebook.
 

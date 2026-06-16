@@ -226,3 +226,27 @@ def test_should_escalate_counts_data_src_as_real():
             + "".join(f'<img data-src="/p{i}.jpg">' for i in range(3))
             + "</body></html>")
     assert P.should_escalate(html) is False
+
+
+HTML_BA = """
+<html><body>
+  <div class="twentytwenty-container">
+    <img src="/avant1.jpg" alt="Avant">
+    <img src="/apres1.jpg" alt="Après">
+  </div>
+  <figure class="before-after">
+    <img src="/b2.jpg"><img src="/a2.jpg">
+  </figure>
+</body></html>
+"""
+
+
+def test_extract_gallery_pairs():
+    pairs = P.extract_gallery_pairs(HTML_BA, "https://x.test/")
+    assert {"before_url": "https://x.test/avant1.jpg",
+            "after_url": "https://x.test/apres1.jpg", "caption": None} in pairs
+    assert any(p["before_url"].endswith("/b2.jpg") and p["after_url"].endswith("/a2.jpg") for p in pairs)
+
+
+def test_extract_gallery_pairs_none():
+    assert P.extract_gallery_pairs("<html><body><img src='/x.jpg'></body></html>", "https://x.test/") == []
