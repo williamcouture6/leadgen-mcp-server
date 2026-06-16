@@ -558,17 +558,22 @@ class BrandKitBuildIn(BaseModel):
 
 class BrandKitBuildOut(BaseModel):
     company_id: str
-    status: str  # ok | skipped_already_reviewed | company_not_found | error
+    status: str  # accepted (réponse async) ; le build de fond produit ok|needs_review|
+    #              skipped_already_reviewed|company_not_found|error (loggé, pas renvoyé)
     fields_filled: list[str] = []
     confidence: dict[str, Any] = {}
     error_text: str | None = None
 
 
 async def _run_brandkit_build(company_id: str, model: str) -> None:
+    log = logging.getLogger("brand-kit")
     try:
-        await brand_kit_tools.build_brand_kit(company_id, model=model)
+        result = await brand_kit_tools.build_brand_kit(company_id, model=model)
+        # build_brand_kit ne lève pas pour company_not_found / skipped → tracer le no-op.
+        if result.get("status") not in ("ok", "needs_review"):
+            log.warning("build_brand_kit no-op pour %s: %s", company_id, result.get("status"))
     except Exception:  # noqa: BLE001 — tâche de fond : log only, ne casse pas le worker
-        logging.getLogger("brand-kit").exception("build_brand_kit a échoué pour %s", company_id)
+        log.exception("build_brand_kit a échoué pour %s", company_id)
 
 
 @app.post(

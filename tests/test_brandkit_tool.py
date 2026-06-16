@@ -88,7 +88,8 @@ async def test_build_brand_kit_orchestrates(monkeypatch):
                 "social": {"facebook": "https://facebook.com/x"},
                 "rbq": "1234-5678-01",
                 "candidates": [{"id": 0, "url": "https://x/logo.png", "kind_hint": "logo", "alt": ""}],
-                "page_text": "Réno Belair, toiture à Laval"}
+                "page_text": "Réno Belair, toiture à Laval",
+                "service_pages": [], "gallery_pairs": []}
     async def fake_place(pid):
         return {"displayName": {"text": "Réno Belair"},
                 "formattedAddress": "10 rue Principale, Laval, QC H1G 4P1, Canada",
