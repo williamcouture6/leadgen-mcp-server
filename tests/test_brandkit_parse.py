@@ -151,6 +151,38 @@ def test_parse_facebook_html_empty_is_all_none():
     assert fb == {"logo": None, "website": None, "phone": None, "hours": None}
 
 
+HTML_NAV = """
+<html><body><nav>
+  <a href="/lavage-de-vitres-residentiel/">Résidentiel</a>
+  <a href="/nettoyage-gouttieres/">Gouttières</a>
+  <a href="/notre-equipe/">Notre équipe</a>
+  <a href="/contact/">Contact</a>
+  <a href="https://facebook.com/x">FB</a>
+  <a href="/lavage-de-vitres-residentiel/">Résidentiel (doublon)</a>
+  <a href="mailto:info@x.test">Courriel</a>
+</nav></body></html>
+"""
+
+
+def test_discover_links_internal_classified_deduped():
+    links = P.discover_links(HTML_NAV, "https://x.test/")
+    by_url = {l["url"]: l["type"] for l in links}
+    assert by_url["https://x.test/lavage-de-vitres-residentiel/"] == "service"
+    assert by_url["https://x.test/nettoyage-gouttieres/"] == "service"
+    assert by_url["https://x.test/notre-equipe/"] == "equipe"
+    assert by_url["https://x.test/contact/"] == "contact"
+    # externe (facebook) et mailto exclus ; doublon dédupliqué
+    assert all("facebook.com" not in u for u in by_url)
+    assert all(not u.startswith("mailto:") for u in by_url)
+    assert sum(1 for l in links if "residentiel" in l["url"]) == 1
+
+
+def test_discover_links_respects_cap():
+    many = "".join(f'<a href="/service-{i}/">S{i}</a>' for i in range(40))
+    links = P.discover_links(f"<nav>{many}</nav>", "https://x.test/", cap=25)
+    assert len(links) <= 25
+
+
 def test_classify_page():
     assert P.classify_page("https://x.test/lavage-de-vitres-residentiel/", "Résidentiel") == "service"
     assert P.classify_page("https://x.test/nettoyage-gouttieres/", "") == "service"

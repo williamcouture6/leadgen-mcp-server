@@ -308,6 +308,36 @@ def classify_page(url: str, anchor_text: str = "") -> str:
     return "other"
 
 
+def _same_host(base: str, candidate: str) -> bool:
+    try:
+        return _urlparse(base).netloc.split(":")[0] == _urlparse(candidate).netloc.split(":")[0]
+    except ValueError:
+        return False
+
+
+def discover_links(html: str, base_url: str, cap: int = 25) -> list[dict[str, str]]:
+    """Liens internes dédupliqués, classés par type. Exclut externes/mailto/tel/ancres."""
+    soup = BeautifulSoup(html, "html.parser")
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        low = href.lower()
+        if low.startswith(("mailto:", "tel:", "javascript:", "#")):
+            continue
+        url = _abs(base_url, href)
+        if not url:
+            continue
+        url = url.split("#")[0]
+        if not _same_host(base_url, url) or url in seen:
+            continue
+        seen.add(url)
+        out.append({"url": url, "type": classify_page(url, a.get_text(" ", strip=True))})
+        if len(out) >= cap:
+            break
+    return out
+
+
 def parse_facebook_html(html: str) -> dict[str, Any]:
     """Extraction best-effort depuis le HTML public d'une page Facebook.
 
