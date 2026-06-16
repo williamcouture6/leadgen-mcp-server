@@ -45,3 +45,19 @@ def test_pexels_key_is_recommended_not_required():
     from src import config
     assert "PEXELS_API_KEY" in config.RECOMMENDED_ENV
     assert "PEXELS_API_KEY" not in config.REQUIRED_ENV
+
+
+def test_render_service_env_recommended():
+    from src import config
+    assert "RENDER_SERVICE_URL" in config.RECOMMENDED_ENV
+    assert "RENDER_SERVICE_URL" not in config.REQUIRED_ENV
+
+
+def test_render_service_settings_fields(monkeypatch):
+    monkeypatch.setenv("RENDER_SERVICE_URL", "https://render.couture-ia.com")
+    monkeypatch.setenv("RENDER_SERVICE_TOKEN", "tok")
+    from src import config
+    config.settings.cache_clear()
+    s = config.settings()
+    assert s.render_service_url == "https://render.couture-ia.com"
+    assert s.render_service_token == "tok"

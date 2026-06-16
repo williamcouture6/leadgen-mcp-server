@@ -27,6 +27,12 @@ class Settings(BaseModel):
     pexels_api_key: str = Field(
         default_factory=lambda: os.environ.get("PEXELS_API_KEY", "")
     )
+    render_service_url: str = Field(
+        default_factory=lambda: os.environ.get("RENDER_SERVICE_URL", "")
+    )
+    render_service_token: str = Field(
+        default_factory=lambda: os.environ.get("RENDER_SERVICE_TOKEN", "")
+    )
     log_level: str = Field(default_factory=lambda: os.environ.get("LOG_LEVEL", "info"))
 
 
@@ -57,6 +63,7 @@ RECOMMENDED_ENV: tuple[str, ...] = (
     "CALCOM_API_KEY",          # créneaux CTA (personalize / reply)
     "CALCOM_WEBHOOK_SECRET",   # WF-8 booking webhook
     "PEXELS_API_KEY",          # build_brand_kit images stock par industrie
+    "RENDER_SERVICE_URL",      # build_brand_kit escalade headless (sites JS)
 )
 
 
