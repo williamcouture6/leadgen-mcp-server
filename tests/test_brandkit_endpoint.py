@@ -11,20 +11,20 @@ def client(monkeypatch):
     return http_api, TestClient(http_api.app)
 
 
-def test_brandkit_endpoint_calls_build(client, monkeypatch):
+def test_brandkit_endpoint_schedules_build(client, monkeypatch):
     http_api, tc = client
-
+    called = {}
     async def fake_build(company_id, model="claude-sonnet-4-6"):
-        return {"company_id": company_id, "status": "ok",
-                "fields_filled": ["logo_url"], "confidence": {"logo_url": "medium"}}
+        called["company_id"] = company_id
+        return {"company_id": company_id, "status": "ok", "fields_filled": [], "confidence": {}}
     monkeypatch.setattr(http_api.brand_kit_tools, "build_brand_kit", fake_build)
 
     resp = tc.post("/research/brand-kit", json={"company_id": "c1"},
                    headers={"Authorization": "Bearer t"})
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "ok"
-    assert body["fields_filled"] == ["logo_url"]
+    assert resp.json()["status"] == "accepted"
+    # TestClient exécute les BackgroundTasks après la réponse → build appelé.
+    assert called.get("company_id") == "c1"
 
 
 def test_brandkit_endpoint_requires_auth(client):

@@ -13,7 +13,7 @@ import os
 import secrets
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from .tools import booking as booking_tools
@@ -564,19 +564,26 @@ class BrandKitBuildOut(BaseModel):
     error_text: str | None = None
 
 
+async def _run_brandkit_build(company_id: str, model: str) -> None:
+    try:
+        await brand_kit_tools.build_brand_kit(company_id, model=model)
+    except Exception:  # noqa: BLE001 — tâche de fond : log only, ne casse pas le worker
+        logging.getLogger("brand-kit").exception("build_brand_kit a échoué pour %s", company_id)
+
+
 @app.post(
     "/research/brand-kit",
     dependencies=[Depends(_require_auth)],
     response_model=BrandKitBuildOut,
 )
-async def build_company_brand_kit(payload: BrandKitBuildIn) -> BrandKitBuildOut:
-    """Construit companies.brand_kit (on-demand, sous-ensemble démo). Idempotent ;
-    ne réécrit pas un brand_kit corrigé à la main (_meta.reviewed)."""
-    try:
-        out = await brand_kit_tools.build_brand_kit(payload.company_id, model=payload.model)
-    except Exception as e:  # noqa: BLE001
-        return BrandKitBuildOut(company_id=payload.company_id, status="error", error_text=repr(e))
-    return BrandKitBuildOut(**out)
+async def build_company_brand_kit(
+    payload: BrandKitBuildIn, background_tasks: BackgroundTasks
+) -> BrandKitBuildOut:
+    """Lance build_brand_kit en tâche de fond (build long : 30-90 s) et renvoie tout de
+    suite. Le kit (status ok|needs_review) est écrit quand le build finit ; la démo
+    no-store le reflète en direct. Idempotent (garde anti-clobber _meta.reviewed)."""
+    background_tasks.add_task(_run_brandkit_build, payload.company_id, payload.model)
+    return BrandKitBuildOut(company_id=payload.company_id, status="accepted")
 
 
 class RunWf3In(BaseModel):
