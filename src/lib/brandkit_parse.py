@@ -338,10 +338,11 @@ def discover_links(html: str, base_url: str, cap: int = 25) -> list[dict[str, st
     return out
 
 
-_JS_MARKERS = (
-    "twentytwenty", "data:image/svg", "lazyload", "lazy-load", "wp-block-",
-    "elementor-widget", "swiper-", "owl-carousel", "[data-src]",
-)
+# Marqueurs JS-only où l'extraction statique RATE vraiment les images (sliders/
+# placeholders SVG injectés par JS). On a écarté wp-block-/elementor-widget/lazyload :
+# trop communs/bénins (WordPress Gutenberg partout) → escalades inutiles ; et les
+# images lazy `data-src` sont déjà lues (comptées comme réelles ci-dessous).
+_JS_MARKERS = ("twentytwenty", "data:image/svg", "swiper-", "owl-carousel")
 _MIN_REAL_IMAGES = 3
 
 
@@ -350,7 +351,7 @@ def should_escalate(html: str) -> bool:
     soup = BeautifulSoup(html, "html.parser")
     real_imgs = 0
     for img in soup.find_all("img"):
-        src = img.get("src") or ""
+        src = img.get("src") or img.get("data-src") or ""  # data-src lisible en statique
         if src and not src.startswith("data:"):
             real_imgs += 1
     if real_imgs >= _MIN_REAL_IMAGES:

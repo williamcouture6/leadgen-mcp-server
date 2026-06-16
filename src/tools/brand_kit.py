@@ -222,11 +222,13 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
                     "service_pages": [], "escalated": []}
 
         # Liste à crawler : home (type 'home') + liens internes pertinents, dédupliqués.
+        # Dédup insensible au slash final (évite de re-fetcher la home via href="/").
         targets: list[dict[str, str]] = [{"url": url, "type": "home"}]
-        seen = {url}
+        seen = {url.rstrip("/")}
         for link in parse.discover_links(home_html, url, cap=_CRAWL_CAP):
-            if link["type"] in _CRAWL_TYPES and link["url"] not in seen:
-                seen.add(link["url"])
+            norm = link["url"].rstrip("/")
+            if link["type"] in _CRAWL_TYPES and norm not in seen:
+                seen.add(norm)
                 targets.append(link)
             if len(targets) >= _CRAWL_CAP:
                 break
@@ -398,12 +400,18 @@ def _pick_colors(head_meta: dict[str, Any], jsonld: dict[str, Any],
 
 
 def _empty_rich() -> dict[str, Any]:
-    """Rich vide — site absent OU fetch échoué (dégrade vers un kit Places-only)."""
+    """Rich vide — site absent OU fetch échoué (dégrade vers un kit Places-only).
+
+    Doit avoir la MÊME forme que le retour de fetch_site_rich (clés additives 2A
+    incluses) pour qu'un consommateur en aval ne lève pas KeyError sur ce fallback."""
     return {
+        "status": "error",
         "head_meta": {"theme_color": None, "og_image": None, "icon": None,
-                      "twitter_image": None, "description": None},
+                      "twitter_image": None, "description": None,
+                      "apple_touch_icon": None, "icons": []},
         "jsonld": dict(parse.EMPTY_JSONLD), "social": {}, "rbq": None,
-        "candidates": [], "page_text": "",
+        "candidates": [], "page_text": "", "pages": [],
+        "service_pages": [], "escalated": [],
     }
 
 

@@ -64,6 +64,7 @@ RECOMMENDED_ENV: tuple[str, ...] = (
     "CALCOM_WEBHOOK_SECRET",   # WF-8 booking webhook
     "PEXELS_API_KEY",          # build_brand_kit images stock par industrie
     "RENDER_SERVICE_URL",      # build_brand_kit escalade headless (sites JS)
+    "RENDER_SERVICE_TOKEN",    # build_brand_kit escalade headless (auth)
 )
 
 

@@ -210,3 +210,19 @@ def test_should_escalate_weak_pages():
 
     # Page vide → escalade
     assert P.should_escalate("<html><body></body></html>") is True
+
+
+def test_should_escalate_short_circuits_on_real_images():
+    # ≥3 vraies images → PAS d'escalade, même si un marqueur slider est présent.
+    html = ("<html><body>"
+            + "".join(f'<img src="/p{i}.jpg">' for i in range(3))
+            + '<div class="twentytwenty-container"></div></body></html>')
+    assert P.should_escalate(html) is False
+
+
+def test_should_escalate_counts_data_src_as_real():
+    # Images lazy-load (data-src) lisibles en statique → comptées réelles → pas d'escalade.
+    html = ("<html><body>"
+            + "".join(f'<img data-src="/p{i}.jpg">' for i in range(3))
+            + "</body></html>")
+    assert P.should_escalate(html) is False
