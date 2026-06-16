@@ -655,6 +655,10 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
     if gallery:
         kit["gallery"] = gallery
 
+    # File de revue : champs douteux/manquants pour correction humaine (Supabase Studio).
+    kit["_review"] = assemble.derive_review(kit)
+    kit["_meta"]["status"] = "needs_review" if kit["_review"] else "ok"
+
     # Garde déjà validée (early return) → on écrit directement.
     await db.update("companies", {"brand_kit": kit}, filters={"id": f"eq.{company_id}"})
 
