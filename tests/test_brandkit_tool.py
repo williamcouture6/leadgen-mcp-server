@@ -236,6 +236,27 @@ async def test_build_brand_kit_skips_reviewed(monkeypatch):
     assert out["status"] == "skipped_already_reviewed"
 
 
+def test_call_llm_includes_service_pages(monkeypatch):
+    captured = {}
+    class _Msg:
+        def create(self, **kw):
+            captured.update(kw)
+            return _Resp([_Block(type="tool_use", name="save_brand_kit", input={})])
+    class _Cli:
+        messages = _Msg()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(BK, "Anthropic", lambda api_key: _Cli())
+
+    BK._call_brandkit_llm(
+        [{"id": 0, "url": "u", "kind_hint": "other"}],
+        "texte global", "lavage de vitres",
+        service_pages=[{"url": "https://x/lavage/", "text": "Détail du lavage résidentiel"}],
+    )
+    user_msg = captured["messages"][0]["content"]
+    assert "Détail du lavage résidentiel" in user_msg
+    assert "lavage/" in user_msg
+
+
 def test_service_schema_has_process_and_faq():
     svc = BK._BRANDKIT_TOOL["input_schema"]["properties"]["services"]["items"]["properties"]
     assert "process" in svc

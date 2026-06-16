@@ -158,7 +158,8 @@ def _call_brandkit_llm(
     page_text: str,
     industry: str | None,
     model: str = _DEFAULT_MODEL,
-    max_tokens: int = 2500,
+    max_tokens: int = 3500,
+    service_pages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -170,9 +171,14 @@ def _call_brandkit_llm(
          for c in candidates],
         ensure_ascii=False,
     )
+    svc_block = ""
+    if service_pages:
+        parts = [f"### {p['url']}\n{(p.get('text') or '')[:3000]}" for p in service_pages[:12]]
+        svc_block = "## Pages de service (process/faq par service depuis SA page)\n" + "\n\n".join(parts) + "\n\n"
     user = (
         f"## Industrie\n{industry or 'inconnue'}\n\n"
         f"## Candidats images\n{cand_block}\n\n"
+        f"{svc_block}"
         f"## Texte des pages\n{page_text[:14000]}\n"
     )
     resp = client.messages.create(
@@ -555,7 +561,8 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
     candidates = rich["candidates"]
     by_id = {c["id"]: c["url"] for c in candidates}
     try:
-        llm = _call_brandkit_llm(candidates, rich["page_text"], industry, model=model)
+        llm = _call_brandkit_llm(candidates, rich["page_text"], industry, model=model,
+                                 service_pages=rich.get("service_pages"))
     except Exception:  # noqa: BLE001 — LLM indispo (après retry) → kit déterministe seul
         llm = {}
 
