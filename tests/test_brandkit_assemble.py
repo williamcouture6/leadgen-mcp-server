@@ -175,6 +175,18 @@ def test_assemble_phone_falls_back_to_facebook():
     assert kit["confidence"]["phone"] == "medium"
 
 
+def test_hours_from_jsonld_mo_fr():
+    h = A.hours_from_jsonld(["Mo-Fr 08:00-17:00", "Sa 09:00-12:00"])
+    assert h.startswith("lundi: 08:00 – 17:00")
+    assert "samedi: 09:00 – 12:00" in h
+    assert "dimanche: Fermé" in h
+
+
+def test_hours_from_jsonld_empty():
+    assert A.hours_from_jsonld([]) is None
+    assert A.hours_from_jsonld(["bidon"]) is None
+
+
 def test_assemble_brand_kit_places_wins_and_confidence():
     kit = A.assemble_brand_kit(
         place={"internationalPhoneNumber": "+1 450-555-0192", "reviews": []},

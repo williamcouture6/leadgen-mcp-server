@@ -9,6 +9,31 @@ from typing import Any
 
 BUILD_VERSION = "1"
 
+_DAY_ORDER = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+_DAY_CODE = {"mo": 0, "tu": 1, "we": 2, "th": 3, "fr": 4, "sa": 5, "su": 6}
+_HOURS_RE = re.compile(
+    r"(mo|tu|we|th|fr|sa|su)\s*(?:-\s*(mo|tu|we|th|fr|sa|su))?\s+"
+    r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})", re.I)
+
+
+def hours_from_jsonld(opening_hours: list[str]) -> str | None:
+    """Formate des openingHours type 'Mo-Fr 08:00-17:00' en string FR du site (best-effort)."""
+    by_day: dict[int, str] = {}
+    for spec in opening_hours or []:
+        m = _HOURS_RE.search(str(spec))
+        if not m:
+            continue
+        d1, d2, t1, t2 = m.group(1).lower(), (m.group(2) or "").lower(), m.group(3), m.group(4)
+        start = _DAY_CODE[d1]
+        end = _DAY_CODE.get(d2, start)
+        rng = range(start, end + 1) if end >= start else range(start, 7)
+        for d in rng:
+            by_day.setdefault(d, f"{t1} – {t2}")
+    if not by_day:
+        return None
+    parts = [f"{_DAY_ORDER[d]}: {by_day.get(d, 'Fermé')}" for d in range(7)]
+    return " · ".join(parts)
+
 
 def reviews_from_places(place: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
