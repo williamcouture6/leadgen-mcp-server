@@ -368,12 +368,15 @@ def should_escalate(html: str) -> bool:
 # Conteneurs de slider/figure avant-après les plus courants (WP & plugins).
 _BA_SELECTORS = (
     '[class*="twentytwenty"]', '[class*="before-after"]', '[class*="beforeafter"]',
-    '[class*="ba-slider"]', '[class*="comparison"]',
+    '[class*="ba-slider"]', '[class*="comparison-slider"]', '[class*="image-comparison"]',
 )
 
 
 def extract_gallery_pairs(html: str, base_url: str) -> list[dict[str, Any]]:
-    """Paires avant/après RÉELLES depuis les conteneurs slider (2 premières <img>)."""
+    """Paires avant/après RÉELLES depuis les conteneurs slider (2 premières <img> du nœud).
+
+    Hypothèse (vraie pour twentytwenty et les plugins avant/après) : 1re img = avant,
+    2e = après (ordre du DOM)."""
     soup = BeautifulSoup(html, "html.parser")
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()

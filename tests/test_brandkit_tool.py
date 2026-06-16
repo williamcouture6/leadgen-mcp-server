@@ -249,6 +249,22 @@ async def test_build_gallery_prefers_real_site_pair(monkeypatch):
     assert out[0]["after_url"] == "https://cdn/gallery-after.jpg"
 
 
+@pytest.mark.asyncio
+async def test_build_gallery_site_half_pair_falls_through(monkeypatch):
+    # 1re image OK, 2e échoue → jamais de demi-paire ; on tombe sur le fallback.
+    async def fake_rehost(cid, role, src, **kw):
+        return None if role == "gallery-after" else f"https://cdn/{role}.jpg"
+    monkeypatch.setattr(BK, "rehost_one", fake_rehost)
+    async def no_pexels(query):
+        return None
+    monkeypatch.setattr(BK, "fetch_pexels_image", no_pexels)
+    out = await BK._build_gallery(
+        "c1", llm={}, by_id={}, industry="lavage de vitres",
+        site_pairs=[{"before_url": "https://x/av.jpg", "after_url": "https://x/ap.jpg", "caption": None}],
+    )
+    assert out == []   # demi-paire rejetée ; LLM vide + Pexels None → galerie vide
+
+
 def test_call_llm_includes_service_pages(monkeypatch):
     captured = {}
     class _Msg:

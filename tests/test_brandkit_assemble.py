@@ -187,6 +187,14 @@ def test_hours_from_jsonld_empty():
     assert A.hours_from_jsonld(["bidon"]) is None
 
 
+def test_hours_from_jsonld_wraps_week():
+    # Plage à cheval sur la semaine (Fr-Mo) → ven, sam, dim ET lun couverts.
+    h = A.hours_from_jsonld(["Fr-Mo 10:00-14:00"])
+    for jour in ("vendredi", "samedi", "dimanche", "lundi"):
+        assert f"{jour}: 10:00 – 14:00" in h
+    assert "mardi: Fermé" in h
+
+
 def test_assemble_brand_kit_places_wins_and_confidence():
     kit = A.assemble_brand_kit(
         place={"internationalPhoneNumber": "+1 450-555-0192", "reviews": []},

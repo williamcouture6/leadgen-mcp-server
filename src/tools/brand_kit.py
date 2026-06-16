@@ -80,6 +80,7 @@ _BRANDKIT_TOOL: dict[str, Any] = {
                                     "titre": {"type": "string"},
                                     "texte": {"type": "string"},
                                 },
+                                "required": ["titre", "texte"],
                             },
                         },
                         "faq": {
@@ -90,6 +91,7 @@ _BRANDKIT_TOOL: dict[str, Any] = {
                                     "question": {"type": "string"},
                                     "reponse": {"type": "string"},
                                 },
+                                "required": ["question", "reponse"],
                             },
                         },
                     },
@@ -214,6 +216,8 @@ def _image_meets_min_side(data: bytes, min_side: int) -> bool:
     except Exception:  # noqa: BLE001 — bytes non-image
         return False
     return min(w, h) >= min_side
+
+
 _PEXELS_SEARCH = "https://api.pexels.com/v1/search"
 
 DownloadFn = Callable[[str], Awaitable[tuple[bytes, str]]]

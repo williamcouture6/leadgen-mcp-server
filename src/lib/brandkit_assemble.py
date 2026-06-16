@@ -26,8 +26,10 @@ def hours_from_jsonld(opening_hours: list[str]) -> str | None:
         d1, d2, t1, t2 = m.group(1).lower(), (m.group(2) or "").lower(), m.group(3), m.group(4)
         start = _DAY_CODE[d1]
         end = _DAY_CODE.get(d2, start)
-        rng = range(start, end + 1) if end >= start else range(start, 7)
-        for d in rng:
+        # Plage de jours, avec retour de semaine (ex. Fr-Mo = ven,sam,dim,lun).
+        days = list(range(start, end + 1)) if end >= start \
+            else list(range(start, 7)) + list(range(0, end + 1))
+        for d in days:
             by_day.setdefault(d, f"{t1} – {t2}")
     if not by_day:
         return None
