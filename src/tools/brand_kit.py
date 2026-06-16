@@ -30,7 +30,7 @@ from .research import (
     _clean_text,
     _is_transient_anthropic_error,
     fetch_place_details,
-    fetch_site,
+    fetch_site,  # noqa: F401 — encore référencé après merge 2B (suppression différée)
 )
 
 _PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "brand_kit.md"
