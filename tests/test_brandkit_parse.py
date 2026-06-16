@@ -193,3 +193,20 @@ def test_classify_page():
     assert P.classify_page("https://x.test/blog/", "Blogue") == "blog"
     assert P.classify_page("https://x.test/", "Accueil") == "home"
     assert P.classify_page("https://x.test/mentions-legales/", "") == "other"
+
+
+def test_should_escalate_weak_pages():
+    # Page riche (assez d'images réelles) → pas d'escalade
+    rich = "<html><body>" + "".join(f'<img src="/p{i}.jpg">' for i in range(6)) + "</body></html>"
+    assert P.should_escalate(rich) is False
+
+    # Marqueur JS-only (placeholder SVG data:) + peu d'images → escalade
+    weak = '<html><body><img src="data:image/svg+xml,PHN2Zz48L3N2Zz4="></body></html>'
+    assert P.should_escalate(weak) is True
+
+    # Conteneur slider sans <img> → escalade
+    slider = '<html><body><div class="twentytwenty-container"></div></body></html>'
+    assert P.should_escalate(slider) is True
+
+    # Page vide → escalade
+    assert P.should_escalate("<html><body></body></html>") is True

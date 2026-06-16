@@ -338,6 +338,32 @@ def discover_links(html: str, base_url: str, cap: int = 25) -> list[dict[str, st
     return out
 
 
+_JS_MARKERS = (
+    "twentytwenty", "data:image/svg", "lazyload", "lazy-load", "wp-block-",
+    "elementor-widget", "swiper-", "owl-carousel", "[data-src]",
+)
+_MIN_REAL_IMAGES = 3
+
+
+def should_escalate(html: str) -> bool:
+    """True si l'extraction statique de cette page est faible (→ rendu headless)."""
+    soup = BeautifulSoup(html, "html.parser")
+    real_imgs = 0
+    for img in soup.find_all("img"):
+        src = img.get("src") or ""
+        if src and not src.startswith("data:"):
+            real_imgs += 1
+    if real_imgs >= _MIN_REAL_IMAGES:
+        return False
+    low = html.lower()
+    if any(m in low for m in _JS_MARKERS):
+        return True
+    # peu/pas d'images réelles ET conteneur slider/galerie sans <img>
+    if soup.select_one('[class*="twentytwenty"], [class*="slider"], [class*="gallery"], [class*="carousel"]'):
+        return True
+    return real_imgs == 0
+
+
 def parse_facebook_html(html: str) -> dict[str, Any]:
     """Extraction best-effort depuis le HTML public d'une page Facebook.
 
