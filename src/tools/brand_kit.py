@@ -24,8 +24,10 @@ from .. import supabase_client as db
 from ..config import settings
 from ..lib import brandkit_parse as parse
 from ..lib import brandkit_assemble as assemble
+from ..lib import render_client
 from .research import (
     USER_AGENT,
+    _clean_text,
     _is_transient_anthropic_error,
     fetch_place_details,
     fetch_site,
@@ -180,36 +182,78 @@ DownloadFn = Callable[[str], Awaitable[tuple[bytes, str]]]
 UploadFn = Callable[[str, str, bytes, str], Awaitable[str]]
 
 
-async def fetch_site_rich(url: str) -> dict[str, Any]:
-    """Comme research.fetch_site mais conserve le HTML brut + extrait head/JSON-LD/candidats.
+async def _get_html(client: httpx.AsyncClient, url: str) -> str | None:
+    """GET une page → HTML (ou None, fail-soft)."""
+    try:
+        r = await client.get(url)
+        if r.status_code >= 400:
+            return None
+        return r.text
+    except httpx.HTTPError:
+        return None
 
-    Réutilise fetch_site pour le crawl multi-pages (texte + emails), puis re-fetch
-    le HTML brut de chaque page pour l'extraction d'assets (fetch_site renvoie le
-    texte nettoyé, pas le HTML)."""
-    base = await fetch_site(url)
-    pages = base.get("pages", [])
+
+_CRAWL_TYPES = {"home", "service", "equipe", "galerie", "contact"}
+_CRAWL_CAP = 25
+
+
+async def fetch_site_rich(url: str) -> dict[str, Any]:
+    """Crawl COMPLET du site + escalade headless des pages faibles → SiteSnapshot.
+
+    Home → discover_links → fetch toutes les pages pertinentes (cap) → rendu headless
+    si la page est faible → agrège candidats/head_meta(home)/jsonld(home)/social/rbq/
+    page_text + pages[{url,type,text}] + service_pages[] + escalated[]. Fail-soft."""
     head_meta = {"og_image": None, "twitter_image": None, "theme_color": None,
-                 "description": None, "icon": None}
+                 "description": None, "icon": None, "apple_touch_icon": None, "icons": []}
     jsonld = dict(parse.EMPTY_JSONLD)
     candidates: list[dict[str, Any]] = []
     social: dict[str, str] = {}
     rbq: str | None = None
+    pages: list[dict[str, str]] = []
+    service_pages: list[dict[str, str]] = []
+    escalated: list[str] = []
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "fr-CA,fr;q=0.9"}
 
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
-        for i, page in enumerate(pages):
-            page_url = page["url"]
-            try:
-                r = await client.get(page_url)
-                html = r.text
-            except httpx.HTTPError:
+        home_html = await _get_html(client, url)
+        if not home_html:
+            return {"status": "error", "pages": [], "head_meta": head_meta, "jsonld": jsonld,
+                    "social": {}, "rbq": None, "candidates": [], "page_text": "",
+                    "service_pages": [], "escalated": []}
+
+        # Liste à crawler : home (type 'home') + liens internes pertinents, dédupliqués.
+        targets: list[dict[str, str]] = [{"url": url, "type": "home"}]
+        seen = {url}
+        for link in parse.discover_links(home_html, url, cap=_CRAWL_CAP):
+            if link["type"] in _CRAWL_TYPES and link["url"] not in seen:
+                seen.add(link["url"])
+                targets.append(link)
+            if len(targets) >= _CRAWL_CAP:
+                break
+
+        for i, tgt in enumerate(targets):
+            page_url, page_type = tgt["url"], tgt["type"]
+            html = home_html if i == 0 else await _get_html(client, page_url)
+            if html is None:
                 continue
-            if i == 0:  # homepage = source des head meta + JSON-LD + couleurs
+            # Escalade headless si extraction statique faible.
+            if parse.should_escalate(html):
+                rendered = await render_client.fetch_rendered(page_url)
+                if rendered and rendered.get("html"):
+                    html = rendered["html"]
+                    escalated.append(page_url)
+
+            text = _clean_text(html)
+            pages.append({"url": page_url, "type": page_type, "text": text})
+            if page_type == "service":
+                service_pages.append({"url": page_url, "text": text})
+
+            if i == 0:  # head meta + JSON-LD = home seulement
                 head_meta = parse.extract_head_meta(html, page_url)
                 jsonld = parse.parse_jsonld(html, page_url)
             social.update({k: v for k, v in parse.extract_social_links(html).items() if k not in social})
-            rbq = rbq or parse.find_rbq(page["text"])
-            candidates.extend(parse.extract_image_candidates(html, page_url, where=f"page{i}"))
+            rbq = rbq or parse.find_rbq(text)
+            candidates.extend(parse.extract_image_candidates(html, page_url, where=page_type))
 
     # og:image / favicon / logo JSON-LD = candidats supplémentaires
     for url_extra, kind in ((head_meta["og_image"], "hero"), (jsonld["logo"], "logo"),
@@ -218,7 +262,7 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
             candidates.append({"url": url_extra, "kind_hint": kind, "alt": "", "where": "meta"})
 
     return {
-        "status": base.get("status"),
+        "status": "ok",
         "pages": pages,
         "head_meta": head_meta,
         "jsonld": jsonld,
@@ -226,6 +270,8 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
         "rbq": rbq,
         "candidates": parse.dedup_and_id(candidates),
         "page_text": "\n\n".join(p["text"] for p in pages),
+        "service_pages": service_pages,
+        "escalated": escalated,
     }
 
 
