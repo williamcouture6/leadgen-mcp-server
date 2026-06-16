@@ -80,6 +80,42 @@ async def test_fetch_facebook_brand_failsoft_on_error():
     assert await BK.fetch_facebook_brand("https://www.facebook.com/x/") == {}
 
 
+def _png_bytes_size(w, h, color=(10, 20, 30)):
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_image_meets_min_side():
+    assert BK._image_meets_min_side(_png_bytes_size(300, 220), 200) is True
+    assert BK._image_meets_min_side(_png_bytes_size(64, 64), 200) is False
+    assert BK._image_meets_min_side(b"not an image", 200) is False
+
+
+@pytest.mark.asyncio
+async def test_rehost_rejects_small_for_hero(monkeypatch):
+    small = _png_bytes_size(50, 50)
+    async def fake_download(url):
+        return (small, "image/png")
+    url, data = await BK._rehost_with_bytes("c1", "hero", "https://x/tiny.png",
+                                            download=fake_download, upload=None)
+    assert url is None    # rejeté (trop petit pour un hero)
+
+
+@pytest.mark.asyncio
+async def test_rehost_allows_small_for_logo(monkeypatch):
+    small = _png_bytes_size(50, 50)
+    async def fake_download(url):
+        return (small, "image/png")
+    async def fake_upload(bucket, path, data, ctype):
+        return f"https://cdn/{path}"
+    url, data = await BK._rehost_with_bytes("c1", "logo", "https://x/logo.png",
+                                            download=fake_download, upload=fake_upload)
+    assert url and url.startswith("https://cdn/c1/logo-")   # logo accepté même petit
+
+
 @respx.mock
 @pytest.mark.asyncio
 async def test_upload_object_returns_public_url(monkeypatch):

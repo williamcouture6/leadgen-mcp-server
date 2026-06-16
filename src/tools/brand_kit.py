@@ -202,6 +202,18 @@ def _call_brandkit_llm(
 
 _BUCKET = "brand-assets"
 _MAX_IMG_BYTES = 5 * 1024 * 1024
+_MIN_IMG_SIDE = 200
+# Rôles qui exigent une image « assez grande » (un logo/photo d'équipe peut être petit).
+_ROLES_NEED_SIZE = {"hero", "stats", "service", "gallery-before", "gallery-after", "valeur"}
+
+
+def _image_meets_min_side(data: bytes, min_side: int) -> bool:
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            w, h = im.size
+    except Exception:  # noqa: BLE001 — bytes non-image
+        return False
+    return min(w, h) >= min_side
 _PEXELS_SEARCH = "https://api.pexels.com/v1/search"
 
 DownloadFn = Callable[[str], Awaitable[tuple[bytes, str]]]
@@ -357,6 +369,8 @@ async def _rehost_with_bytes(
         data, ctype = await download(src_url)
     except Exception:  # noqa: BLE001
         return None, None
+    if role in _ROLES_NEED_SIZE and not _image_meets_min_side(data, _MIN_IMG_SIDE):
+        return None, None   # trop petite pour ce rôle → l'appelant tombera sur Pexels
     h = hashlib.sha1(data).hexdigest()[:10]
     path = f"{company_id}/{role}-{h}.{_ext_for(ctype)}"
     try:
