@@ -341,6 +341,46 @@ def discover_links(html: str, base_url: str, cap: int = 25) -> list[dict[str, st
     return out
 
 
+# Types qui mappent un slot SiteConfig → jamais une page flexible (doublon).
+SLOT_TYPES = {"home", "service", "equipe", "galerie", "contact", "blog",
+              "faq", "avis", "valeurs", "about"}
+
+# Segments d'URL sans valeur éditoriale → jamais une page flexible.
+_FLEX_JUNK = (
+    "panier", "cart", "checkout", "login", "connexion", "compte", "account",
+    "tag", "categorie", "category", "404", "recherche", "search",
+    "mentions-legales", "politique-confidentialite", "merci", "thank-you",
+    "admin", "wp-admin", "sitemap", "feed", "rss",
+)
+# Préfixes de langue dupliquée (on garde la version FR par défaut).
+_LANG_PREFIXES = ("/en/", "/es/", "/it/", "/de/")
+
+
+def _is_junk_flex_url(url: str) -> bool:
+    path = _urlparse(url).path.lower()
+    if any(p in path for p in _LANG_PREFIXES):
+        return True
+    segs = [s for s in path.split("/") if s]
+    return any(j in segs for j in _FLEX_JUNK)
+
+
+def select_flex_candidates(
+    pages: list[dict[str, Any]], cap: int = 5, min_text: int = 250,
+) -> list[dict[str, Any]]:
+    """Pages 'hors-template' à valeur réelle, triées par richesse de texte (cap).
+
+    Pur. Jette : slot SiteConfig (SLOT_TYPES), URL junk, texte sous min_text.
+    Le filtre de valeur FINAL reste le rejet LLM (blocs:[]) en aval."""
+    keep = [
+        p for p in pages
+        if p.get("type") not in SLOT_TYPES
+        and not _is_junk_flex_url(p.get("url", ""))
+        and len((p.get("text") or "").strip()) >= min_text
+    ]
+    keep.sort(key=lambda p: len(p.get("text") or ""), reverse=True)
+    return keep[:cap]
+
+
 # Marqueurs JS-only où l'extraction statique RATE vraiment les images (sliders/
 # placeholders SVG injectés par JS). On a écarté wp-block-/elementor-widget/lazyload :
 # trop communs/bénins (WordPress Gutenberg partout) → escalades inutiles ; et les

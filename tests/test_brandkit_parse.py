@@ -205,6 +205,30 @@ def test_classify_page_routes_slot_pages():
     assert P.classify_page("https://x.test/financement/") == "other"
 
 
+def test_select_flex_candidates_filters_and_caps():
+    pages = [
+        {"url": "https://x.test/", "type": "home", "text": "x" * 500},
+        {"url": "https://x.test/lavage/", "type": "service", "text": "x" * 500},
+        {"url": "https://x.test/faq/", "type": "faq", "text": "x" * 500},
+        {"url": "https://x.test/panier/", "type": "other", "text": "x" * 500},
+        {"url": "https://x.test/connexion/", "type": "other", "text": "x" * 500},
+        {"url": "https://x.test/en/financing/", "type": "other", "text": "x" * 500},
+        {"url": "https://x.test/maigre/", "type": "other", "text": "trop court"},
+        {"url": "https://x.test/financement/", "type": "other", "text": "F" * 800},
+        {"url": "https://x.test/garanties/", "type": "other", "text": "G" * 400},
+        {"url": "https://x.test/certifications/", "type": "other", "text": "C" * 600},
+    ]
+    out = P.select_flex_candidates(pages, cap=2, min_text=200)
+    urls = [p["url"] for p in out]
+    # slots (home/service/faq), junk (panier/connexion), langue (/en/), maigre -> exclus
+    assert "https://x.test/panier/" not in urls
+    assert "https://x.test/faq/" not in urls
+    assert "https://x.test/en/financing/" not in urls
+    assert "https://x.test/maigre/" not in urls
+    # tri richesse + cap 2 -> financement (800) puis certifications (600)
+    assert urls == ["https://x.test/financement/", "https://x.test/certifications/"]
+
+
 def test_should_escalate_weak_pages():
     # Page riche (assez d'images réelles) → pas d'escalade
     rich = "<html><body>" + "".join(f'<img src="/p{i}.jpg">' for i in range(6)) + "</body></html>"
