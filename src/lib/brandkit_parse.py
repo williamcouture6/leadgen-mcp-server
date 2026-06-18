@@ -285,6 +285,9 @@ _PAGE_TYPE_HINTS: list[tuple[tuple[str, ...], str]] = [
     (("galerie", "gallery", "realisations", "realisation", "avant-apres", "portfolio", "projets"), "galerie"),
     (("contact", "nous-joindre", "joindre"), "contact"),
     (("blog", "blogue", "actualites", "nouvelles", "articles"), "blog"),
+    (("faq", "foire-aux-questions", "questions-frequentes", "questions-reponses"), "faq"),
+    (("avis", "temoignage", "temoignages", "reviews", "clients-satisfaits"), "avis"),
+    (("valeur", "valeurs", "nos-valeurs", "notre-mission", "engagement"), "valeurs"),
     # 'service' en dernier : c'est le plus large (toute page « métier »).
     (("service", "residentiel", "commercial", "lavage", "nettoyage", "gouttiere",
       "pression", "vitre", "fenetre", "soffite", "renovation", "toiture", "plomberie",

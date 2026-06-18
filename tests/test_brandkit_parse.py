@@ -195,6 +195,16 @@ def test_classify_page():
     assert P.classify_page("https://x.test/mentions-legales/", "") == "other"
 
 
+def test_classify_page_routes_slot_pages():
+    assert P.classify_page("https://x.test/faq/") == "faq"
+    assert P.classify_page("https://x.test/foire-aux-questions/") == "faq"
+    assert P.classify_page("https://x.test/avis/") == "avis"
+    assert P.classify_page("https://x.test/temoignages/") == "avis"
+    assert P.classify_page("https://x.test/nos-valeurs/") == "valeurs"
+    # une page hors-slot reste 'other'
+    assert P.classify_page("https://x.test/financement/") == "other"
+
+
 def test_should_escalate_weak_pages():
     # Page riche (assez d'images réelles) → pas d'escalade
     rich = "<html><body>" + "".join(f'<img src="/p{i}.jpg">' for i in range(6)) + "</body></html>"
