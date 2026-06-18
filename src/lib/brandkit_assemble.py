@@ -2,6 +2,7 @@
 garde anti-clobber, requête Pexels. Sans réseau — testable directement."""
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from datetime import datetime, timezone
@@ -443,5 +444,13 @@ def derive_review(kit: dict[str, Any]) -> list[dict[str, str]]:
     no_photo = [m for m in (kit.get("team") or []) if not m.get("photo_url")]
     if no_photo:
         review.append({"field": "team", "reason": f"{len(no_photo)} membre(s) sans photo"})
+
+    for p in kit.get("pages") or []:
+        blocs = p.get("blocs") or []
+        has_stats = any(b.get("type") == "stats" for b in blocs)
+        has_price = "$" in json.dumps(blocs, ensure_ascii=False)
+        if has_stats or has_price:
+            review.append({"field": f"pages:{p.get('slug')}",
+                           "reason": "faits verbatim — vérifier"})
 
     return review

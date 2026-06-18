@@ -271,3 +271,20 @@ def test_finalize_flex_pages_slugify_reserved_dedupe():
     assert all(p["nav"] is True for p in out)
     # le 1er gagne sur le doublon
     assert out[0]["blocs"][0]["corps"] == "a"
+
+
+def test_derive_review_flags_verbatim_flex_pages():
+    kit = {
+        "confidence": {},
+        "pages": [
+            {"slug": "financement", "blocs": [{"type": "stats",
+              "items": [{"valeur": "0 %", "label": "intérêt 12 mois"}]}]},
+            {"slug": "equipe-bis", "blocs": [{"type": "texte", "corps": "Service de 8 h à 17 h."}]},
+            {"slug": "tarifs", "blocs": [{"type": "texte", "corps": "Dès 199 $ la visite."}]},
+        ],
+    }
+    review = A.derive_review(kit)
+    reasons = {r["field"]: r["reason"] for r in review}
+    assert "pages:financement" in reasons   # bloc stats
+    assert "pages:tarifs" in reasons         # contient un prix ($)
+    assert "pages:equipe-bis" not in reasons # ni stats ni prix
