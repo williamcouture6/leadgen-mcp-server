@@ -256,3 +256,18 @@ def test_assemble_brand_kit_places_wins_and_confidence():
     assert kit["confidence"]["tagline"] == "medium"
     assert kit["_meta"]["reviewed"] is False
     assert kit["_meta"]["build_version"] == A.BUILD_VERSION
+
+
+def test_finalize_flex_pages_slugify_reserved_dedupe():
+    pages = [
+        {"titre": "Financement Maison", "blocs": [{"type": "texte", "corps": "a"}]},
+        {"slug": "Contact", "titre": "Nous joindre", "blocs": [{"type": "texte", "corps": "b"}]},  # réservé -> drop
+        {"titre": "Financement Maison", "blocs": [{"type": "texte", "corps": "c"}]},  # doublon slug -> drop
+        {"titre": "Garanties & Assurances", "blocs": [{"type": "liste", "items": ["x"]}]},
+    ]
+    out = A.finalize_flex_pages(pages)
+    slugs = [p["slug"] for p in out]
+    assert slugs == ["financement-maison", "garanties-assurances"]
+    assert all(p["nav"] is True for p in out)
+    # le 1er gagne sur le doublon
+    assert out[0]["blocs"][0]["corps"] == "a"

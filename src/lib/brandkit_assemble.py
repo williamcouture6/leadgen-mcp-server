@@ -284,6 +284,44 @@ def pexels_query_for_service(service_name: str | None, industry: str | None) -> 
     return _profile(industry)["service"]
 
 
+# Slugs des routes statiques du template — un FlexPage ne doit jamais les masquer
+# (miroir de agence-ia/.../pages-flexibles-blocs-design §3).
+RESERVED_SLUGS = {
+    "", "services", "a-propos", "avis", "faq", "blog", "contact",
+    "politique-confidentialite", "demo",
+}
+
+
+def slugify(s: str) -> str:
+    s = "".join(
+        c for c in unicodedata.normalize("NFKD", s or "")
+        if not unicodedata.combining(c)
+    ).lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s
+
+
+def finalize_flex_pages(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pages structurées → pages[] final : slug sûr, réservés exclus, dédup, nav:true.
+
+    Pur. `pages` arrive déjà résolu en images (résolution amont). 1ʳᵉ page gagne sur
+    un slug dupliqué. Une page sans blocs est ignorée."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for p in pages:
+        if not p.get("blocs"):
+            continue
+        slug = slugify(p.get("slug") or p.get("titre") or "")
+        if not slug or slug in RESERVED_SLUGS or slug in seen:
+            continue
+        seen.add(slug)
+        page = {k: v for k, v in p.items() if v is not None}
+        page["slug"] = slug
+        page["nav"] = True
+        out.append(page)
+    return out
+
+
 def should_write(existing: dict[str, Any] | None, new: dict[str, Any]) -> bool:
     """Garde anti-clobber : ne jamais écraser un brand_kit corrigé à la main."""
     if not existing:
