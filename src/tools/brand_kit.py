@@ -725,6 +725,41 @@ async def _resolve_flex_page(
     return {k: v for k, v in page.items() if v is not None}
 
 
+async def _build_flex_pages(
+    company_id: str,
+    pages: list[dict[str, Any]],
+    industry: str | None,
+    model: str = _DEFAULT_MODEL,
+    *,
+    rehost_factory: Callable[[str], Any] | None = None,
+    pexels_factory: Callable[[str], Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Pipeline pages flexibles : sélection → LLM/page → résolution images → finalize.
+
+    Fail-soft : une page qui échoue (LLM/réseau) est sautée, jamais d'abort."""
+    rehost = (rehost_factory(company_id) if rehost_factory
+              else (lambda role, src: rehost_one(company_id, role, src)))
+    pexels = (pexels_factory(company_id) if pexels_factory
+              else (lambda role, q: _pexels_rehost(company_id, role, q)))
+
+    candidates = parse.select_flex_candidates(pages)
+    resolved: list[dict[str, Any]] = []
+    for cand in candidates:
+        by_id = {c["id"]: c["url"] for c in cand.get("candidates", [])}
+        try:
+            llm_page = _call_flex_llm(cand["text"], cand.get("candidates", []), industry, model=model)
+        except Exception:  # noqa: BLE001 — LLM indispo → page sautée
+            continue
+        if not llm_page or not llm_page.get("blocs"):
+            continue
+        final = await _resolve_flex_page(
+            llm_page, by_id, industry, company_id, rehost=rehost, pexels=pexels,
+        )
+        if final:
+            resolved.append(final)
+    return assemble.finalize_flex_pages(resolved)
+
+
 async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[str, Any]:
     rows = await db.select("companies", params={
         "select": "id,name,address,website,industry,google_place_id,brand_kit",
@@ -835,6 +870,14 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
                                    site_pairs=rich.get("gallery_pairs"))
     if gallery:
         kit["gallery"] = gallery
+
+    # Pages flexibles hors-template (P4.4) — fail-soft, après les slots fixes.
+    try:
+        flex = await _build_flex_pages(company_id, rich.get("pages") or [], industry, model=model)
+    except Exception:  # noqa: BLE001
+        flex = []
+    if flex:
+        kit["pages"] = flex
 
     # File de revue : champs douteux/manquants pour correction humaine (Supabase Studio).
     kit["_review"] = assemble.derive_review(kit)

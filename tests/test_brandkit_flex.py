@@ -66,3 +66,38 @@ async def test_resolve_flex_page_empty_blocs_returns_none():
         rehost=None, pexels=None,
     )
     assert out is None
+
+
+async def _async_none():
+    return None
+
+
+@pytest.mark.asyncio
+async def test_build_flex_pages_end_to_end(monkeypatch):
+    pages = [
+        {"url": "https://x.test/financement/", "type": "other", "text": "F" * 600,
+         "candidates": [{"id": 1, "url": "https://x.test/f.jpg", "kind_hint": "other", "alt": ""}]},
+        {"url": "https://x.test/panier/", "type": "other", "text": "P" * 600, "candidates": []},
+        {"url": "https://x.test/lavage/", "type": "service", "text": "S" * 600, "candidates": []},
+    ]
+
+    def fake_call(page_text, candidates, industry, model="m"):
+        return {"titre": "Financement", "blocs": [
+            {"type": "image", "url_id": 1, "legende": "plan"},
+            {"type": "stats", "items": [{"valeur": "0 %", "label": "intérêt"}]}]}
+
+    monkeypatch.setattr(BK, "_call_flex_llm", fake_call)
+
+    async def fake_rehost(role, src):
+        return f"https://cdn/{role}.jpg"
+
+    out = await BK._build_flex_pages(
+        "c1", pages, "construction", model="m",
+        rehost_factory=lambda cid: fake_rehost,
+        pexels_factory=lambda cid: (lambda role, q: _async_none()),
+    )
+    # seule la page 'financement' survit (service + panier filtrés)
+    assert len(out) == 1
+    assert out[0]["slug"] == "financement"
+    assert out[0]["nav"] is True
+    assert out[0]["blocs"][0]["url"] == "https://cdn/flex-image.jpg"
