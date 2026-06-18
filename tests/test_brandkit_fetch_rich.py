@@ -70,3 +70,34 @@ async def test_fetch_site_rich_failsoft_on_home_error(monkeypatch):
     assert rich["pages"] == []
     assert rich["candidates"] == []
     assert rich["page_text"] == ""
+
+
+@pytest.mark.asyncio
+async def test_fetch_site_rich_crawls_other_pages_with_per_page_candidates(monkeypatch):
+    home = """<html><body>
+      <a href="/financement/">Financement</a>
+      <img src="/home1.jpg"><img src="/home2.jpg"><img src="/home3.jpg">
+    </body></html>"""
+    fin = """<html><body><h1>Financement</h1>
+      <img src="/fin-a.jpg" alt="plan"><img src="/fin-b.jpg" alt="taux">
+      <img src="/fin-c.jpg" alt="agent"></body></html>"""
+    fetched = {
+        "https://flex.test/": home,
+        "https://flex.test/financement/": fin,
+    }
+
+    async def fake_get_html(client, url):
+        return fetched.get(url)
+    monkeypatch.setattr(BK, "_get_html", fake_get_html)
+
+    async def fake_rendered(url):
+        return None
+    monkeypatch.setattr(BK.render_client, "fetch_rendered", fake_rendered)
+
+    rich = await BK.fetch_site_rich("https://flex.test/")
+    fin_page = next(p for p in rich["pages"] if p["url"].endswith("/financement/"))
+    assert fin_page["type"] == "other"
+    # candidats id'd PORTÉS PAR LA PAGE (pas seulement le pool global)
+    cand_urls = {c["url"] for c in fin_page["candidates"]}
+    assert "https://flex.test/fin-a.jpg" in cand_urls
+    assert all("id" in c for c in fin_page["candidates"])

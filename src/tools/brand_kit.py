@@ -235,7 +235,7 @@ async def _get_html(client: httpx.AsyncClient, url: str) -> str | None:
         return None
 
 
-_CRAWL_TYPES = {"home", "service", "equipe", "galerie", "contact"}
+_CRAWL_TYPES = {"home", "service", "equipe", "galerie", "contact", "other"}
 _CRAWL_CAP = 25
 
 
@@ -289,7 +289,11 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
                     escalated.append(page_url)
 
             text = _clean_text(html)
-            pages.append({"url": page_url, "type": page_type, "text": text})
+            page_cands = parse.dedup_and_id(
+                parse.extract_image_candidates(html, page_url, where=page_type)
+            )
+            pages.append({"url": page_url, "type": page_type, "text": text,
+                          "candidates": page_cands})
             if page_type == "service":
                 service_pages.append({"url": page_url, "text": text})
 
