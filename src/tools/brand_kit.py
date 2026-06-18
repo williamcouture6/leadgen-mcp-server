@@ -202,6 +202,122 @@ def _call_brandkit_llm(
     return {}
 
 
+_FLEX_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "brand_kit_flex.md"
+_FLEX_TOOL_NAME = "save_flex_page"
+
+_FLEX_TOOL: dict[str, Any] = {
+    "name": _FLEX_TOOL_NAME,
+    "description": (
+        "Structure UNE page hors-template en blocs premium. blocs:[] si la page "
+        "n'a pas de valeur réelle. Pour les images, ne renvoie que des *_id de la "
+        "liste fournie, jamais d'URL."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "slug": {"type": ["string", "null"]},
+            "titre": {"type": "string"},
+            "eyebrow": {"type": ["string", "null"]},
+            "intro": {"type": ["string", "null"]},
+            "hero_image_url_id": {"type": ["integer", "null"]},
+            "blocs": {
+                "type": "array",
+                "items": {
+                    "oneOf": [
+                        {"type": "object", "properties": {
+                            "type": {"enum": ["titre"]}, "texte": {"type": "string"},
+                            "eyebrow": {"type": ["string", "null"]}},
+                         "required": ["type", "texte"]},
+                        {"type": "object", "properties": {
+                            "type": {"enum": ["texte"]}, "corps": {"type": "string"}},
+                         "required": ["type", "corps"]},
+                        {"type": "object", "properties": {
+                            "type": {"enum": ["liste"]}, "titre": {"type": ["string", "null"]},
+                            "items": {"type": "array", "items": {"type": "string"}}},
+                         "required": ["type", "items"]},
+                        {"type": "object", "properties": {
+                            "type": {"enum": ["image"]}, "url_id": {"type": ["integer", "null"]},
+                            "legende": {"type": ["string", "null"]},
+                            "alt": {"type": ["string", "null"]}},
+                         "required": ["type"]},
+                        {"type": "object", "properties": {
+                            "type": {"enum": ["galerie"]},
+                            "images": {"type": "array", "items": {"type": "object", "properties": {
+                                "url_id": {"type": ["integer", "null"]},
+                                "legende": {"type": ["string", "null"]}}}}},
+                         "required": ["type", "images"]},
+                        {"type": "object", "properties": {
+                            "type": {"enum": ["stats"]},
+                            "items": {"type": "array", "items": {"type": "object", "properties": {
+                                "valeur": {"type": "string"}, "label": {"type": "string"}},
+                                "required": ["valeur", "label"]}}},
+                         "required": ["type", "items"]},
+                        {"type": "object", "properties": {
+                            "type": {"enum": ["cta"]}, "titre": {"type": "string"},
+                            "texte": {"type": ["string", "null"]}},
+                         "required": ["type", "titre"]},
+                        {"type": "object", "properties": {
+                            "type": {"enum": ["faq"]},
+                            "items": {"type": "array", "items": {"type": "object", "properties": {
+                                "question": {"type": "string"}, "reponse": {"type": "string"}},
+                                "required": ["question", "reponse"]}}},
+                         "required": ["type", "items"]},
+                    ],
+                },
+            },
+        },
+        "required": ["titre", "blocs"],
+    },
+}
+
+
+@retry(
+    retry=retry_if_exception(_is_transient_anthropic_error),
+    wait=wait_exponential(multiplier=2, min=4, max=60),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
+def _call_flex_llm(
+    page_text: str,
+    candidates: list[dict[str, Any]],
+    industry: str | None,
+    model: str = _DEFAULT_MODEL,
+    max_tokens: int = 2500,
+) -> dict[str, Any]:
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY non défini")
+    client = Anthropic(api_key=api_key)
+    system_prompt = _FLEX_PROMPT_PATH.read_text(encoding="utf-8")
+    cand_block = json.dumps(
+        [{"id": c["id"], "kind_hint": c.get("kind_hint", "other"), "alt": c.get("alt", "")}
+         for c in candidates],
+        ensure_ascii=False,
+    )
+    user = (
+        f"## Industrie\n{industry or 'inconnue'}\n\n"
+        f"## Images candidates de cette page\n{cand_block}\n\n"
+        f"## Texte de la page\n{page_text[:12000]}\n"
+    )
+    resp = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        temperature=0.2,
+        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+        tools=[_FLEX_TOOL],
+        tool_choice={"type": "tool", "name": _FLEX_TOOL_NAME},
+        messages=[{"role": "user", "content": user}],
+    )
+    block = next(
+        (b for b in resp.content if getattr(b, "type", None) == "tool_use"
+         and getattr(b, "name", None) == _FLEX_TOOL_NAME),
+        None,
+    )
+    if block is not None and isinstance(block.input, dict):
+        return block.input
+    return {}
+
+
 _BUCKET = "brand-assets"
 _MAX_IMG_BYTES = 5 * 1024 * 1024
 _MIN_IMG_SIDE = 200
