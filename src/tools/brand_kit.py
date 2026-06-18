@@ -664,6 +664,67 @@ async def _build_gallery(
     return []
 
 
+async def _resolve_flex_page(
+    llm_page: dict[str, Any],
+    by_id: dict[int, str],
+    industry: str | None,
+    company_id: str,
+    *,
+    rehost: Callable[[str, str], Awaitable[str | None]] | None = None,
+    pexels: Callable[[str, str], Awaitable[str | None]] | None = None,
+) -> dict[str, Any] | None:
+    """Résout les *_id d'images d'UNE page LLM → URL ré-hébergées, RENOMME vers les
+    clés du contrat (hero_image_url / url), comble par Pexels (déco) sauf galerie
+    (réel only → drop). Renvoie la page finale, ou None si plus aucun bloc."""
+    rehost = rehost or (lambda role, src: rehost_one(company_id, role, src))
+    pexels = pexels or (lambda role, q: _pexels_rehost(company_id, role, q))
+    titre = llm_page.get("titre") or ""
+    px_query = f"{industry or ''} {titre}".strip()
+
+    page: dict[str, Any] = {
+        "titre": titre,
+        "slug": llm_page.get("slug"),
+        "eyebrow": llm_page.get("eyebrow"),
+        "intro": llm_page.get("intro"),
+    }
+
+    # hero de page : id → URL → renommée ; sinon Pexels (déco).
+    hero_src = by_id.get(llm_page.get("hero_image_url_id"))
+    hero_url = await rehost("flex-hero", hero_src) if hero_src else None
+    if not hero_url:
+        hero_url = await pexels("flex-hero", px_query)
+    if hero_url:
+        page["hero_image_url"] = hero_url
+
+    out_blocs: list[dict[str, Any]] = []
+    for b in llm_page.get("blocs") or []:
+        t = b.get("type")
+        if t == "image":
+            src = by_id.get(b.get("url_id"))
+            url = await rehost("flex-image", src) if src else None
+            if not url:
+                url = await pexels("flex-image", px_query)  # Pexels déco
+            if url:
+                out_blocs.append({"type": "image", "url": url,
+                                  "legende": b.get("legende"), "alt": b.get("alt")})
+        elif t == "galerie":
+            imgs: list[dict[str, Any]] = []
+            for im in b.get("images") or []:
+                src = by_id.get(im.get("url_id"))
+                url = await rehost("flex-gallery", src) if src else None  # RÉEL ONLY
+                if url:
+                    imgs.append({"url": url, "legende": im.get("legende")})
+            if imgs:  # galerie sans image réelle → bloc droppé (jamais de Pexels)
+                out_blocs.append({"type": "galerie", "images": imgs})
+        else:
+            out_blocs.append(b)  # titre/texte/liste/stats/cta/faq : pass-through
+
+    if not out_blocs:
+        return None
+    page["blocs"] = out_blocs
+    return {k: v for k, v in page.items() if v is not None}
+
+
 async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[str, Any]:
     rows = await db.select("companies", params={
         "select": "id,name,address,website,industry,google_place_id,brand_kit",
