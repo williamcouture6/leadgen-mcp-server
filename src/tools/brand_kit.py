@@ -378,7 +378,8 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
         if not home_html:
             return {"status": "error", "pages": [], "head_meta": head_meta, "jsonld": jsonld,
                     "social": {}, "rbq": None, "candidates": [], "page_text": "",
-                    "service_pages": [], "escalated": [], "gallery_pairs": []}
+                    "service_pages": [], "escalated": [], "gallery_pairs": [],
+                    "service_areas": []}
 
         # Liste à crawler : home (type 'home') + liens internes pertinents, dédupliqués.
         # Dédup insensible au slash final (évite de re-fetcher la home via href="/").
@@ -439,6 +440,8 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
         "service_pages": service_pages,
         "escalated": escalated,
         "gallery_pairs": _gallery_pairs_all,
+        # Secteurs desservis : extraits du footer du HTML brut (que _clean_text retire).
+        "service_areas": parse.extract_service_areas(home_html),
     }
 
 
@@ -579,7 +582,7 @@ def _empty_rich() -> dict[str, Any]:
         "jsonld": dict(parse.EMPTY_JSONLD), "social": {}, "rbq": None,
         "candidates": [], "page_text": "", "pages": [],
         "service_pages": [], "escalated": [],
-        "gallery_pairs": [],
+        "gallery_pairs": [], "service_areas": [],
     }
 
 
@@ -859,7 +862,7 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
     kit = assemble.assemble_brand_kit(
         place=place, jsonld=rich["jsonld"], head_meta=rich["head_meta"], llm=llm,
         images=images, colors=colors, social=rich["social"], rbq=rich["rbq"],
-        company=company, facebook=fb,
+        company=company, facebook=fb, service_areas=rich.get("service_areas"),
     )
 
     # Garanties d'images (toujours, fallback Pexels par métier) : 1 image/service, fond stats,

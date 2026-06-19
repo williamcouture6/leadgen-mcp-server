@@ -62,6 +62,27 @@ async def test_fetch_site_rich_crawls_all_and_escalates(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_site_rich_extracts_service_areas_from_footer(monkeypatch):
+    home = """<html><body>
+      <img src="/h1.jpg"><img src="/h2.jpg"><img src="/h3.jpg">
+      <footer><p>Terrebonne | Mascouche | Laval | Brossard | Longueuil | Mirabel | Montréal</p></footer>
+    </body></html>"""
+
+    async def fake_get_html(client, url):
+        return home if url == "https://areas.test/" else None
+    monkeypatch.setattr(BK, "_get_html", fake_get_html)
+
+    async def fake_rendered(url):
+        return None
+    monkeypatch.setattr(BK.render_client, "fetch_rendered", fake_rendered)
+
+    rich = await BK.fetch_site_rich("https://areas.test/")
+    assert rich["service_areas"][0] == "Terrebonne"
+    assert "Laval" in rich["service_areas"]
+    assert len(rich["service_areas"]) == 7
+
+
+@pytest.mark.asyncio
 async def test_fetch_site_rich_failsoft_on_home_error(monkeypatch):
     async def fake_get_html(client, url):
         return None

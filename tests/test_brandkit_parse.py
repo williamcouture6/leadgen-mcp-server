@@ -70,6 +70,51 @@ def test_find_rbq():
     assert P.find_rbq("aucun numéro ici") is None
 
 
+# --- Secteurs desservis : liste de toponymes du footer (souvent « Ville | Ville | … ») ---
+
+HTML_AREAS = """
+<html><body>
+  <nav><a>Accueil</a> | <a>Services</a> | <a>Contact</a></nav>
+  <main><p>Lavage de vitres à Montréal, Rive-Nord et Rive-Sud.</p></main>
+  <footer>
+    <div class="elementor-widget-container">
+      <p class="elementor-heading-title">Terrebonne | Mascouche | Blainville | Lorraine |
+       Rosemère | Mirabel | Sainte-Thérèse | Boisbriand | Repentigny | L'Assomption |
+       Lanaudière | Rive-Nord | Montréal | Rivière-des-Prairies | Pointe-aux-Trembles |
+       Outremont | Anjou | Ahuntsic | Laval | Montréal Nord | Longueuil | Boucherville |
+       Varennes | Brossard | Saint-Lambert | Saint-Hubert | Rive-Sud | Montérégie</p>
+    </div>
+    <a href="https://facebook.com/x">FB</a>
+  </footer>
+</body></html>
+"""
+
+
+def test_extract_service_areas_from_footer_pipe_list():
+    areas = P.extract_service_areas(HTML_AREAS)
+    assert areas[0] == "Terrebonne"
+    assert "Montréal" in areas and "Montréal Nord" in areas
+    assert "L'Assomption" in areas
+    assert "Sainte-Thérèse" in areas
+    assert "Montérégie" in areas
+    assert len(areas) == 28
+
+
+def test_extract_service_areas_ignores_short_nav_list():
+    html = "<footer><p>Accueil | Services | Blogue | Contact</p></footer>"
+    assert P.extract_service_areas(html) == []
+
+
+def test_extract_service_areas_empty_when_absent():
+    assert P.extract_service_areas("<html><body><p>Bonjour le monde</p></body></html>") == []
+
+
+def test_extract_service_areas_dedups_preserving_order():
+    html = "<footer><p>Laval | Laval | Brossard | Longueuil | Laval | Boucherville | Varennes | Mirabel</p></footer>"
+    areas = P.extract_service_areas(html)
+    assert areas == ["Laval", "Brossard", "Longueuil", "Boucherville", "Varennes", "Mirabel"]
+
+
 # --- Extraction logo déterministe (favicon dimensionné / apple-touch avant og:image) ---
 
 HTML_LOGO = """

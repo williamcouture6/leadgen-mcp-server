@@ -258,6 +258,35 @@ def test_assemble_brand_kit_places_wins_and_confidence():
     assert kit["_meta"]["build_version"] == A.BUILD_VERSION
 
 
+def _bare_assemble_kwargs(**over):
+    base = dict(
+        place={"reviews": []},
+        jsonld={"same_as": [], "telephone": None, "rating": None, "rating_count": None,
+                "logo": None, "opening_hours": [], "address": None, "image": None},
+        head_meta={"theme_color": None, "og_image": None, "twitter_image": None,
+                   "description": None, "icon": None},
+        llm={}, images={}, colors=None, social={}, rbq=None,
+    )
+    base.update(over)
+    return base
+
+
+def test_assemble_service_areas_deterministic_overrides_llm():
+    areas = ["Terrebonne", "Mascouche", "Laval", "Brossard", "Longueuil", "Mirabel"]
+    kit = A.assemble_brand_kit(**_bare_assemble_kwargs(
+        llm={"service_areas": ["Montréal", "Rive-Nord", "Rive-Sud"]},
+        service_areas=areas,
+    ))
+    assert kit["service_areas"] == areas
+    assert kit["confidence"]["service_areas"] == "high"
+
+
+def test_assemble_service_areas_falls_back_to_llm_when_no_deterministic():
+    kit = A.assemble_brand_kit(**_bare_assemble_kwargs(llm={"service_areas": ["Laval"]}))
+    assert kit["service_areas"] == ["Laval"]
+    assert kit["confidence"]["service_areas"] == "medium"
+
+
 def test_finalize_flex_pages_slugify_reserved_dedupe():
     pages = [
         {"titre": "Financement Maison", "blocs": [{"type": "texte", "corps": "a"}]},

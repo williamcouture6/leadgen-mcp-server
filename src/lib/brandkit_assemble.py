@@ -347,6 +347,7 @@ def assemble_brand_kit(
     rbq: str | None,
     company: dict[str, Any] | None = None,
     facebook: dict[str, Any] | None = None,
+    service_areas: list[str] | None = None,
 ) -> dict[str, Any]:
     confidence: dict[str, str] = {}
     kit: dict[str, Any] = {}
@@ -408,6 +409,11 @@ def assemble_brand_kit(
         if val:
             kit[f] = val
             confidence[f] = "medium"
+
+    # Secteurs desservis : la liste déterministe du footer prime sur le LLM (high).
+    if service_areas:
+        kit["service_areas"] = list(service_areas)
+        confidence["service_areas"] = "high"
 
     kit["confidence"] = confidence
     kit["_meta"] = {

@@ -269,6 +269,71 @@ def find_rbq(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+# --- Secteurs desservis ------------------------------------------------------
+# Les PME de services QC listent leurs villes dans le footer, souvent en
+# « Ville | Ville | … ». _clean_text retire le <footer> → on l'extrait ici, du
+# HTML brut, en déterministe (comme social/RBQ), jamais via le LLM.
+_AREA_SEP_RE = re.compile(r"\s*[|•·]\s*")
+_AREA_TOKEN_RE = re.compile(r"^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9'’.\- ]{1,39}$")
+_AREA_MIN_TOKENS = 6  # tue les barres de nav courtes (Accueil | Services | Contact)
+_AREA_STOPWORDS = {
+    "accueil", "home", "services", "service", "contact", "contactez-nous",
+    "blog", "blogue", "a propos", "apropos", "a-propos", "qui sommes-nous",
+    "soumission", "soumissions", "carrieres", "carriere", "emploi", "emplois",
+    "menu", "faq", "galerie", "realisations", "temoignages", "avis",
+    "copyright", "tous droits reserves", "mentions legales", "politique",
+    "confidentialite", "plan du site", "telephone", "courriel", "email",
+}
+
+
+def _strip_accents_lower(s: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
+
+
+def _area_tokens(raw: str) -> list[str]:
+    """« Ville | Ville | … » → toponymes valides (junk/nav-words écartés)."""
+    out: list[str] = []
+    for part in _AREA_SEP_RE.split(raw):
+        tok = re.sub(r"\s+", " ", part).strip(" .|•·")
+        if tok and _AREA_TOKEN_RE.match(tok) and _strip_accents_lower(tok) not in _AREA_STOPWORDS:
+            out.append(tok)
+    return out
+
+
+def _best_area_list(scopes: list[Any]) -> list[str]:
+    """Plus longue liste de toponymes (≥ _AREA_MIN_TOKENS) parmi des nœuds texte."""
+    best: list[str] = []
+    for scope in scopes:
+        for s in scope.stripped_strings:
+            if not any(sep in s for sep in ("|", "•", "·")):
+                continue
+            toks = _area_tokens(s)
+            if len(toks) >= _AREA_MIN_TOKENS and len(toks) > len(best):
+                best = toks
+    return best
+
+
+def extract_service_areas(html: str) -> list[str]:
+    """Secteurs desservis = plus longue liste « Ville | Ville | … » (footer prioritaire).
+
+    Pur, fail-soft : [] si aucune liste d'au moins _AREA_MIN_TOKENS toponymes.
+    Dédup insensible casse/accents, ordre préservé."""
+    soup = BeautifulSoup(html, "html.parser")
+    footers = soup.find_all("footer")
+    best = _best_area_list(footers) if footers else []
+    if not best:
+        best = _best_area_list([soup])
+    seen: set[str] = set()
+    result: list[str] = []
+    for t in best:
+        key = _strip_accents_lower(t)
+        if key not in seen:
+            seen.add(key)
+            result.append(t)
+    return result
+
+
 _FB_PHONE_RE = re.compile(r'"phone(?:_?number)?"\s*:\s*"([+\d][\d\s().\-]{6,})"')
 
 
