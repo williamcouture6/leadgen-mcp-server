@@ -23,6 +23,23 @@ def test_dominant_color_invalid_bytes_returns_none():
     assert BK.dominant_color(b"not an image") is None
 
 
+def _png_mixed(bg, accent, accent_count):
+    img = Image.new("RGB", (10, 10), bg)
+    for i in range(accent_count):
+        img.putpixel((i % 10, i // 10), accent)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_dominant_color_prefers_vivid_over_grey():
+    # 70 px gris + 30 px rouge vif : l'ancienne MOYENNE donnait un gris rosé ;
+    # on veut la couleur de marque (le rouge), pas la bouillie.
+    c = BK.dominant_color(_png_mixed((128, 128, 128), (210, 30, 30), 30))
+    r, g, b = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+    assert r > 150 and g < 90 and b < 90
+
+
 @respx.mock
 @pytest.mark.asyncio
 async def test_fetch_pexels_image_returns_bytes(monkeypatch):

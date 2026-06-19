@@ -379,7 +379,7 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
             return {"status": "error", "pages": [], "head_meta": head_meta, "jsonld": jsonld,
                     "social": {}, "rbq": None, "candidates": [], "page_text": "",
                     "service_pages": [], "escalated": [], "gallery_pairs": [],
-                    "service_areas": []}
+                    "service_areas": [], "css_colors": {}}
 
         # Liste à crawler : home (type 'home') + liens internes pertinents, dédupliqués.
         # Dédup insensible au slash final (évite de re-fetcher la home via href="/").
@@ -442,23 +442,47 @@ async def fetch_site_rich(url: str) -> dict[str, Any]:
         "gallery_pairs": _gallery_pairs_all,
         # Secteurs desservis : extraits du footer du HTML brut (que _clean_text retire).
         "service_areas": parse.extract_service_areas(home_html),
+        # Couleurs de marque : palette CSS globale (Elementor) du HTML brut.
+        "css_colors": parse.extract_css_colors(home_html),
     }
 
 
 def dominant_color(image_bytes: bytes) -> str | None:
+    """Couleur de marque d'un logo : cluster chromatique le plus marquant (fréquence ×
+    chroma), renvoyé comme moyenne de SES pixels — exact pour un logo uni, vif pour un
+    logo multi-couleurs (≠ la moyenne globale, qui donne un gris terne). Repli sur la
+    moyenne hors quasi-blanc pour un logo monochrome/N&B."""
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     except Exception:  # noqa: BLE001 — bytes non-image
         return None
-    img = img.resize((32, 32))
+    img = img.resize((64, 64))
+    buckets: dict[tuple[int, int, int], list[int]] = {}  # qkey -> [sum_r, sum_g, sum_b, n]
+    for r, g, b in img.getdata():
+        if min(r, g, b) >= 235 or max(r, g, b) <= 20 or max(r, g, b) - min(r, g, b) < 24:
+            continue  # quasi-blanc / quasi-noir / gris → pas une couleur de marque
+        k = (r // 24, g // 24, b // 24)
+        acc = buckets.get(k)
+        if acc:
+            acc[0] += r; acc[1] += g; acc[2] += b; acc[3] += 1
+        else:
+            buckets[k] = [r, g, b, 1]
+    if buckets:
+        def _score(acc: list[int]) -> int:
+            n = acc[3]
+            r, g, b = acc[0] // n, acc[1] // n, acc[2] // n
+            return n * (max(r, g, b) - min(r, g, b))  # fréquent ET vif
+        acc = max(buckets.values(), key=_score)
+        n = acc[3]
+        r, g, b = acc[0] // n, acc[1] // n, acc[2] // n
+        return f"#{r:02x}{g:02x}{b:02x}"
+    # repli : moyenne hors quasi-blanc (logo monochrome / N&B)
     pixels = [p for p in img.getdata() if not (p[0] > 240 and p[1] > 240 and p[2] > 240)]
     if not pixels:
         return None
     n = len(pixels)
-    r = sum(p[0] for p in pixels) // n
-    g = sum(p[1] for p in pixels) // n
-    b = sum(p[2] for p in pixels) // n
-    return f"#{r:02x}{g:02x}{b:02x}"
+    return (f"#{sum(p[0] for p in pixels) // n:02x}"
+            f"{sum(p[1] for p in pixels) // n:02x}{sum(p[2] for p in pixels) // n:02x}")
 
 
 async def _download_image(url: str) -> tuple[bytes, str]:
@@ -560,7 +584,14 @@ async def fetch_pexels_image(query: str) -> tuple[bytes, str] | None:
 
 
 def _pick_colors(head_meta: dict[str, Any], jsonld: dict[str, Any],
-                 logo_color: str | None) -> dict[str, Any] | None:
+                 logo_color: str | None,
+                 css_colors: dict[str, str] | None = None) -> dict[str, Any] | None:
+    # Palette CSS de marque (Elementor) = source la plus fiable, et seule à donner le
+    # secondaire. Sinon theme-color (meta), sinon couleur dominante du logo.
+    css = css_colors or {}
+    if css.get("primary"):
+        return {"primary": css["primary"], "secondary": css.get("secondary"),
+                "_confidence": "high"}
     theme = head_meta.get("theme_color")
     if theme:
         return {"primary": theme, "secondary": None, "_confidence": "high"}
@@ -582,7 +613,7 @@ def _empty_rich() -> dict[str, Any]:
         "jsonld": dict(parse.EMPTY_JSONLD), "social": {}, "rbq": None,
         "candidates": [], "page_text": "", "pages": [],
         "service_pages": [], "escalated": [],
-        "gallery_pairs": [], "service_areas": [],
+        "gallery_pairs": [], "service_areas": [], "css_colors": {},
     }
 
 
@@ -857,7 +888,7 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
     await _resolve_card_images(company_id, llm.get("team"), by_id, "team", "photo_url",
                                id_field="photo_candidate_id")
 
-    colors = _pick_colors(rich["head_meta"], rich["jsonld"], logo_color)
+    colors = _pick_colors(rich["head_meta"], rich["jsonld"], logo_color, rich.get("css_colors"))
     company = {"name": co.get("name"), "address": co.get("address")}
     kit = assemble.assemble_brand_kit(
         place=place, jsonld=rich["jsonld"], head_meta=rich["head_meta"], llm=llm,

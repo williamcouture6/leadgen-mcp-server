@@ -115,6 +115,31 @@ def test_extract_service_areas_dedups_preserving_order():
     assert areas == ["Laval", "Brossard", "Longueuil", "Boucherville", "Varennes", "Mirabel"]
 
 
+# --- Couleurs de marque depuis la palette CSS globale (Elementor) ---
+
+HTML_CSS_COLORS = (
+    "<html><head><style>:root{"
+    "--e-global-color-primary:#00A6C0;--e-global-color-secondary:#0E2F3A;"
+    "--e-global-color-accent:#FFFFFF;--e-global-color-text:#000000;}</style>"
+    "</head><body></body></html>"
+)
+
+
+def test_extract_css_colors_elementor_palette():
+    c = P.extract_css_colors(HTML_CSS_COLORS)
+    assert c["primary"] == "#00a6c0"      # vraie couleur de marque (cyan)
+    assert c["secondary"] == "#0e2f3a"    # vrai secondaire (navy)
+
+
+def test_extract_css_colors_rejects_white_or_grey_primary():
+    html = "<style>--e-global-color-primary:#FFFFFF;--e-global-color-secondary:#808285;</style>"
+    assert P.extract_css_colors(html) == {}  # blanc/gris = pas une couleur de marque
+
+
+def test_extract_css_colors_absent_returns_empty():
+    assert P.extract_css_colors("<html><body>rien</body></html>") == {}
+
+
 # --- Extraction logo déterministe (favicon dimensionné / apple-touch avant og:image) ---
 
 HTML_LOGO = """

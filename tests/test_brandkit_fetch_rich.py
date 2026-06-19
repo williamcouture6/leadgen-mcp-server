@@ -83,6 +83,24 @@ async def test_fetch_site_rich_extracts_service_areas_from_footer(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_site_rich_extracts_css_palette(monkeypatch):
+    home = ('<html><head><style>'
+            '--e-global-color-primary:#00A6C0;--e-global-color-secondary:#0E2F3A;'
+            '</style></head><body><img src="/h.jpg"></body></html>')
+
+    async def fake_get_html(client, url):
+        return home if url == "https://css.test/" else None
+    monkeypatch.setattr(BK, "_get_html", fake_get_html)
+
+    async def fake_rendered(url):
+        return None
+    monkeypatch.setattr(BK.render_client, "fetch_rendered", fake_rendered)
+
+    rich = await BK.fetch_site_rich("https://css.test/")
+    assert rich["css_colors"] == {"primary": "#00a6c0", "secondary": "#0e2f3a"}
+
+
+@pytest.mark.asyncio
 async def test_fetch_site_rich_failsoft_on_home_error(monkeypatch):
     async def fake_get_html(client, url):
         return None

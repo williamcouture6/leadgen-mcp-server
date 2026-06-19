@@ -334,6 +334,51 @@ def extract_service_areas(html: str) -> list[str]:
     return result
 
 
+# --- Couleurs de marque ------------------------------------------------------
+# Les sites WordPress/Elementor injectent leur palette dans des variables CSS
+# (`--e-global-color-primary/secondary`). Source autoritative des couleurs de marque,
+# bien plus fiable que la moyenne des pixels du logo (qui donne un gris terne).
+_CSS_COLOR_VARS: list[tuple[str, str]] = [
+    ("primary", "--e-global-color-primary"),
+    ("secondary", "--e-global-color-secondary"),
+]
+
+
+def _norm_hex(s: str) -> str | None:
+    """'#RRGGBB(AA)' ou '#RGB' → '#rrggbb' minuscule, sinon None."""
+    h = s.strip().lstrip("#").lower()
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    if len(h) == 8:           # #rrggbbaa → on laisse tomber l'alpha
+        h = h[:6]
+    if len(h) != 6 or any(c not in "0123456789abcdef" for c in h):
+        return None
+    return "#" + h
+
+
+def _is_chromatic(hex6: str) -> bool:
+    """Vraie couleur de marque : ni quasi-blanc, ni quasi-noir, ni gris."""
+    r, g, b = int(hex6[1:3], 16), int(hex6[3:5], 16), int(hex6[5:7], 16)
+    if min(r, g, b) >= 235:          # quasi-blanc
+        return False
+    if max(r, g, b) <= 20:           # quasi-noir
+        return False
+    return (max(r, g, b) - min(r, g, b)) >= 24   # chroma suffisante (pas gris)
+
+
+def extract_css_colors(html: str) -> dict[str, str]:
+    """Palette de marque depuis les variables CSS globales (Elementor) inline dans le
+    HTML. Renvoie {primary, secondary?} si une primaire chromatique est trouvée, sinon {}."""
+    out: dict[str, str] = {}
+    for role, var in _CSS_COLOR_VARS:
+        m = re.search(re.escape(var) + r"\s*:\s*(#[0-9a-fA-F]{3,8})", html)
+        if m:
+            hx = _norm_hex(m.group(1))
+            if hx and _is_chromatic(hx):
+                out[role] = hx
+    return out if out.get("primary") else {}
+
+
 _FB_PHONE_RE = re.compile(r'"phone(?:_?number)?"\s*:\s*"([+\d][\d\s().\-]{6,})"')
 
 

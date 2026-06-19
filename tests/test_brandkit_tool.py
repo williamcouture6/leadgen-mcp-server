@@ -74,6 +74,22 @@ def test_call_llm_requests_enough_tokens_for_multiservice(monkeypatch):
     assert client.messages.last_kwargs["max_tokens"] >= 8000
 
 
+def test_pick_colors_prefers_css_palette_with_secondary():
+    # palette CSS de marque (Elementor) prime sur theme-color/logo + fournit le secondaire
+    c = BK._pick_colors({"theme_color": "#111111"}, {}, "#999999",
+                        css_colors={"primary": "#00a6c0", "secondary": "#0e2f3a"})
+    assert c["primary"] == "#00a6c0"
+    assert c["secondary"] == "#0e2f3a"
+    assert c["_confidence"] == "high"
+
+
+def test_pick_colors_falls_back_to_logo_when_no_palette_no_theme():
+    c = BK._pick_colors({"theme_color": None}, {}, "#00a6c0", css_colors={})
+    assert c["primary"] == "#00a6c0"
+    assert c["secondary"] is None
+    assert c["_confidence"] == "medium"
+
+
 @pytest.mark.asyncio
 async def test_build_brand_kit_orchestrates(monkeypatch):
     # company en DB (nom + adresse requis pour la vérif du match Places)
