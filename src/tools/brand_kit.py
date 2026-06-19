@@ -160,7 +160,7 @@ def _call_brandkit_llm(
     page_text: str,
     industry: str | None,
     model: str = _DEFAULT_MODEL,
-    max_tokens: int = 3500,
+    max_tokens: int = 8000,  # 3500 tronquait la sortie multi-services → services droppés
     service_pages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -882,8 +882,15 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
     if flex:
         kit["pages"] = flex
 
+    # Anti-clobber-vide : un build pauvre (LLM tronqué → services/team absents) ne doit
+    # pas effacer du bon contenu déjà en place. On reporte les champs volatils manquants.
+    kit, carried = assemble.preserve_nonempty(co.get("brand_kit"), kit)
+
     # File de revue : champs douteux/manquants pour correction humaine (Supabase Studio).
     kit["_review"] = assemble.derive_review(kit)
+    for field in carried:
+        kit["_review"].append({"field": field,
+                               "reason": "repris du build précédent (build pauvre)"})
     kit["_meta"]["status"] = "needs_review" if kit["_review"] else "ok"
 
     # Garde déjà validée (early return) → on écrit directement.

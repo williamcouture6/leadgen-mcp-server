@@ -287,6 +287,29 @@ def test_assemble_service_areas_falls_back_to_llm_when_no_deterministic():
     assert kit["confidence"]["service_areas"] == "medium"
 
 
+def test_preserve_nonempty_carries_over_when_new_empty():
+    existing = {"services": [{"name": "Lavage de vitres"}], "team": [{"nom": "Kevin"}]}
+    new = {"services": [], "tagline": "Nouveau slogan"}
+    out, carried = A.preserve_nonempty(existing, new)
+    assert out["services"] == [{"name": "Lavage de vitres"}]  # repris (new vide)
+    assert out["team"] == [{"nom": "Kevin"}]                   # repris (new absent)
+    assert out["tagline"] == "Nouveau slogan"                  # new conservé
+    assert set(carried) == {"services", "team"}
+
+
+def test_preserve_nonempty_keeps_new_when_present():
+    out, carried = A.preserve_nonempty(
+        {"services": [{"name": "Vieux"}]}, {"services": [{"name": "Nouveau"}]})
+    assert out["services"] == [{"name": "Nouveau"}]
+    assert carried == []
+
+
+def test_preserve_nonempty_no_existing_returns_new():
+    out, carried = A.preserve_nonempty(None, {"services": []})
+    assert out == {"services": []}
+    assert carried == []
+
+
 def test_finalize_flex_pages_slugify_reserved_dedupe():
     pages = [
         {"titre": "Financement Maison", "blocs": [{"type": "texte", "corps": "a"}]},

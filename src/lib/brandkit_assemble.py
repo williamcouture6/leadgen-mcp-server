@@ -330,6 +330,28 @@ def should_write(existing: dict[str, Any] | None, new: dict[str, Any]) -> bool:
     return (existing.get("_meta") or {}).get("reviewed") is not True
 
 
+# Champs de contenu (issus du LLM) qui peuvent sauter par variance/troncature d'un
+# build. Anti-clobber-vide : un run pauvre ne doit pas effacer du bon contenu en place.
+_CARRYOVER_FIELDS = ("tagline", "services", "team", "valeurs", "faq", "gallery", "pages")
+
+
+def preserve_nonempty(
+    existing: dict[str, Any] | None, new: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Reporte les champs de contenu volatils que `new` rend vides/absents mais que
+    `existing` avait (services, team, …). Pur. Renvoie (kit, champs_repris).
+    `existing` vide → (`new`, [])."""
+    if not existing:
+        return new, []
+    out = dict(new)
+    carried: list[str] = []
+    for f in _CARRYOVER_FIELDS:
+        if not out.get(f) and existing.get(f):
+            out[f] = existing[f]
+            carried.append(f)
+    return out, carried
+
+
 def _conf(value: Any, level: str, acc: dict[str, str], field: str) -> None:
     if value:
         acc[field] = level

@@ -64,6 +64,16 @@ def test_call_llm_forces_tool_and_returns_input(monkeypatch):
     assert client.messages.last_kwargs["tool_choice"] == {"type": "tool", "name": "save_brand_kit"}
 
 
+def test_call_llm_requests_enough_tokens_for_multiservice(monkeypatch):
+    # 7 services × (details + process + faq) ne tient pas dans 3500 → le champ services
+    # (émis tard) se faisait tronquer. On exige une marge confortable.
+    client = _Client(_Resp([_Block(type="tool_use", name="save_brand_kit", input={})]))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(BK, "Anthropic", lambda api_key: client)
+    BK._call_brandkit_llm([{"id": 0, "url": "u", "kind_hint": "logo"}], "page text", "toiture")
+    assert client.messages.last_kwargs["max_tokens"] >= 8000
+
+
 @pytest.mark.asyncio
 async def test_build_brand_kit_orchestrates(monkeypatch):
     # company en DB (nom + adresse requis pour la vérif du match Places)
@@ -166,6 +176,50 @@ async def test_build_brand_kit_uses_footer_service_areas(monkeypatch):
     kit = written["patch"]["brand_kit"]
     assert kit["service_areas"] == areas
     assert kit["confidence"]["service_areas"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_build_brand_kit_does_not_clobber_services_with_empty(monkeypatch):
+    # Build pauvre (LLM sans services) ne doit PAS effacer les services déjà en place.
+    existing = {"services": [{"name": "Lavage de vitres", "image_url": "https://cdn/s.jpg"}],
+                "_meta": {"reviewed": False}}
+    async def fake_select(table, **kw):
+        return [{"id": "c1", "name": "BL Vitres", "address": "x, Laval, QC H1G 4P1",
+                 "website": "https://x.test", "industry": "lavage de vitres",
+                 "google_place_id": None, "brand_kit": existing}]
+    written = {}
+    async def fake_update(table, patch, **kw):
+        written.update(patch=patch)
+        return [patch]
+    monkeypatch.setattr(BK.db, "select", fake_select)
+    monkeypatch.setattr(BK.db, "update", fake_update)
+
+    async def fake_rich(url):
+        return {"head_meta": {"theme_color": None, "og_image": None, "icon": None,
+                              "twitter_image": None, "description": None,
+                              "apple_touch_icon": None, "icons": []},
+                "jsonld": {**BK.parse.EMPTY_JSONLD}, "social": {}, "rbq": None,
+                "candidates": [], "page_text": "x", "service_pages": [],
+                "gallery_pairs": [], "pages": [], "service_areas": []}
+    def fake_llm(cands, text, industry, **kw):
+        return {"tagline": "Slogan frais"}  # build pauvre : aucun service
+    async def fake_pexels(query):
+        return None
+    async def fake_rehost(cid, role, url, **kw):
+        return None
+    async def fake_rehost_bytes(cid, role, url, **kw):
+        return (None, None)
+    monkeypatch.setattr(BK, "fetch_site_rich", fake_rich)
+    monkeypatch.setattr(BK, "_call_brandkit_llm", fake_llm)
+    monkeypatch.setattr(BK, "fetch_pexels_image", fake_pexels)
+    monkeypatch.setattr(BK, "rehost_one", fake_rehost)
+    monkeypatch.setattr(BK, "_rehost_with_bytes", fake_rehost_bytes)
+
+    await BK.build_brand_kit("c1")
+    kit = written["patch"]["brand_kit"]
+    assert kit["services"] == existing["services"]              # services repris, pas effacés
+    assert kit["tagline"] == "Slogan frais"                     # le bon nouveau contenu reste
+    assert any(r["field"] == "services" for r in kit["_review"])  # tracé pour revue
 
 
 @pytest.mark.asyncio
