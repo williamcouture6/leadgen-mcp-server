@@ -285,6 +285,74 @@ def pexels_query_for_service(service_name: str | None, industry: str | None) -> 
     return _profile(industry)["service"]
 
 
+# Étapes de réalisation génériques par TYPE de service (mots-clés du nom). FALLBACK
+# quand la page d'un service ne fournit pas d'étapes réelles — même philosophie que le
+# repli Pexels pour les images manquantes (contenu générique plausible, jamais un fait
+# inventé sur l'entreprise).
+_GENERIC_PROCESS_DEFAULT = [
+    {"titre": "Soumission gratuite", "texte": "On évalue vos besoins et on vous remet un prix clair, sans engagement."},
+    {"titre": "Planification", "texte": "On fixe un rendez-vous qui vous convient, avec rappel avant le passage."},
+    {"titre": "Réalisation", "texte": "Notre équipe assurée exécute le travail avec le bon équipement."},
+    {"titre": "Vérification", "texte": "On valide le résultat avec vous — satisfaction garantie."},
+]
+_SERVICE_PROCESS: list[tuple[str, list[dict[str, str]]]] = [
+    ("goutti", [
+        {"titre": "Inspection", "texte": "On vérifie l'état des gouttières et des descentes."},
+        {"titre": "Retrait des débris", "texte": "On enlève feuilles et débris à la main, sans rien projeter sur la propriété."},
+        {"titre": "Rinçage", "texte": "On rince et on teste l'écoulement jusqu'aux descentes."},
+        {"titre": "Vérification", "texte": "On confirme que tout s'écoule librement avant de partir."},
+    ]),
+    ("pression", [
+        {"titre": "Évaluation", "texte": "On identifie les surfaces et le bon réglage de pression."},
+        {"titre": "Préparation", "texte": "On applique un nettoyant adapté au matériau."},
+        {"titre": "Lavage à pression", "texte": "Lavage à pression contrôlée pour déloger saleté et moisissures."},
+        {"titre": "Rinçage et inspection", "texte": "On rince et on vérifie le résultat avec vous."},
+    ]),
+    ("vitre", [
+        {"titre": "Inspection", "texte": "On évalue l'état des fenêtres et l'accès avant de commencer."},
+        {"titre": "Lavage à l'eau pure", "texte": "Nettoyage à l'eau osmosée qui ne laisse aucune trace minérale."},
+        {"titre": "Raclette professionnelle", "texte": "Finition à la raclette pour un fini clair, sans rayure."},
+        {"titre": "Cadres et rebords", "texte": "On essuie cadres et rebords, puis on vérifie le résultat avec vous."},
+    ]),
+    ("fenetre", [
+        {"titre": "Inspection", "texte": "On évalue l'état des fenêtres et l'accès avant de commencer."},
+        {"titre": "Lavage à l'eau pure", "texte": "Nettoyage à l'eau osmosée qui ne laisse aucune trace minérale."},
+        {"titre": "Raclette professionnelle", "texte": "Finition à la raclette pour un fini clair, sans rayure."},
+        {"titre": "Cadres et rebords", "texte": "On essuie cadres et rebords, puis on vérifie le résultat avec vous."},
+    ]),
+]
+
+
+def generic_process_for_service(service_name: str | None) -> list[dict[str, str]]:
+    """Étapes de réalisation génériques pour un service (par mots-clés du nom), repli sur
+    un process de service à domicile. Fallback quand la page ne fournit pas d'étapes."""
+    n = _norm_industry(service_name)
+    for sub, steps in _SERVICE_PROCESS:
+        if sub in n:
+            return [dict(s) for s in steps]
+    return [dict(s) for s in _GENERIC_PROCESS_DEFAULT]
+
+
+def generic_home_service_faq(service_areas: list[str] | None = None) -> list[dict[str, str]]:
+    """FAQ générique de service à domicile (QC). Injecte les vrais secteurs desservis dans
+    la réponse « régions » quand on les a. Fallback quand le site n'a pas de FAQ réelle."""
+    if service_areas:
+        head = ", ".join(service_areas[:8])
+        regions = f"On dessert notamment {head}" + (", et les environs." if len(service_areas) > 8 else ".")
+    else:
+        regions = "On dessert plusieurs secteurs de la grande région."
+    return [
+        {"question": "Offrez-vous une soumission gratuite?",
+         "reponse": "Oui, l'évaluation et la soumission sont gratuites et sans engagement."},
+        {"question": "Êtes-vous assurés?",
+         "reponse": "Oui, notre entreprise détient une assurance responsabilité civile."},
+        {"question": "Quelles régions desservez-vous?",
+         "reponse": f"{regions} Demandez-nous pour votre secteur."},
+        {"question": "Quels modes de paiement acceptez-vous?",
+         "reponse": "On accepte les principaux modes de paiement courants."},
+    ]
+
+
 # Slugs des routes statiques du template — un FlexPage ne doit jamais les masquer
 # (miroir de agence-ia/.../pages-flexibles-blocs-design §3).
 RESERVED_SLUGS = {

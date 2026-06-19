@@ -310,6 +310,36 @@ def test_preserve_nonempty_no_existing_returns_new():
     assert carried == []
 
 
+def test_generic_process_window_cleaning():
+    steps = A.generic_process_for_service("Lavage de vitres")
+    assert len(steps) >= 3 and all("titre" in s and "texte" in s for s in steps)
+    joined = " ".join(s["texte"] for s in steps).lower()
+    assert "osmos" in joined or "raclette" in joined
+
+
+def test_generic_process_gutter():
+    steps = A.generic_process_for_service("Nettoyage de gouttières")
+    joined = " ".join(s["texte"] for s in steps).lower()
+    assert "descente" in joined
+
+
+def test_generic_process_default_for_unknown_service():
+    steps = A.generic_process_for_service("Comptabilité fiscale")
+    assert steps[0]["titre"] == "Soumission gratuite"
+
+
+def test_generic_home_service_faq_injects_real_areas():
+    faq = A.generic_home_service_faq(["Laval", "Brossard", "Montréal"])
+    assert all("question" in q and "reponse" in q for q in faq)
+    regions = [q for q in faq if "gion" in q["question"].lower()]  # 'région(s)'
+    assert regions and "Laval" in regions[0]["reponse"]
+
+
+def test_generic_home_service_faq_default_no_areas():
+    faq = A.generic_home_service_faq()
+    assert len(faq) >= 2 and all(q["question"] and q["reponse"] for q in faq)
+
+
 def test_finalize_flex_pages_slugify_reserved_dedupe():
     pages = [
         {"titre": "Financement Maison", "blocs": [{"type": "texte", "corps": "a"}]},

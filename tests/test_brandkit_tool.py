@@ -223,6 +223,53 @@ async def test_build_brand_kit_does_not_clobber_services_with_empty(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_build_brand_kit_fills_generic_process_and_faq(monkeypatch):
+    # Pages de service sans étapes/FAQ → fallback générique (process par service + FAQ
+    # générale avec vrais secteurs), pour que la démo ne montre pas de sections vides.
+    async def fake_select(table, **kw):
+        return [{"id": "c1", "name": "BL Vitres", "address": "x, Laval, QC H1G 4P1",
+                 "website": "https://x.test", "industry": "lavage de vitres",
+                 "google_place_id": None, "brand_kit": None}]
+    written = {}
+    async def fake_update(table, patch, **kw):
+        written.update(patch=patch)
+        return [patch]
+    monkeypatch.setattr(BK.db, "select", fake_select)
+    monkeypatch.setattr(BK.db, "update", fake_update)
+
+    areas = ["Laval", "Brossard", "Montréal", "Longueuil", "Mirabel", "Boucherville"]
+    async def fake_rich(url):
+        return {"head_meta": {"theme_color": None, "og_image": None, "icon": None,
+                              "twitter_image": None, "description": None,
+                              "apple_touch_icon": None, "icons": []},
+                "jsonld": {**BK.parse.EMPTY_JSONLD}, "social": {}, "rbq": None,
+                "candidates": [], "page_text": "x", "service_pages": [],
+                "gallery_pairs": [], "pages": [], "service_areas": areas}
+    def fake_llm(cands, text, industry, **kw):
+        return {"tagline": "x", "services": [{"name": "Lavage de vitres"},
+                                             {"name": "Nettoyage de gouttières"}]}
+    async def fake_pexels(query):
+        return None
+    async def fake_rehost(cid, role, url, **kw):
+        return None
+    async def fake_rehost_bytes(cid, role, url, **kw):
+        return (None, None)
+    monkeypatch.setattr(BK, "fetch_site_rich", fake_rich)
+    monkeypatch.setattr(BK, "_call_brandkit_llm", fake_llm)
+    monkeypatch.setattr(BK, "fetch_pexels_image", fake_pexels)
+    monkeypatch.setattr(BK, "rehost_one", fake_rehost)
+    monkeypatch.setattr(BK, "_rehost_with_bytes", fake_rehost_bytes)
+
+    await BK.build_brand_kit("c1")
+    kit = written["patch"]["brand_kit"]
+    svcs = {s["name"]: s for s in kit["services"]}
+    assert svcs["Lavage de vitres"]["process"]          # étapes remplies
+    assert svcs["Nettoyage de gouttières"]["process"]
+    assert kit["faq"]                                    # FAQ générale remplie
+    assert any("Laval" in q["reponse"] for q in kit["faq"])  # vrais secteurs injectés
+
+
+@pytest.mark.asyncio
 async def test_build_brand_kit_guarantees_images(monkeypatch):
     # Chaque service a une image, stats.image_url et gallery TOUJOURS fournis (fallback Pexels),
     # logo déterministe via apple-touch-icon.

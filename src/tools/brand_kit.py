@@ -886,6 +886,15 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
     # pas effacer du bon contenu déjà en place. On reporte les champs volatils manquants.
     kit, carried = assemble.preserve_nonempty(co.get("brand_kit"), kit)
 
+    # Fallback générique (dernier recours, après LLM + carryover) : étapes par service et
+    # FAQ générale, pour que la démo n'affiche pas de sections vides quand le site n'a ni
+    # process ni FAQ réels (même philosophie que le repli Pexels pour les images).
+    for svc in kit.get("services") or []:
+        if not svc.get("process"):
+            svc["process"] = assemble.generic_process_for_service(svc.get("name"))
+    if not kit.get("faq"):
+        kit["faq"] = assemble.generic_home_service_faq(kit.get("service_areas"))
+
     # File de revue : champs douteux/manquants pour correction humaine (Supabase Studio).
     kit["_review"] = assemble.derive_review(kit)
     for field in carried:
