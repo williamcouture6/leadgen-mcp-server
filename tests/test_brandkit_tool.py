@@ -202,7 +202,7 @@ async def test_build_brand_kit_uses_footer_service_areas(monkeypatch):
 async def test_build_brand_kit_does_not_clobber_services_with_empty(monkeypatch):
     # Build pauvre (LLM sans services) ne doit PAS effacer les services déjà en place.
     existing = {"services": [{"name": "Lavage de vitres", "image_url": "https://cdn/s.jpg"}],
-                "_meta": {"reviewed": False}}
+                "_meta": {"build_version": "1", "source": "mixed"}}
     async def fake_select(table, **kw):
         if table == "brand_kit_reviews":
             return []   # pas de verrou de revue → on build

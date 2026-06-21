@@ -64,11 +64,6 @@ def test_pexels_query_for_service_uses_name_keywords():
     # service inconnu + industrie inconnue → défaut générique
     assert A.pexels_query_for_service("Truc", None) == "home renovation contractor"
 
-def test_should_write_rules():
-    assert A.should_write(None, {"_meta": {"reviewed": False}}) is True
-    assert A.should_write({"_meta": {"reviewed": False}}, {}) is True
-    assert A.should_write({"_meta": {"reviewed": True}}, {}) is False
-
 _EMPTY_JSONLD = {"same_as": [], "telephone": None, "rating": None, "rating_count": None,
                  "logo": None, "opening_hours": [], "address": None, "image": None}
 _EMPTY_HEAD = {"theme_color": None, "og_image": None, "twitter_image": None,
@@ -254,7 +249,6 @@ def test_assemble_brand_kit_places_wins_and_confidence():
     assert kit["rbq"] == "1234-5678-01"
     assert kit["confidence"]["phone"] == "high"
     assert kit["confidence"]["tagline"] == "medium"
-    assert kit["_meta"]["reviewed"] is False
     assert kit["_meta"]["build_version"] == A.BUILD_VERSION
 
 

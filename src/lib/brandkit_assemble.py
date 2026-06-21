@@ -391,13 +391,6 @@ def finalize_flex_pages(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def should_write(existing: dict[str, Any] | None, new: dict[str, Any]) -> bool:
-    """Garde anti-clobber : ne jamais écraser un brand_kit corrigé à la main."""
-    if not existing:
-        return True
-    return (existing.get("_meta") or {}).get("reviewed") is not True
-
-
 # Champs de contenu (issus du LLM) qui peuvent sauter par variance/troncature d'un
 # build. Anti-clobber-vide : un run pauvre ne doit pas effacer du bon contenu en place.
 _CARRYOVER_FIELDS = ("tagline", "services", "team", "valeurs", "faq", "gallery", "pages")
@@ -508,7 +501,6 @@ def assemble_brand_kit(
     kit["confidence"] = confidence
     kit["_meta"] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "reviewed": False,
         "source": "mixed",
         "build_version": BUILD_VERSION,
     }
