@@ -452,6 +452,41 @@ async def test_build_brand_kit_skips_when_review_approved(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_is_brandkit_approved_true_false(monkeypatch):
+    async def approved(table, **kw):
+        return [{"status": "approved"}]
+    async def none(table, **kw):
+        return []
+    monkeypatch.setattr(BK.db, "select", approved)
+    assert await BK._is_brandkit_approved("c1") is True
+    monkeypatch.setattr(BK.db, "select", none)
+    assert await BK._is_brandkit_approved("c1") is False
+
+
+@pytest.mark.asyncio
+async def test_is_brandkit_approved_queries_agence_schema(monkeypatch):
+    captured: dict = {}
+    async def fake_select(table, **kw):
+        captured["table"] = table
+        captured.update(kw)
+        return []
+    monkeypatch.setattr(BK.db, "select", fake_select)
+    await BK._is_brandkit_approved("c1")
+    assert captured["table"] == "brand_kit_reviews"
+    assert captured["schema"] == "agence"
+    assert captured["params"]["status"] == "eq.approved"
+
+
+@pytest.mark.asyncio
+async def test_is_brandkit_approved_fail_closed_on_error(monkeypatch):
+    # PostgREST indispo (après retries) → on REFUSE de ré-écrire (fail-closed), pas de crash.
+    async def boom(table, **kw):
+        raise RuntimeError("postgrest down")
+    monkeypatch.setattr(BK.db, "select", boom)
+    assert await BK._is_brandkit_approved("c1") is True
+
+
+@pytest.mark.asyncio
 async def test_build_gallery_prefers_real_site_pair(monkeypatch):
     async def fake_rehost(cid, role, src, **kw):
         return f"https://cdn/{role}.jpg"
