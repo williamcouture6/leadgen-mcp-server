@@ -720,7 +720,7 @@ async def list_companies_to_research(
     limit: int = 20,
     *,
     require_website: bool = True,
-    track: str = "OPT",
+    track: str = "agence-ia",  # track live ; OPT retiré = jamais sélectionné sauf track="OPT" explicite
 ) -> list[dict[str, Any]]:
     """Companies sans research_json.
 

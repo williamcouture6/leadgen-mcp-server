@@ -57,6 +57,18 @@ async def test_research_reacti_no_website_excludes_contactless(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_research_default_track_is_agence_ia_never_opt(monkeypatch):
+    """Garde-fou : sans track explicite, le backlog research vise agence-ia (live),
+    JAMAIS OPT (retiré). Empêche un cron/appel sans track de re-scraper la cible OPT."""
+    fake, captured = _fake_select_factory({"companies": []})
+    monkeypatch.setattr(db_tools.db, "select", fake)
+
+    await db_tools.list_companies_to_research(limit=5)  # aucun track passé
+
+    assert captured["companies"]["track"] == "eq.agence-ia"
+
+
+@pytest.mark.asyncio
 async def test_research_require_website_true_unchanged(monkeypatch):
     tables = {"companies": [{"id": "1", "name": "A", "website": "https://a.ca",
                              "google_place_id": "g1"}]}

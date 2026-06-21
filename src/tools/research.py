@@ -459,7 +459,7 @@ def _call_llm(
     site_block: str,
     model: str = _DEFAULT_MODEL,
     max_tokens: int = 2000,
-    track: str = "OPT",
+    track: str = "agence-ia",
 ) -> LLMResult:
     """Synchronous Anthropic call. Wrapped via `asyncio.to_thread` from the endpoint.
 
@@ -474,7 +474,7 @@ def _call_llm(
     client = Anthropic(api_key=api_key)
 
     system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
-    track_norm = (track or "OPT").upper()
+    track_norm = (track or "agence-ia").upper()
     user = (
         f"## Track\n{track_norm}\n\n"
         "## Google Places data\n"
@@ -526,7 +526,7 @@ class ResearchCompanyIn(BaseModel):
     google_place_id: str
     website: str | None = None
     model: str = _DEFAULT_MODEL
-    track: str = "OPT"  # OPT | REACTI — sélectionne les critères de scoring du lead
+    track: str = "agence-ia"  # track live ; OPT retiré (legacy) — sélectionne les critères de scoring
 
 
 class ResearchCompanyOut(BaseModel):

@@ -375,7 +375,7 @@ _RESEARCH_MAX_FAILURES = 3
 async def companies_to_research(
     limit: int = 20,
     require_website: bool = True,
-    track: str = "OPT",
+    track: str = "agence-ia",  # défaut = track live ; OPT retiré = jamais scrapé sauf demande explicite
 ) -> list[dict[str, Any]]:
     """Companies sans research_json. Utilisé par n8n pour visualiser le backlog."""
     return await db_tools.list_companies_to_research(
@@ -386,7 +386,7 @@ async def companies_to_research(
 class ResearchCompanyByIdIn(BaseModel):
     company_id: str
     model: str = "claude-sonnet-4-6"
-    track: str = "OPT"  # OPT | REACTI — sélectionne les critères de scoring du lead
+    track: str = "agence-ia"  # track live ; OPT retiré (legacy) — sélectionne les critères de scoring
 
 
 class ResearchCompanyByIdOut(BaseModel):
@@ -608,7 +608,7 @@ class RunWf3In(BaseModel):
     require_website: bool = True
     concurrency: int = 4
     inter_company_sleep_seconds: float = 3.0  # déprécié — ignoré (cf. docstring)
-    track: str = "OPT"  # OPT | REACTI — isole le backlog research par track
+    track: str = "agence-ia"  # track live ; OPT retiré (legacy) — isole le backlog research par track
 
 
 class RunWf3Item(BaseModel):
