@@ -554,6 +554,7 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
 class BrandKitBuildIn(BaseModel):
     company_id: str
     model: str = "claude-sonnet-4-6"
+    wait: bool = False  # True = build synchrone (await + renvoie le résultat/erreur). Sinon async.
 
 
 class BrandKitBuildOut(BaseModel):
@@ -587,6 +588,21 @@ async def build_company_brand_kit(
     """Lance build_brand_kit en tâche de fond (build long : 30-90 s) et renvoie tout de
     suite. Le kit (status ok|needs_review) est écrit quand le build finit ; la démo
     no-store le reflète en direct. Idempotent (garde anti-clobber _meta.reviewed)."""
+    if payload.wait:
+        # Build synchrone (diagnostic / usage manuel) : on attend et on renvoie le
+        # vrai résultat ou l'erreur, au lieu de l'avaler dans la tâche de fond.
+        try:
+            result = await brand_kit_tools.build_brand_kit(payload.company_id, model=payload.model)
+        except Exception as e:  # noqa: BLE001
+            return BrandKitBuildOut(
+                company_id=payload.company_id, status="error", error_text=repr(e)[:1000]
+            )
+        return BrandKitBuildOut(
+            company_id=payload.company_id,
+            status=result.get("status", "unknown"),
+            fields_filled=result.get("fields_filled", []),
+            confidence=result.get("confidence", {}),
+        )
     background_tasks.add_task(_run_brandkit_build, payload.company_id, payload.model)
     return BrandKitBuildOut(company_id=payload.company_id, status="accepted")
 
