@@ -587,7 +587,7 @@ async def build_company_brand_kit(
 ) -> BrandKitBuildOut:
     """Lance build_brand_kit en tâche de fond (build long : 30-90 s) et renvoie tout de
     suite. Le kit (status ok|needs_review) est écrit quand le build finit ; la démo
-    no-store le reflète en direct. Idempotent (garde anti-clobber _meta.reviewed)."""
+    no-store le reflète en direct. Idempotent (garde anti-clobber via agence.brand_kit_reviews)."""
     if payload.wait:
         # Build synchrone (diagnostic / usage manuel) : on attend et on renvoie le
         # vrai résultat ou l'erreur, au lieu de l'avaler dans la tâche de fond.
