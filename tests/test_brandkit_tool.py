@@ -94,6 +94,8 @@ def test_pick_colors_falls_back_to_logo_when_no_palette_no_theme():
 async def test_build_brand_kit_orchestrates(monkeypatch):
     # company en DB (nom + adresse requis pour la vérif du match Places)
     async def fake_select(table, **kw):
+        if table == "brand_kit_reviews":
+            return []   # pas de verrou de revue → on build
         assert table == "companies"
         return [{"id": "c1", "name": "Réno Belair",
                  "address": "10 rue Principale, Laval, QC H1G 4P1",
@@ -154,6 +156,8 @@ async def test_build_brand_kit_orchestrates(monkeypatch):
 @pytest.mark.asyncio
 async def test_build_brand_kit_uses_footer_service_areas(monkeypatch):
     async def fake_select(table, **kw):
+        if table == "brand_kit_reviews":
+            return []   # pas de verrou de revue → on build
         return [{"id": "c1", "name": "Réno Belair",
                  "address": "10 rue Principale, Laval, QC H1G 4P1",
                  "website": "https://x.test", "industry": "toiture",
@@ -200,6 +204,8 @@ async def test_build_brand_kit_does_not_clobber_services_with_empty(monkeypatch)
     existing = {"services": [{"name": "Lavage de vitres", "image_url": "https://cdn/s.jpg"}],
                 "_meta": {"reviewed": False}}
     async def fake_select(table, **kw):
+        if table == "brand_kit_reviews":
+            return []   # pas de verrou de revue → on build
         return [{"id": "c1", "name": "BL Vitres", "address": "x, Laval, QC H1G 4P1",
                  "website": "https://x.test", "industry": "lavage de vitres",
                  "google_place_id": None, "brand_kit": existing}]
@@ -243,6 +249,8 @@ async def test_build_brand_kit_fills_generic_process_and_faq(monkeypatch):
     # Pages de service sans étapes/FAQ → fallback générique (process par service + FAQ
     # générale avec vrais secteurs), pour que la démo ne montre pas de sections vides.
     async def fake_select(table, **kw):
+        if table == "brand_kit_reviews":
+            return []   # pas de verrou de revue → on build
         return [{"id": "c1", "name": "BL Vitres", "address": "x, Laval, QC H1G 4P1",
                  "website": "https://x.test", "industry": "lavage de vitres",
                  "google_place_id": None, "brand_kit": None}]
@@ -290,6 +298,8 @@ async def test_build_brand_kit_guarantees_images(monkeypatch):
     # Chaque service a une image, stats.image_url et gallery TOUJOURS fournis (fallback Pexels),
     # logo déterministe via apple-touch-icon.
     async def fake_select(table, **kw):
+        if table == "brand_kit_reviews":
+            return []   # pas de verrou de revue → on build
         return [{"id": "c1", "name": "BL Vitres", "address": "11233 Av X, Montréal, QC H1G 4P1",
                  "website": "https://x.test", "industry": "lavage de vitres",
                  "google_place_id": None, "brand_kit": None}]
@@ -346,6 +356,8 @@ async def test_build_brand_kit_resolves_service_image_ids(monkeypatch):
     # Régression C1 : un image_candidate_id de service doit devenir une URL réelle
     # dans le kit persisté (jamais l'int brut).
     async def fake_select(table, **kw):
+        if table == "brand_kit_reviews":
+            return []   # pas de verrou de revue → on build
         return [{"id": "c1", "website": "https://x.test", "industry": "toiture",
                  "google_place_id": None, "brand_kit": None}]
     written = {}
@@ -390,6 +402,8 @@ async def test_build_brand_kit_resolves_service_image_ids(monkeypatch):
 @pytest.mark.asyncio
 async def test_build_brand_kit_sets_review_and_status(monkeypatch):
     async def fake_select(table, **kw):
+        if table == "brand_kit_reviews":
+            return []   # pas de verrou de revue → on build
         return [{"id": "c1", "name": "X", "address": "Y", "website": "https://x.test",
                  "industry": "lavage de vitres", "google_place_id": None, "brand_kit": None}]
     written = {}
@@ -425,10 +439,13 @@ async def test_build_brand_kit_sets_review_and_status(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_build_brand_kit_skips_reviewed(monkeypatch):
+async def test_build_brand_kit_skips_when_review_approved(monkeypatch):
+    # Verrou : une row de revue 'approved' bloque le re-build (kit préservé).
     async def fake_select(table, **kw):
-        return [{"id": "c1", "website": "https://x.test", "industry": "toiture",
-                 "google_place_id": "p", "brand_kit": {"_meta": {"reviewed": True}}}]
+        if table == "brand_kit_reviews":
+            return [{"status": "approved"}]
+        return [{"id": "c1", "name": "X", "address": "a", "website": "w",
+                 "industry": "i", "google_place_id": "p", "brand_kit": {"_meta": {}}}]
     monkeypatch.setattr(BK.db, "select", fake_select)
     out = await BK.build_brand_kit("c1")
     assert out["status"] == "skipped_already_reviewed"
