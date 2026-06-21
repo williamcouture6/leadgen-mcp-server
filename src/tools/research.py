@@ -81,10 +81,6 @@ async def fetch_place_details(google_place_id: str) -> dict[str, Any]:
 
 USER_AGENT = "Mozilla/5.0 (compatible; CoutureIA-Research/0.1; +https://couture-ia.com)"
 
-PAGE_HINTS = (
-    "propos", "about", "equipe", "team", "service", "contact", "tarif", "pricing",
-)
-
 TECH_KEYWORDS = (
     "chatbot", "intelligence artificielle", " ia ", "ai ", "automatisation",
     "agence numérique", "agence numerique", "powered by", "built with",
@@ -147,26 +143,101 @@ def _classify_email(local: str) -> str:
     return "other"
 
 
+def _decode_cfemail(hex_str: str) -> str | None:
+    """Décode un email obfusqué par Cloudflare (`<span data-cfemail="...">`).
+
+    Beaucoup de PME (WordPress derrière Cloudflare) masquent leur courriel ainsi :
+    EMAIL_REGEX ne voit alors AUCUN email en clair dans le HTML. Format Cloudflare :
+    1er octet hex = clé XOR, octets suivants = chaque caractère XORé avec la clé.
+    Renvoie None si le hex est invalide ou ne décode pas un email plausible.
+    """
+    try:
+        data = bytes.fromhex((hex_str or "").strip())
+    except ValueError:
+        return None
+    if len(data) < 2:
+        return None
+    key = data[0]
+    out = "".join(chr(b ^ key) for b in data[1:])
+    return out if "@" in out else None
+
+
+def _lcs_len(a: str, b: str) -> int:
+    """Longueur de la plus longue sous-chaîne commune (DP O(len(a)*len(b)))."""
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    best = 0
+    for ca in a:
+        cur = [0] * (len(b) + 1)
+        for j, cb in enumerate(b, 1):
+            if ca == cb:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] > best:
+                    best = cur[j]
+        prev = cur
+    return best
+
+
+_DOMAIN_SUFFIXES = (".qc.ca", ".com", ".ca", ".net", ".org", ".co", ".info", ".biz")
+_BRAND_AFFINITY_MIN = 5
+
+
+def _domain_main_label(dom: str) -> str:
+    """Label principal d'un domaine, TLD retiré (famillelajoie.com → 'famillelajoie')."""
+    dom = (dom or "").lower()
+    for suf in _DOMAIN_SUFFIXES:
+        if dom.endswith(suf):
+            dom = dom[: -len(suf)]
+            break
+    return dom.split(".")[-1] if dom else ""
+
+
+def _brand_affine(base_dom: str, email_dom: str) -> bool:
+    """Vrai si le domaine de l'email partage un radical de marque avec le site
+    (plus longue sous-chaîne commune ≥ 5 sur le label principal). Distingue un
+    domaine-frère légitime (site famillelajoie.com → info@fermehorticolelajoie.com,
+    « lajoie » commun) d'un email tiers sans lien (setjardin.ca → unionmd.ca)."""
+    return _lcs_len(_domain_main_label(base_dom), _domain_main_label(email_dom)) >= _BRAND_AFFINITY_MIN
+
+
 def _extract_emails_from_html(html: str, base_url: str) -> list[dict[str, str]]:
     """Extrait les emails d'un HTML. Filtre blocklist + emails hors-domaine.
 
-    Garde uniquement les emails dont le domaine == base_domain (ou sous-domaine).
-    Évite de scraper les emails d'autres sites mentionnés (partenaires, etc.).
+    Trois sources de candidats :
+      - **texte libre** (EMAIL_REGEX) → *domain-locked* : on ne garde que le domaine
+        du site (ou un perso nominatif), pour ne pas scraper un email partenaire
+        cité en prose.
+      - **liens `mailto:`** et **emails obfusqués Cloudflare** (`data-cfemail` /
+        `/cdn-cgi/l/email-protection#<hex>`) → *owner-placed* : posés volontairement
+        par le proprio. Acceptés même cross-domain SI le domaine partage un radical
+        de marque avec le site (domaine-frère, ex: famillelajoie.com →
+        fermehorticolelajoie.com). Un domaine tiers sans radical commun reste exclu.
     Retourne [{email, local, domain, kind}] dédupliqué.
     """
     base_dom = _domain_of(base_url)
     seen: dict[str, dict[str, str]] = {}
     soup = BeautifulSoup(html, "html.parser")
 
-    candidates: list[str] = list(EMAIL_REGEX.findall(html))
+    # (addr_brut, is_explicit) — explicit = mailto/cfemail (intentionnel, owner-placed)
+    candidates: list[tuple[str, bool]] = [(m, False) for m in EMAIL_REGEX.findall(html)]
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        if href.lower().startswith("mailto:"):
+        low = href.lower()
+        if low.startswith("mailto:"):
             addr = href[7:].split("?")[0].strip()
             if addr:
-                candidates.append(addr)
+                candidates.append((addr, True))
+        elif "/cdn-cgi/l/email-protection#" in low:
+            dec = _decode_cfemail(href.split("#", 1)[1])
+            if dec:
+                candidates.append((dec, True))
+    for el in soup.select("[data-cfemail]"):
+        dec = _decode_cfemail(el.get("data-cfemail", ""))
+        if dec:
+            candidates.append((dec, True))
 
-    for raw in candidates:
+    for raw, is_explicit in candidates:
         addr = raw.strip().strip(".,;:<>()[]\"'").lower()
         if "@" not in addr:
             continue
@@ -180,7 +251,9 @@ def _extract_emails_from_html(html: str, base_url: str) -> list[dict[str, str]]:
         kind = _classify_email(local)
         is_same_domain = bool(base_dom) and (dom == base_dom or dom.endswith("." + base_dom))
         is_personal_nominative = dom in EMAIL_PERSONAL_DOMAINS and kind == "nominative"
-        if not (is_same_domain or is_personal_nominative):
+        # owner-placed cross-domain : accepté seulement si domaine-frère (radical commun).
+        is_owner_sibling = is_explicit and bool(base_dom) and _brand_affine(base_dom, dom)
+        if not (is_same_domain or is_personal_nominative or is_owner_sibling):
             continue
         if addr in seen:
             continue
@@ -209,7 +282,41 @@ def _same_host(base: str, candidate: str) -> bool:
         return False
 
 
-async def fetch_site(url: str, max_pages: int = 3, timeout: float = 15.0) -> dict[str, Any]:
+# Tiers de priorité des pages internes (après la home) : contact d'abord (courriel/
+# téléphone), puis équipe/à-propos (décideurs), puis services. Corrige le bug où une
+# page /contactez-nous loin dans le DOM était évincée par le budget de pages.
+_PAGE_HINT_TIERS: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (0, ("contact",)),
+    (1, ("propos", "about", "equipe", "team")),
+    (2, ("service", "tarif", "pricing")),
+)
+
+
+def _rank_internal_pages(base_url: str, html: str, max_links: int) -> list[str]:
+    """Sélectionne jusqu'à `max_links` pages internes à scraper, priorisées par
+    valeur (contact > équipe/à-propos > services). Déduplique les fragments
+    (#horaire), ignore les hôtes externes, et garde l'ordre DOM à tier égal."""
+    soup = BeautifulSoup(html, "html.parser")
+    base_no_frag = base_url.split("#", 1)[0]
+    seen_urls: set[str] = set()
+    scored: list[tuple[int, int, str]] = []  # (tier, ordre_dom, url)
+    order = 0
+    for a in soup.find_all("a", href=True):
+        href = urljoin(base_url, a["href"]).split("#", 1)[0]
+        if not href or href == base_no_frag or not _same_host(base_url, href):
+            continue
+        hay = href.lower() + " " + a.get_text(" ", strip=True).lower()
+        tier = next((t for t, hints in _PAGE_HINT_TIERS if any(h in hay for h in hints)), None)
+        if tier is None or href in seen_urls:
+            continue
+        seen_urls.add(href)
+        scored.append((tier, order, href))
+        order += 1
+    scored.sort(key=lambda x: (x[0], x[1]))
+    return [u for _, _, u in scored[:max_links]]
+
+
+async def fetch_site(url: str, max_pages: int = 5, timeout: float = 15.0) -> dict[str, Any]:
     """Fetch homepage + up to (max_pages-1) linked internal pages.
 
     Returns: {url, status, pages: [{url, text}], tech_keyword_hits: [str]}
@@ -238,17 +345,7 @@ async def fetch_site(url: str, max_pages: int = 3, timeout: float = 15.0) -> dic
             em["source_url"] = str(r.url)
             emails_by_addr.setdefault(em["email"], em)
 
-        soup = BeautifulSoup(r.text, "html.parser")
-        candidates: list[str] = []
-        for a in soup.find_all("a", href=True):
-            href = urljoin(str(r.url), a["href"])
-            if not _same_host(str(r.url), href):
-                continue
-            if any(h in href.lower() or h in a.get_text(" ", strip=True).lower() for h in PAGE_HINTS):
-                if href not in candidates and href != str(r.url):
-                    candidates.append(href)
-            if len(candidates) >= max_pages - 1:
-                break
+        candidates = _rank_internal_pages(str(r.url), r.text, max_pages - 1)
 
         for href in candidates:
             try:
