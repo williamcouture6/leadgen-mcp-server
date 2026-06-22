@@ -794,39 +794,17 @@ async def _build_flex_pages(
     return assemble.finalize_flex_pages(resolved)
 
 
-_AGENCE_SCHEMA = "agence"
-
-
-async def _is_brandkit_approved(company_id: str) -> bool:
-    """Verrou anti-clobber : un kit dont la revue est 'approved'
-    (agence.brand_kit_reviews) ne doit jamais être ré-écrit par un re-scrape.
-
-    Fail-closed : si le lookup échoue (PostgREST indispo après retries), on REFUSE
-    de ré-écrire (return True). Un build manqué est récupérable (retry) ; clobberer
-    un kit approuvé/corrigé à la main ne l'est pas."""
-    try:
-        rows = await db.select(
-            "brand_kit_reviews",
-            params={"select": "status", "company_id": f"eq.{company_id}",
-                    "status": "eq.approved", "limit": "1"},
-            schema=_AGENCE_SCHEMA,
-        )
-    except Exception:  # noqa: BLE001 — lookup indispo → fail-closed (ne pas clobberer)
-        return True
-    return bool(rows)
-
-
 async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[str, Any]:
     rows = await db.select("companies", params={
-        "select": "id,name,address,website,industry,google_place_id,brand_kit",
+        "select": "id,name,address,website,industry,google_place_id,brand_kit,brand_kit_status",
         "id": f"eq.{company_id}", "limit": "1",
     })
     if not rows:
         return {"company_id": company_id, "status": "company_not_found",
                 "fields_filled": [], "confidence": {}}
     co = rows[0]
-    # Garde anti-clobber : un kit 'approved' (agence.brand_kit_reviews) n'est jamais réécrit.
-    if await _is_brandkit_approved(company_id):
+    # Garde anti-clobber : un kit 'approved' (companies.brand_kit_status) n'est jamais réécrit.
+    if co.get("brand_kit_status") == "approved":
         return {"company_id": company_id, "status": "skipped_already_reviewed",
                 "fields_filled": [], "confidence": {}}
 
