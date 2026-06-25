@@ -2,6 +2,7 @@
 garde anti-clobber, requête Pexels. Sans réseau — testable directement."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unicodedata
@@ -232,6 +233,31 @@ _INDUSTRY_ALIASES = {
     "nettoyage de vitres": "lavage de vitres",
 }
 
+# Repli par RACINE (sous-chaîne du nom d'industrie normalisé) → clé de profil. Couvre les
+# variantes réelles de la DB (ex. industry='paysagiste', 'amenagement paysager',
+# 'entretien paysager' → 'paysagement') que la clé exacte/alias rate. Sans ça, tout tombe
+# sur le défaut « home renovation » (cause du hero salle de bain sur les sites paysagistes).
+# Ordre : du plus spécifique au plus générique.
+_INDUSTRY_STEMS: list[tuple[str, str]] = [
+    ("paysag", "paysagement"),       # paysagiste, paysagement, paysager
+    ("pelouse", "paysagement"),
+    ("gazon", "paysagement"),
+    ("horticol", "paysagement"),
+    ("couvreur", "toiture"),
+    ("toiture", "toiture"),
+    ("plomb", "plomberie"),
+    ("electr", "electricite"),
+    ("vitre", "lavage de vitres"),
+    ("fenetre", "lavage de vitres"),
+    ("climatisation", "cvac"),
+    ("hvac", "cvac"),
+    ("deneig", "deneigement"),
+    ("excavation", "excavation"),
+    ("peintre", "peinture"),
+    ("peinture", "peinture"),
+    ("renov", "renovation"),
+]
+
 # Mot-clé du nom de service (normalisé, sans accent) → requête Pexels spécifique.
 # Ordre important : du plus spécifique au plus générique.
 _SERVICE_KEYWORDS: list[tuple[str, str]] = [
@@ -249,6 +275,32 @@ _SERVICE_KEYWORDS: list[tuple[str, str]] = [
     ("plomb", "plumbing repair"),
     ("electr", "electrical work"),
     ("peinture", "house painting"),
+    # --- paysagement : un mot-clé par type de service → image PERTINENTE et distincte ---
+    ("tonte", "lawn mowing service"),
+    ("pelouse", "lawn mowing green grass"),
+    ("gazon", "green lawn grass"),
+    ("cedre", "cedar hedge trimming"),
+    ("haie", "hedge trimming"),
+    ("arbuste", "shrub pruning garden"),
+    ("aeration", "lawn aeration"),
+    ("dechaumage", "lawn dethatching"),
+    ("terreautage", "lawn topdressing soil"),
+    ("ensemencement", "lawn seeding"),
+    ("fertilis", "lawn fertilization green grass"),
+    ("engrais", "lawn fertilizer green grass"),
+    ("plate-bande", "garden flower bed planting"),
+    ("platebande", "garden flower bed planting"),
+    ("plantation", "garden planting flowers"),
+    ("interbloc", "interlocking paver patio"),
+    ("pave", "paver stone patio walkway"),     # pavé-uni / pavage
+    ("dalle", "stone slab patio"),
+    ("muret", "stone retaining wall garden"),
+    ("elagage", "tree trimming arborist"),
+    ("emondage", "tree pruning arborist"),
+    ("abattage", "tree removal service"),
+    ("arbre", "tree planting yard"),
+    ("amenagement", "landscaping design backyard"),
+    ("jardin", "garden landscaping"),
     ("paysage", "landscaping"),
     ("deneig", "snow removal"),
     ("excavation", "excavation site"),
@@ -258,7 +310,24 @@ _SERVICE_KEYWORDS: list[tuple[str, str]] = [
 def _profile(industry: str | None) -> dict[str, Any]:
     n = _norm_industry(industry)
     n = _INDUSTRY_ALIASES.get(n, n)
-    return _INDUSTRY_PROFILES.get(n, _DEFAULT_PROFILE)
+    if n in _INDUSTRY_PROFILES:
+        return _INDUSTRY_PROFILES[n]
+    for stem, key in _INDUSTRY_STEMS:
+        if stem in n:
+            return _INDUSTRY_PROFILES[key]
+    return _DEFAULT_PROFILE
+
+
+def pick_index(n: int, seed: str) -> int:
+    """Index déterministe dans [0, n) dérivé d'un seed (p.ex. company|role|query).
+
+    Donne de la VARIÉTÉ entre compagnies et entre cartes pour une MÊME requête Pexels
+    (sinon `photos[0]` partout → la même image sur 6 sites et 5 cartes). Pur, idempotent.
+    n <= 1 → 0 (aucune/une seule photo)."""
+    if n <= 1:
+        return 0
+    h = hashlib.sha1(seed.encode("utf-8")).digest()
+    return int.from_bytes(h[:4], "big") % n
 
 
 def pexels_query_for_industry(industry: str | None) -> str:

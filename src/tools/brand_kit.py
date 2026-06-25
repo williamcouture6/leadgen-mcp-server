@@ -562,7 +562,9 @@ async def fetch_facebook_brand(fb_url: str) -> dict[str, Any]:
     return parse.parse_facebook_html(r.text)
 
 
-async def fetch_pexels_image(query: str) -> tuple[bytes, str] | None:
+async def fetch_pexels_image(
+    query: str, *, seed: str = "", per_page: int = 10
+) -> tuple[bytes, str] | None:
     key = settings().pexels_api_key
     if not key:
         return None
@@ -570,12 +572,16 @@ async def fetch_pexels_image(query: str) -> tuple[bytes, str] | None:
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
         try:
             r = await client.get(_PEXELS_SEARCH, headers=headers,
-                                 params={"query": query, "orientation": "landscape", "per_page": "1"})
+                                 params={"query": query, "orientation": "landscape",
+                                         "per_page": str(per_page)})
             r.raise_for_status()
             photos = r.json().get("photos") or []
             if not photos:
                 return None
-            img_url = photos[0]["src"].get("landscape") or photos[0]["src"].get("large")
+            # Pas toujours photos[0] : index dérivé du seed (company|role|query) → une même
+            # requête donne une image DIFFÉRENTE par compagnie/carte (fin du hero répété).
+            photo = photos[assemble.pick_index(len(photos), seed)]
+            img_url = photo["src"].get("landscape") or photo["src"].get("large")
             ri = await client.get(img_url)
             ri.raise_for_status()
             return ri.content, ri.headers.get("content-type", "image/jpeg").split(";")[0]
@@ -635,9 +641,15 @@ async def _resolve_card_images(
         card[out_field] = await rehost_one(company_id, role, src) if src else None
 
 
-async def _pexels_rehost(company_id: str, role: str, query: str) -> str | None:
-    """Pexels(query) → ré-héberge dans brand-assets → URL publique (ou None, fail-soft)."""
-    px = await fetch_pexels_image(query)
+async def _pexels_rehost(
+    company_id: str, role: str, query: str, *, seed_key: str | None = None
+) -> str | None:
+    """Pexels(query) → ré-héberge dans brand-assets → URL publique (ou None, fail-soft).
+
+    seed_key (défaut: role) discrimine l'image choisie : passer le NOM du service évite que
+    deux services à requête identique tombent sur la même photo."""
+    seed = f"{company_id}|{seed_key or role}|{query}"
+    px = await fetch_pexels_image(query, seed=seed)
     if not px:
         return None
     data, ctype = px
@@ -655,7 +667,8 @@ async def _ensure_service_images(
         if svc.get("image_url"):
             continue
         svc["image_url"] = await _pexels_rehost(
-            company_id, "service", assemble.pexels_query_for_service(svc.get("name"), industry)
+            company_id, "service", assemble.pexels_query_for_service(svc.get("name"), industry),
+            seed_key=f"service:{svc.get('name') or ''}",
         )
 
 

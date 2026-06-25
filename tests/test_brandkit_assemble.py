@@ -349,6 +349,36 @@ def test_finalize_flex_pages_slugify_reserved_dedupe():
     assert out[0]["blocs"][0]["corps"] == "a"
 
 
+def test_pexels_profile_matches_paysagiste_variants():
+    # BUG : industry='paysagiste' tombait sur le défaut « home renovation » (image salle de bain).
+    for ind in ["paysagiste", "Paysagiste", "aménagement paysager", "entretien paysager", "paysagement"]:
+        q = A.pexels_query_for_industry(ind).lower()
+        assert ("landscap" in q) or ("garden" in q), (ind, q)
+    assert "renovation" not in A.pexels_query_for_industry("paysagiste").lower()
+
+
+def test_pexels_query_for_service_landscaping_keywords():
+    f = lambda n: A.pexels_query_for_service(n, "paysagiste").lower()
+    assert "lawn" in f("Tonte de pelouse")
+    assert "hedge" in f("Taille / Rabattage de haies et d'arbustes")
+    assert "aeration" in f("Aération / Déchaumage")
+    # services distincts → requêtes distinctes (sinon même image)
+    assert f("Tonte de pelouse") != f("Terreautage et Ensemencement")
+    # service paysagiste sans mot-clé reconnu → requête paysagement (jamais rénovation)
+    g = f("Ouverture / Fermeture de terrains")
+    assert ("landscap" in g) or ("garden" in g) or ("lawn" in g)
+    assert "renovation" not in g
+
+
+def test_pick_index_deterministic_varies_by_seed_and_safe():
+    assert A.pick_index(10, "x|hero|q") == A.pick_index(10, "x|hero|q")   # déterministe
+    idxs = {A.pick_index(10, f"company{i}|hero|landscaping crew") for i in range(8)}
+    assert len(idxs) >= 2                          # variété entre compagnies
+    assert 0 <= A.pick_index(10, "z") < 10
+    assert A.pick_index(0, "z") == 0               # garde : aucune photo
+    assert A.pick_index(1, "z") == 0
+
+
 def test_derive_review_flags_verbatim_flex_pages():
     kit = {
         "confidence": {},

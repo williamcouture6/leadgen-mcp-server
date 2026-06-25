@@ -129,7 +129,7 @@ async def test_build_brand_kit_orchestrates(monkeypatch):
         return f"https://cdn/{cid}/{role}.png"
     async def fake_rehost_bytes(cid, role, url, **kw):
         return (f"https://cdn/{cid}/{role}.png", b"x")
-    async def fake_pexels(query):
+    async def fake_pexels(query, **_):
         return None
 
     monkeypatch.setattr(BK, "fetch_site_rich", fake_rich)
@@ -175,7 +175,7 @@ async def test_build_brand_kit_uses_footer_service_areas(monkeypatch):
                 "gallery_pairs": [], "pages": [], "service_areas": areas}
     def fake_llm(cands, text, industry, **kw):
         return {"service_areas": ["Montréal"]}  # LLM sort une liste partielle/erronée
-    async def fake_pexels(query):
+    async def fake_pexels(query, **_):
         return None
     async def fake_rehost(cid, role, url, **kw):
         return None
@@ -219,7 +219,7 @@ async def test_build_brand_kit_does_not_clobber_services_with_empty(monkeypatch)
                 "gallery_pairs": [], "pages": [], "service_areas": []}
     def fake_llm(cands, text, industry, **kw):
         return {"tagline": "Slogan frais"}  # build pauvre : aucun service
-    async def fake_pexels(query):
+    async def fake_pexels(query, **_):
         return None
     async def fake_rehost(cid, role, url, **kw):
         return None
@@ -264,7 +264,7 @@ async def test_build_brand_kit_fills_generic_process_and_faq(monkeypatch):
     def fake_llm(cands, text, industry, **kw):
         return {"tagline": "x", "services": [{"name": "Lavage de vitres"},
                                              {"name": "Nettoyage de gouttières"}]}
-    async def fake_pexels(query):
+    async def fake_pexels(query, **_):
         return None
     async def fake_rehost(cid, role, url, **kw):
         return None
@@ -317,7 +317,7 @@ async def test_build_brand_kit_guarantees_images(monkeypatch):
         return f"https://cdn/{cid}/{role}.jpg"
     async def fake_rehost_bytes(cid, role, src, **kw):
         return (f"https://cdn/{cid}/{role}.jpg", b"img")
-    async def fake_pexels(query):
+    async def fake_pexels(query, **_):
         return (b"img", "image/jpeg")   # Pexels répond pour toute requête
 
     monkeypatch.setattr(BK, "fetch_site_rich", fake_rich)
@@ -368,7 +368,7 @@ async def test_build_brand_kit_resolves_service_image_ids(monkeypatch):
                 "valeurs": []}
     async def fake_rehost(cid, role, src, **kw):
         return f"https://cdn/{cid}/{role}.jpg"
-    async def fake_pexels(query):
+    async def fake_pexels(query, **_):
         return None
     monkeypatch.setattr(BK, "fetch_site_rich", fake_rich)
     monkeypatch.setattr(BK, "_call_brandkit_llm", fake_llm)
@@ -409,7 +409,7 @@ async def test_build_brand_kit_sets_review_and_status(monkeypatch):
         return {"services": [], "valeurs": [], "faq": [], "stats": {}}
     async def fake_fb(url):
         return {}
-    async def fake_pexels(query):
+    async def fake_pexels(query, **_):
         return None
     monkeypatch.setattr(BK, "fetch_site_rich", fake_rich)
     monkeypatch.setattr(BK, "fetch_facebook_brand", fake_fb)
@@ -455,7 +455,7 @@ async def test_build_gallery_site_half_pair_falls_through(monkeypatch):
     async def fake_rehost(cid, role, src, **kw):
         return None if role == "gallery-after" else f"https://cdn/{role}.jpg"
     monkeypatch.setattr(BK, "rehost_one", fake_rehost)
-    async def no_pexels(query):
+    async def no_pexels(query, **_):
         return None
     monkeypatch.setattr(BK, "fetch_pexels_image", no_pexels)
     out = await BK._build_gallery(
