@@ -104,21 +104,25 @@ SECTOR_CATALOG: dict[str, list[str]] = {
     ],
 }
 
-# Catalogue de sourcing REACTI (track REACTI) — verticales service résidentiel
-# récurrent/saisonnier. Retirées du catalogue OPT le 2026-05-30 (anti double-fichage,
-# voir CLAUDE.md). Le sourcing REACTI tague track='REACTI' à l'insert.
+# Catalogue de sourcing agence-ia (track 'agence-ia') — verticales service
+# résidentiel récurrent/saisonnier. Retirées du catalogue OPT le 2026-05-30
+# (anti double-fichage, voir CLAUDE.md). Tague track='agence-ia' à l'insert.
+#
+# INVARIANT — 1 secteur réel = 1 seule entrée = 1 seul label `industry`.
+# `sector` sert À LA FOIS de mot-clé Google ET de valeur stockée
+# (`companies.industry` + `sourcing_runs.sector`) : deux entrées pour la même
+# chose re-splittent le label. NE PAS ajouter de synonyme comme entrée séparée.
+# Décision 2026-08-05 (voir migration 0026) :
+#   - "tonte de pelouse" fusionnée dans "tonte de gazon" (même secteur).
+#   - "installation de piscine" + "piscines et spas" retirées : l'offre vise
+#     l'ENTRETIEN récurrent, pas l'installation one-shot ni le détaillant.
+# lib.sourcing_filters reste le filet anti-junk (spas détente, chaînes retail).
 REACTI_SECTOR_CATALOG: dict[str, list[str]] = {
     "commerce_local": [
         "entrepreneur en déneigement",
         "paysagiste",
         "tonte de gazon",
-        "tonte de pelouse",
         "exterminateur",
-        # Anciennement "piscines et spas" — le mot "spa" ramenait des spas
-        # bien-être (Strøm, Nordik, Spa Escale Santé…), 20 entrées hors-cible
-        # (bug 2026-06-12). Resserré vers l'installateur/service récurrent, qui
-        # est le vrai contracteur ICP. lib.sourcing_filters reste le filet.
-        "installation de piscine",
         "entretien de piscine",
         "lavage de vitres",
     ],
