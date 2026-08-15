@@ -374,3 +374,108 @@ async def test_run_wf6_compte_les_sauts_sans_config(monkeypatch) -> None:
     assert out.skipped_no_site_config == 2
     assert out.skipped_other == 0
     assert out.errors == 0
+
+
+async def test_supprime_sans_config_est_marque_failed(monkeypatch) -> None:
+    """Un désabonné dont l'entreprise n'a pas de config doit sortir en
+    skipped_suppressed et être marqué failed — sinon il reste draft à vie et
+    squatte la tête de la file FIFO."""
+    from src.tools import send
+
+    updates, add_lead = _wire(monkeypatch, msg=_msg(), site_config_rows=[])
+    monkeypatch.setattr(send, "_is_suppressed",
+                        AsyncMock(return_value=(True, "email on suppression (optout)")))
+
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+
+    assert out.status == "skipped_suppressed"
+    add_lead.assert_not_awaited()
+    assert any(p.get("status") == "failed" for _, p in updates)
+
+
+def _wf6_wire(monkeypatch, drafts: list[dict], *, ok_ids: set[str]):
+    """Stub run_wf6 : renvoie `drafts` à la requête, et fait réussir seulement
+    les message_id de `ok_ids`. Retourne la liste des params de requête vus."""
+    from src.tools import send
+
+    seen_params: list[dict] = []
+
+    async def _select(table, *, params=None, schema=None):
+        if table == "messages":
+            seen_params.append(params or {})
+            limit = int((params or {}).get("limit") or len(drafts))
+            return drafts[:limit]
+        return []
+
+    async def _send_one(payload):
+        if payload.message_id in ok_ids:
+            return send.SendMessageOut(message_id=payload.message_id, status="ok",
+                                       provider_message_id=f"lead-{payload.message_id}")
+        return send.SendMessageOut(
+            message_id=payload.message_id, status="skipped_no_site_config",
+            skipped_reason="aucun config produit (site_configs absent)",
+        )
+
+    monkeypatch.setenv("INSTANTLY_CAMPAIGN_ID_REACTI", "camp-agence")
+    monkeypatch.setattr(send, "count_pushed_today", AsyncMock(return_value=0))
+    monkeypatch.setattr(send.db, "select", _select)
+    monkeypatch.setattr(send, "send_one_message", _send_one)
+    return seen_params
+
+
+def _drafts(n: int) -> list[dict]:
+    return [
+        {"id": f"m-{i}", "to_email": f"a{i}@x.ca",
+         "created_at": f"2026-08-14T00:{i:02d}:00Z", "track": "agence-ia"}
+        for i in range(n)
+    ]
+
+
+async def test_les_bloques_ne_bloquent_pas_la_file(monkeypatch) -> None:
+    """Quatre bloqués en tête de file ne doivent pas empêcher les deux
+    envoyables derrière eux de partir. Sans sur-récolte, limit=2 ne verrait
+    jamais plus loin que les deux premiers bloqués."""
+    from src.tools import send
+
+    drafts = _drafts(6)
+    _wf6_wire(monkeypatch, drafts, ok_ids={"m-4", "m-5"})
+
+    out = await send.run_wf6(send.RunWf6In(limit=2, track="agence-ia"))
+
+    assert out.pushed == 2
+    assert out.skipped_no_site_config == 4
+    assert out.processed == 6
+
+
+async def test_la_sur_recolte_sarrete_a_la_limite(monkeypatch) -> None:
+    """La sur-récolte regarde plus loin, elle n'envoie pas plus : le daily cap
+    reste la limite dure."""
+    from src.tools import send
+
+    drafts = _drafts(10)
+    _wf6_wire(monkeypatch, drafts, ok_ids={d["id"] for d in drafts})
+
+    out = await send.run_wf6(send.RunWf6In(limit=2, track="agence-ia"))
+
+    assert out.pushed == 2
+    assert out.processed == 2  # on s'arrête dès que la limite est atteinte
+
+
+async def test_la_requete_demande_plus_que_la_limite(monkeypatch) -> None:
+    from src.tools import send
+
+    seen = _wf6_wire(monkeypatch, _drafts(30), ok_ids=set())
+    await send.run_wf6(send.RunWf6In(limit=2, track="agence-ia"))
+
+    assert seen[0]["limit"] == "10"  # 2 × DRAFT_OVERFETCH_FACTOR
+
+
+async def test_la_sur_recolte_est_plafonnee(monkeypatch) -> None:
+    """Un cap absolu : une file de 5 000 drafts bloqués ne doit pas faire
+    lire 5 000 lignes à chaque passe."""
+    from src.tools import send
+
+    seen = _wf6_wire(monkeypatch, _drafts(50), ok_ids=set())
+    await send.run_wf6(send.RunWf6In(limit=50, track="agence-ia", daily_cap=500))
+
+    assert seen[0]["limit"] == str(send.DRAFT_OVERFETCH_MAX)

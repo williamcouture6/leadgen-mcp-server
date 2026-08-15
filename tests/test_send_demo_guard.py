@@ -131,6 +131,10 @@ async def test_persistent_failure_pings_alerts_once(monkeypatch) -> None:
         [{"id": "ct-1", "first_name": "Jean", "last_name": "Roy",
           "email": "jean@plomberiex.ca", "company_id": "co-1"}],
         [{"name": "Plomberie X", "domain": "plomberiex.ca"}],
+        # Ce test n'échoue pas _is_suppressed : le vrai contrôle tourne, et il
+        # remonte maintenant AVANT la garde config (2 selects, email + domaine).
+        [],
+        [],
         [{"verdict": "ok", "gele": False}],  # P4.10 : garde config produit
     ]
     monkeypatch.setattr(send.db, "select", AsyncMock(side_effect=selects))
@@ -164,6 +168,9 @@ async def test_persistent_failure_no_second_ping(monkeypatch) -> None:
         [{"id": "ct-1", "first_name": "Jean", "last_name": "Roy",
           "email": "jean@plomberiex.ca", "company_id": "co-1"}],
         [{"name": "Plomberie X", "domain": "plomberiex.ca"}],
+        # idem : suppression (email + domaine) avant la garde config
+        [],
+        [],
         [{"verdict": "ok", "gele": False}],  # P4.10 : garde config produit
     ]
     monkeypatch.setattr(send.db, "select", AsyncMock(side_effect=selects))

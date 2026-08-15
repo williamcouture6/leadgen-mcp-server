@@ -62,6 +62,14 @@ SITE_CONFIG_ALERT_MARKER = "site_config_alert_sent"
 # Un marqueur unique les additionnerait et le compteur du résumé quotidien
 # dériverait vers le haut sans jamais redescendre.
 SITE_CONFIG_WAIT_MARKER = "site_config_attente"
+# Sur-récolte (P4.10) : un draft bloqué par la garde config reste 'draft', donc
+# la requête FIFO le re-sélectionne à chaque passe. Sans regarder plus loin que
+# `limit`, il suffit de `limit` leads sans config en tête de file pour que WF-6
+# ne pousse plus jamais rien — même une fois les configs suivants produits.
+# On lit donc plus de candidats que nécessaire, et on s'arrête dès que `limit`
+# messages sont partis. Le plafond borne le coût quand la file est longue.
+DRAFT_OVERFETCH_FACTOR = 5
+DRAFT_OVERFETCH_MAX = 100
 
 
 # ----------------------------------------------------------------------
@@ -314,7 +322,30 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     ) if contact.get("company_id") else []
     company = company_rows[0] if company_rows else {}
 
-    # 3b) Garde config produit (P4.10) — pas de site refait par le pipeline de
+    # 3b) Defense — suppression list (post-draft, pre-push). Un opt-out reçu
+    # après la création du draft doit bloquer ici. Placée AVANT la garde config
+    # (P4.10) à dessein : c'est un rejet TERMINAL qui marque le message
+    # 'failed'. Derrière la garde, un désabonné sans config resterait 'draft'
+    # à vie et squatterait la tête de la file FIFO de run_wf6.
+    suppressed, reason = await _is_suppressed(msg["to_email"], company.get("domain"))
+    if suppressed:
+        # On marque le message 'failed' pour que les futurs runs ne le re-tentent pas.
+        try:
+            await db.update(
+                "messages",
+                {"status": "failed", "compliance_notes": (
+                    (msg.get("compliance_notes") or "") + f" | send_blocked: {reason}"
+                ).strip(" |")},
+                filters={"id": f"eq.{payload.message_id}"},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return SendMessageOut(
+            message_id=payload.message_id, status="skipped_suppressed",
+            skipped_reason=reason,
+        )
+
+    # 3c) Garde config produit (P4.10) — pas de site refait par le pipeline de
     # refonte, pas de courriel. Tourne AVANT la frappe démo : inutile de créer
     # une ligne agence.demo_sites pour un lead qui ne partira pas.
     if (msg.get("track") or "OPT") == "agence-ia":
@@ -329,7 +360,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
                 skipped_reason=decision.reason,
             )
 
-    # 3c) Garde demo (P3) — aucun email agence-ia ne part sans lien démo unique.
+    # 3d) Garde demo (P3) — aucun email agence-ia ne part sans lien démo unique.
     # Si manquant, on retente la frappe ici ; échec persistant => skip sans push.
     if (msg.get("track") or "OPT") == "agence-ia":
         needs_demo = (not msg.get("demo_url")) or (DEMO_URL_PLACEHOLDER in (msg.get("body_text") or ""))
@@ -369,26 +400,6 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
                     message_id=payload.message_id, status="skipped_no_demo",
                     skipped_reason=f"demo_generation_failed: {e!r}",
                 )
-
-    # 4) Defense — suppression list (post-draft, pre-push). Un opt-out reçu
-    # après la création du draft doit bloquer ici.
-    suppressed, reason = await _is_suppressed(msg["to_email"], company.get("domain"))
-    if suppressed:
-        # On marque le message 'failed' pour que les futurs runs ne le re-tentent pas.
-        try:
-            await db.update(
-                "messages",
-                {"status": "failed", "compliance_notes": (
-                    (msg.get("compliance_notes") or "") + f" | send_blocked: {reason}"
-                ).strip(" |")},
-                filters={"id": f"eq.{payload.message_id}"},
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        return SendMessageOut(
-            message_id=payload.message_id, status="skipped_suppressed",
-            skipped_reason=reason,
-        )
 
     # 5) Push à Instantly (ou simule si dry_run)
     provider_message_id: str | None = None
@@ -540,11 +551,15 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             "compliance_check_passed": "is.true",
             "track": f"eq.{track}",
             "order": "created_at.asc",
-            "limit": str(effective_limit),
+            "limit": str(min(effective_limit * DRAFT_OVERFETCH_FACTOR, DRAFT_OVERFETCH_MAX)),
         },
     )
 
     for d in drafts:
+        # La sur-récolte regarde plus loin dans la file ; elle n'envoie pas
+        # plus. Le daily cap reste la limite dure.
+        if pushed >= effective_limit:
+            break
         try:
             res = await send_one_message(
                 SendMessageIn(
