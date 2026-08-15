@@ -6,6 +6,10 @@ Ce module DÉCIDE et rien d'autre : il ne pose pas de note, n'alerte personne et
 n'écrit jamais en base. `tools/send.py` traduit la décision en statut, note et
 alerte Slack.
 
+L'appelant est aussi responsable de la garde de track : n'appeler cette garde
+que pour `track == 'agence-ia'`. Le track legacy OPT n'a ni démo ni config de
+site, donc l'appliquer partout bloquerait tous ses drafts.
+
 Design : docs/superpowers/specs/2026-08-14-p4.10-garde-envoi-site-config-design.md
 """
 from __future__ import annotations

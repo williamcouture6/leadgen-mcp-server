@@ -59,6 +59,8 @@ async def test_a_verifier_bloque(monkeypatch) -> None:
     d = await gate.check_site_config("co-1")
     assert d.allowed is False
     assert "a-verifier" in (d.reason or "")
+    # Refus ordinaire, pas une panne : l'appelant doit rester silencieux.
+    assert d.read_failed is False
 
 
 async def test_refuse_bloque(monkeypatch) -> None:
@@ -69,6 +71,8 @@ async def test_refuse_bloque(monkeypatch) -> None:
     d = await gate.check_site_config("co-1")
     assert d.allowed is False
     assert "refuse" in (d.reason or "")
+    # Refus ordinaire, pas une panne : l'appelant doit rester silencieux.
+    assert d.read_failed is False
 
 
 async def test_verdict_inconnu_bloque(monkeypatch) -> None:
@@ -81,6 +85,8 @@ async def test_verdict_inconnu_bloque(monkeypatch) -> None:
     d = await gate.check_site_config("co-1")
     assert d.allowed is False
     assert "inconnu" in (d.reason or "")
+    # Refus ordinaire, pas une panne : l'appelant doit rester silencieux.
+    assert d.read_failed is False
 
 
 async def test_verdict_vide_bloque(monkeypatch) -> None:
@@ -90,6 +96,10 @@ async def test_verdict_vide_bloque(monkeypatch) -> None:
                         AsyncMock(return_value=[{"verdict": None, "gele": False}]))
     d = await gate.check_site_config("co-1")
     assert d.allowed is False
+    # Un verdict vide tombe dans le cas « inconnu », pas dans une panne : la
+    # raison doit le dire et l'appelant doit rester silencieux.
+    assert "inconnu" in (d.reason or "")
+    assert d.read_failed is False
 
 
 async def test_sans_company_id_bloque_sans_lire(monkeypatch) -> None:
