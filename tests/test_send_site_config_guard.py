@@ -139,3 +139,98 @@ async def test_garde_tourne_avant_la_frappe_demo(monkeypatch) -> None:
     out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
     assert out.status == "skipped_no_site_config"
     ensure.assert_not_awaited()
+
+
+_NOTE_MARKER = "site_config_bloque"
+_ALERT_MARKER = "site_config_alert_sent"
+
+
+async def test_note_posee_une_fois(monkeypatch) -> None:
+    from src.tools import send
+
+    updates, _ = _wire(monkeypatch, msg=_msg(), site_config_rows=[])
+    await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+
+    notes = [p["compliance_notes"] for t, p in updates
+             if t == "messages" and "compliance_notes" in p]
+    assert len(notes) == 1
+    assert _NOTE_MARKER in notes[0]
+    assert "absent" in notes[0]
+
+
+async def test_note_pas_reecrite_a_la_passe_suivante(monkeypatch) -> None:
+    """Le cron repasse tant que le config n'existe pas — le champ ne doit pas
+    grossir à chaque passe."""
+    from src.tools import send
+
+    updates, _ = _wire(
+        monkeypatch,
+        msg=_msg(compliance_notes=f"deja vu | {_NOTE_MARKER}: aucun config produit"),
+        site_config_rows=[],
+    )
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+
+    assert out.status == "skipped_no_site_config"
+    assert not [p for t, p in updates if "compliance_notes" in p]
+
+
+async def test_aucun_slack_quand_la_ligne_manque(monkeypatch) -> None:
+    """Un config pas encore produit est un état d'attente normal tant que le
+    lot nocturne P4.11 n'a pas tourné. Alerter là-dessus noierait le signal."""
+    from src.tools import send
+
+    _wire(monkeypatch, msg=_msg(), site_config_rows=[])
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(send.slack, "notify", notify)
+
+    await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+    notify.assert_not_awaited()
+
+
+async def test_lecture_cassee_pingue_alertes_une_fois(monkeypatch) -> None:
+    """Une garde cassée bloquerait TOUS les envois agence-ia en silence."""
+    from src.tools import send
+
+    updates, add_lead = _wire(monkeypatch, msg=_msg(), site_config_rows=[],
+                              read_boom=True)
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(send.slack, "notify", notify)
+
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+
+    assert out.status == "skipped_no_site_config"
+    assert "lecture_echouee" in (out.skipped_reason or "")
+    add_lead.assert_not_awaited()
+    notify.assert_awaited_once()
+    assert notify.await_args.kwargs["category"] == "alerts"
+    notes = [p["compliance_notes"] for t, p in updates if "compliance_notes" in p]
+    assert notes and _ALERT_MARKER in notes[0]
+
+
+async def test_lecture_cassee_pas_de_second_ping(monkeypatch) -> None:
+    from src.tools import send
+
+    _wire(monkeypatch,
+          msg=_msg(compliance_notes=f"{_NOTE_MARKER}: lecture_echouee | {_ALERT_MARKER}"),
+          site_config_rows=[], read_boom=True)
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(send.slack, "notify", notify)
+
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+    assert out.status == "skipped_no_site_config"
+    notify.assert_not_awaited()
+
+
+async def test_note_qui_echoue_ne_casse_pas_le_saut(monkeypatch) -> None:
+    """Une note qui ne s'écrit pas ne doit pas transformer un skip propre en
+    erreur — le skip est la décision qui compte."""
+    from src.tools import send
+
+    _wire(monkeypatch, msg=_msg(), site_config_rows=[])
+
+    async def _boom(*a, **k):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(send.db, "update", _boom)
+
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+    assert out.status == "skipped_no_site_config"

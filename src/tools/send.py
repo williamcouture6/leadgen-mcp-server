@@ -6,6 +6,10 @@ Logique :
   2. Defense in depth :
      - Warmup gate (WARMUP_END_DATE) — refuse l'envoi pendant le warmup même
        si WF-5 a approuvé (cas où le draft a été approuvé avant la fenêtre).
+     - Garde config produit (P4.10) — track agence-ia : pas de site refait par
+       le pipeline (`agence.site_configs` verdict 'ok'), pas de courriel.
+     - Garde démo (P3) — track agence-ia : pas de lien démo unique dans le
+       corps, pas de courriel (frappe retentée ici avant de sauter).
      - Suppression list — check email + domaine du contact contre
        suppression_list (opt-outs, hard bounces, DNCL).
      - Daily cap — limite N pushs/jour, fenêtre America/Toronto.
@@ -151,9 +155,51 @@ async def _is_suppressed(email: str | None, domain: str | None) -> tuple[bool, s
 # Core
 # ----------------------------------------------------------------------
 
-async def _trace_site_config_block(*, message_id, msg, company_id, decision) -> None:
-    """Trace un saut P4.10. Étoffée à la tâche 3 (note + Slack)."""
-    return None
+async def _trace_site_config_block(
+    *, message_id: str, msg: dict[str, Any], company_id: str | None,
+    decision: Any,
+) -> None:
+    """Trace un saut P4.10 dans `compliance_notes`, et n'alerte que sur panne.
+
+    Deux marqueurs distincts, deux régimes :
+      - `site_config_bloque` : posé UNE fois, silencieux. Un config pas encore
+        produit est un état d'attente normal tant que le lot nocturne n'a pas
+        tourné ; le cron repasse et ne doit pas faire grossir le champ.
+      - `site_config_alert_sent` : posé UNE fois, avec un ping #alertes, quand
+        c'est la LECTURE qui a échoué. Ce cas-là bloque tous les envois
+        agence-ia d'un coup — il ne peut pas rester silencieux.
+    """
+    notes = msg.get("compliance_notes") or ""
+    additions: list[str] = []
+
+    if SITE_CONFIG_NOTE_MARKER not in notes:
+        additions.append(f"{SITE_CONFIG_NOTE_MARKER}: {decision.reason}")
+
+    if decision.read_failed and SITE_CONFIG_ALERT_MARKER not in notes:
+        await slack.notify(
+            text=(
+                f":rotating_light: Lecture de `agence.site_configs` impossible "
+                f"— envoi bloqué.\n"
+                f"message_id={message_id} contact_id={msg.get('contact_id')} "
+                f"company_id={company_id}\nraison: {decision.reason}\n"
+                f"(Vérifier que le schéma `agence` est exposé à l'API REST.)"
+            ),
+            category="alerts",
+            context="p4_10_site_config_guard",
+        )
+        additions.append(SITE_CONFIG_ALERT_MARKER)
+
+    if not additions:
+        return
+
+    new_notes = " | ".join([notes, *additions]).strip(" |")
+    try:
+        await db.update(
+            "messages", {"compliance_notes": new_notes},
+            filters={"id": f"eq.{message_id}"},
+        )
+    except Exception:  # noqa: BLE001 — une note perdue ne casse pas un skip
+        pass
 
 
 async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
