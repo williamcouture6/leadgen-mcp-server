@@ -173,7 +173,11 @@ async def _trace_site_config_block(
       - `site_config_bloque` : posé UNE fois, silencieux aussi, mais pour un
         refus que le temps ne répare pas (verdict qui refuse, pas de
         company_id, lecture cassée) — celui-là demande une décision humaine.
-        Les deux s'excluent : un message n'en porte jamais qu'un.
+        Un message peut finir par porter les DEUX : il a attendu, puis le lot
+        nocturne a produit un verdict qui refuse. On n'efface pas l'attente,
+        on ajoute le refus — sinon le lead resterait compté « en attente »
+        pour toujours. Qui lit ces marqueurs tranche par le plus actionnable :
+        `bloque` présent gagne sur `attente` présent.
       - `site_config_alert_sent` : posé UNE fois, avec un ping #alertes, quand
         c'est la LECTURE qui a échoué. Ce cas-là bloque tous les envois
         agence-ia d'un coup — il ne peut pas rester silencieux.
@@ -182,7 +186,7 @@ async def _trace_site_config_block(
     additions: list[str] = []
 
     marqueur = SITE_CONFIG_WAIT_MARKER if decision.attente else SITE_CONFIG_NOTE_MARKER
-    if SITE_CONFIG_WAIT_MARKER not in notes and SITE_CONFIG_NOTE_MARKER not in notes:
+    if marqueur not in notes:
         additions.append(f"{marqueur}: {decision.reason}")
 
     if decision.read_failed and SITE_CONFIG_ALERT_MARKER not in notes:

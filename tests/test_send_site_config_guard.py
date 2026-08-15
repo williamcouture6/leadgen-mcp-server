@@ -162,14 +162,15 @@ async def test_note_posee_une_fois(monkeypatch) -> None:
 
 
 async def test_note_pas_reecrite_a_la_passe_suivante(monkeypatch) -> None:
-    """Le cron repasse tant que le config n'existe pas — le champ ne doit pas
-    grossir à chaque passe."""
+    """Le cron repasse tant que le verdict n'est pas débloqué — le champ ne
+    doit pas grossir à chaque passe. Pendant du test d'attente : ici c'est le
+    régime « à relire » qui doit être idempotent."""
     from src.tools import send
 
     updates, _ = _wire(
         monkeypatch,
-        msg=_msg(compliance_notes=f"deja vu | {_NOTE_MARKER}: aucun config produit"),
-        site_config_rows=[],
+        msg=_msg(compliance_notes=f"deja vu | {_NOTE_MARKER}: verdict='a-verifier'"),
+        site_config_rows=[{"verdict": "a-verifier"}],
     )
     out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
 
@@ -274,6 +275,27 @@ async def test_un_marqueur_dattente_deja_pose_ne_se_reecrit_pas(monkeypatch) -> 
     )
     await send.send_one_message(send.SendMessageIn(message_id="m-1"))
     assert not [p for _, p in updates if "compliance_notes" in p]
+
+
+async def test_lattente_devient_une_relecture_quand_le_verdict_arrive(monkeypatch) -> None:
+    """Le lot nocturne finit par produire le config — avec un verdict qui
+    refuse. Le lead a cessé d'attendre : il faut qu'il cesse d'être compté
+    comme tel, sinon « en attente de config N » dérive vers le haut sans
+    jamais redescendre. Les deux marqueurs coexistent, l'histoire reste."""
+    from src.tools import send
+
+    updates, _ = _wire(
+        monkeypatch,
+        msg=_msg(compliance_notes=f"{_WAIT_MARKER}: aucun config produit"),
+        site_config_rows=[{"verdict": "a-verifier"}],
+    )
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+
+    assert out.status == "skipped_no_site_config"
+    notes = [p["compliance_notes"] for _, p in updates if "compliance_notes" in p]
+    assert len(notes) == 1
+    assert _WAIT_MARKER in notes[0]
+    assert _NOTE_MARKER in notes[0]
 
 
 async def test_les_notes_existantes_survivent(monkeypatch) -> None:
