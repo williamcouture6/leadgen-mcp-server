@@ -41,12 +41,18 @@ from ..lib import slack
 from ..lib.compliance_checks import check_warmup_window
 from ..lib.demo_generator import DEMO_URL_PLACEHOLDER, ensure_demo_site, inject_demo_link
 from ..lib.platform_domains import is_email_on_blocked_domain
+from ..lib.site_config_gate import check_site_config
 
 DAILY_CAP_DEFAULT = 10
 DAILY_CAP_ENV = "INSTANTLY_DAILY_CAP"
 SEND_TIMEZONE = "America/Toronto"
 # Anti-spam de l'alerte demo (P3) : 1 ping #alertes par message coincé, pas par run.
 DEMO_ALERT_MARKER = "demo_alert_sent"
+# Traçage P4.10, marqueurs distincts : la note dit « ce message attend son
+# config », l'alerte dit « la lecture est cassée ». Un lead peut connaître les
+# deux, un marqueur unique masquerait le second.
+SITE_CONFIG_NOTE_MARKER = "site_config_bloque"
+SITE_CONFIG_ALERT_MARKER = "site_config_alert_sent"
 
 
 # ----------------------------------------------------------------------
@@ -64,7 +70,7 @@ class SendMessageIn(BaseModel):
 
 class SendMessageOut(BaseModel):
     message_id: str
-    status: str  # ok | skipped_warmup | skipped_not_eligible | skipped_suppressed | skipped_platform_domain | skipped_no_demo | error
+    status: str  # ok | skipped_warmup | skipped_not_eligible | skipped_suppressed | skipped_platform_domain | skipped_no_site_config | skipped_no_demo | error
     provider_message_id: str | None = None
     skipped_reason: str | None = None
     error_text: str | None = None
@@ -144,6 +150,11 @@ async def _is_suppressed(email: str | None, domain: str | None) -> tuple[bool, s
 # ----------------------------------------------------------------------
 # Core
 # ----------------------------------------------------------------------
+
+async def _trace_site_config_block(*, message_id, msg, company_id, decision) -> None:
+    """Trace un saut P4.10. Étoffée à la tâche 3 (note + Slack)."""
+    return None
+
 
 async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     """Push UN draft à Instantly. Idempotent par message_id : si la message
@@ -243,7 +254,22 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     ) if contact.get("company_id") else []
     company = company_rows[0] if company_rows else {}
 
-    # 3b) Garde demo (P3) — aucun email agence-ia ne part sans lien démo unique.
+    # 3b) Garde config produit (P4.10) — pas de site refait par le pipeline de
+    # refonte, pas de courriel. Tourne AVANT la frappe démo : inutile de créer
+    # une ligne agence.demo_sites pour un lead qui ne partira pas.
+    if (msg.get("track") or "OPT") == "agence-ia":
+        decision = await check_site_config(contact.get("company_id"))
+        if not decision.allowed:
+            await _trace_site_config_block(
+                message_id=payload.message_id, msg=msg,
+                company_id=contact.get("company_id"), decision=decision,
+            )
+            return SendMessageOut(
+                message_id=payload.message_id, status="skipped_no_site_config",
+                skipped_reason=decision.reason,
+            )
+
+    # 3c) Garde demo (P3) — aucun email agence-ia ne part sans lien démo unique.
     # Si manquant, on retente la frappe ici ; échec persistant => skip sans push.
     if (msg.get("track") or "OPT") == "agence-ia":
         needs_demo = (not msg.get("demo_url")) or (DEMO_URL_PLACEHOLDER in (msg.get("body_text") or ""))
