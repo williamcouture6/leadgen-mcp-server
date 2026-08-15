@@ -143,6 +143,7 @@ async def test_garde_tourne_avant_la_frappe_demo(monkeypatch) -> None:
 
 _NOTE_MARKER = "site_config_bloque"
 _ALERT_MARKER = "site_config_alert_sent"
+_WAIT_MARKER = "site_config_attente"
 
 
 async def test_note_posee_une_fois(monkeypatch) -> None:
@@ -154,7 +155,9 @@ async def test_note_posee_une_fois(monkeypatch) -> None:
     notes = [p["compliance_notes"] for t, p in updates
              if t == "messages" and "compliance_notes" in p]
     assert len(notes) == 1
-    assert _NOTE_MARKER in notes[0]
+    # Ligne absente = attente : c'est le marqueur d'attente qui est posé, et la
+    # raison doit voyager avec lui.
+    assert _WAIT_MARKER in notes[0]
     assert "absent" in notes[0]
 
 
@@ -234,3 +237,78 @@ async def test_note_qui_echoue_ne_casse_pas_le_saut(monkeypatch) -> None:
 
     out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
     assert out.status == "skipped_no_site_config"
+
+
+async def test_ligne_absente_pose_le_marqueur_dattente(monkeypatch) -> None:
+    from src.tools import send
+
+    updates, _ = _wire(monkeypatch, msg=_msg(), site_config_rows=[])
+    await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+
+    notes = [p["compliance_notes"] for _, p in updates if "compliance_notes" in p]
+    assert len(notes) == 1
+    assert _WAIT_MARKER in notes[0]
+    assert _NOTE_MARKER not in notes[0]
+
+
+async def test_verdict_qui_refuse_pose_le_marqueur_de_relecture(monkeypatch) -> None:
+    from src.tools import send
+
+    updates, _ = _wire(monkeypatch, msg=_msg(),
+                       site_config_rows=[{"verdict": "a-verifier"}])
+    await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+
+    notes = [p["compliance_notes"] for _, p in updates if "compliance_notes" in p]
+    assert len(notes) == 1
+    assert _NOTE_MARKER in notes[0]
+    assert _WAIT_MARKER not in notes[0]
+
+
+async def test_un_marqueur_dattente_deja_pose_ne_se_reecrit_pas(monkeypatch) -> None:
+    from src.tools import send
+
+    updates, _ = _wire(
+        monkeypatch,
+        msg=_msg(compliance_notes=f"{_WAIT_MARKER}: aucun config produit"),
+        site_config_rows=[],
+    )
+    await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+    assert not [p for _, p in updates if "compliance_notes" in p]
+
+
+async def test_les_notes_existantes_survivent(monkeypatch) -> None:
+    """WF-5 écrit son verdict complet dans compliance_notes sur CHAQUE draft
+    approuvé : la colonne n'est jamais vide en production. Une note P4.10 qui
+    écrase effacerait la piste d'audit et le marqueur demo_alert_sent de P3."""
+    from src.tools import send
+
+    updates, _ = _wire(
+        monkeypatch,
+        msg=_msg(compliance_notes="COMPLIANCE OK - 0 violation(s) | demo_alert_sent"),
+        site_config_rows=[],
+    )
+    await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+
+    notes = [p["compliance_notes"] for _, p in updates if "compliance_notes" in p]
+    assert len(notes) == 1
+    assert "COMPLIANCE OK - 0 violation(s)" in notes[0]
+    assert "demo_alert_sent" in notes[0]
+    assert _WAIT_MARKER in notes[0]
+
+
+async def test_la_note_vise_le_bon_message(monkeypatch) -> None:
+    """Le mock ne regardait que (table, patch) : le filtre `id` n'était pinné
+    par rien, une note pouvait viser une autre ligne sans casser un test."""
+    from src.tools import send
+
+    seen: list[dict] = []
+
+    async def _update(table, patch, **kw):
+        seen.append(kw)
+        return [{}]
+
+    _wire(monkeypatch, msg=_msg(), site_config_rows=[])
+    monkeypatch.setattr(send.db, "update", _update)
+
+    await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+    assert seen and seen[0]["filters"] == {"id": "eq.m-1"}

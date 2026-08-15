@@ -129,6 +129,37 @@ async def test_lecture_qui_leve_bloque_et_se_signale(monkeypatch) -> None:
     assert "lecture_echouee" in (d.reason or "")
 
 
+async def test_attente_seulement_quand_la_ligne_manque(monkeypatch) -> None:
+    """`attente` = le lot nocturne n'a pas encore produit ce config. Un verdict
+    qui refuse n'est PAS une attente : personne ne le règlera tout seul."""
+    from src.lib import site_config_gate as gate
+
+    monkeypatch.setattr(gate.db, "select", AsyncMock(return_value=[]))
+    assert (await gate.check_site_config("co-1")).attente is True
+
+    for verdict in ("a-verifier", "refuse", "peut-etre"):
+        monkeypatch.setattr(gate.db, "select",
+                            AsyncMock(return_value=[{"verdict": verdict}]))
+        d = await gate.check_site_config("co-1")
+        assert d.allowed is False
+        assert d.attente is False, f"{verdict} n'est pas une attente"
+
+    monkeypatch.setattr(gate.db, "select",
+                        AsyncMock(return_value=[{"verdict": "ok"}]))
+    assert (await gate.check_site_config("co-1")).attente is False
+
+
+async def test_ni_lerreur_ni_labsence_de_company_ne_sont_une_attente(monkeypatch) -> None:
+    from src.lib import site_config_gate as gate
+
+    async def _boom(*a, **k):
+        raise RuntimeError("agence not exposed")
+    monkeypatch.setattr(gate.db, "select", _boom)
+    assert (await gate.check_site_config("co-1")).attente is False
+
+    assert (await gate.check_site_config(None)).attente is False
+
+
 async def test_gele_napparait_que_dans_la_raison_dun_refus(monkeypatch) -> None:
     """gele protège l'ÉCRITURE, pas l'envoi : il ne change jamais allowed.
     On le mentionne seulement pour aider au diagnostic d'un refus."""

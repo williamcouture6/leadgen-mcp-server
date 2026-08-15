@@ -45,7 +45,7 @@ from ..lib import slack
 from ..lib.compliance_checks import check_warmup_window
 from ..lib.demo_generator import DEMO_URL_PLACEHOLDER, ensure_demo_site, inject_demo_link
 from ..lib.platform_domains import is_email_on_blocked_domain
-from ..lib.site_config_gate import check_site_config
+from ..lib.site_config_gate import SiteConfigDecision, check_site_config
 
 DAILY_CAP_DEFAULT = 10
 DAILY_CAP_ENV = "INSTANTLY_DAILY_CAP"
@@ -57,6 +57,11 @@ DEMO_ALERT_MARKER = "demo_alert_sent"
 # deux, un marqueur unique masquerait le second.
 SITE_CONFIG_NOTE_MARKER = "site_config_bloque"
 SITE_CONFIG_ALERT_MARKER = "site_config_alert_sent"
+# Deux marqueurs de saut, pas un : « pas encore produit » se règle tout seul au
+# prochain lot nocturne, « verdict qui refuse » demande une décision de William.
+# Un marqueur unique les additionnerait et le compteur du résumé quotidien
+# dériverait vers le haut sans jamais redescendre.
+SITE_CONFIG_WAIT_MARKER = "site_config_attente"
 
 
 # ----------------------------------------------------------------------
@@ -157,14 +162,18 @@ async def _is_suppressed(email: str | None, domain: str | None) -> tuple[bool, s
 
 async def _trace_site_config_block(
     *, message_id: str, msg: dict[str, Any], company_id: str | None,
-    decision: Any,
+    decision: SiteConfigDecision,
 ) -> None:
     """Trace un saut P4.10 dans `compliance_notes`, et n'alerte que sur panne.
 
-    Deux marqueurs distincts, deux régimes :
-      - `site_config_bloque` : posé UNE fois, silencieux. Un config pas encore
+    Trois marqueurs distincts, trois régimes :
+      - `site_config_attente` : posé UNE fois, silencieux. Un config pas encore
         produit est un état d'attente normal tant que le lot nocturne n'a pas
         tourné ; le cron repasse et ne doit pas faire grossir le champ.
+      - `site_config_bloque` : posé UNE fois, silencieux aussi, mais pour un
+        refus que le temps ne répare pas (verdict qui refuse, pas de
+        company_id, lecture cassée) — celui-là demande une décision humaine.
+        Les deux s'excluent : un message n'en porte jamais qu'un.
       - `site_config_alert_sent` : posé UNE fois, avec un ping #alertes, quand
         c'est la LECTURE qui a échoué. Ce cas-là bloque tous les envois
         agence-ia d'un coup — il ne peut pas rester silencieux.
@@ -172,8 +181,9 @@ async def _trace_site_config_block(
     notes = msg.get("compliance_notes") or ""
     additions: list[str] = []
 
-    if SITE_CONFIG_NOTE_MARKER not in notes:
-        additions.append(f"{SITE_CONFIG_NOTE_MARKER}: {decision.reason}")
+    marqueur = SITE_CONFIG_WAIT_MARKER if decision.attente else SITE_CONFIG_NOTE_MARKER
+    if SITE_CONFIG_WAIT_MARKER not in notes and SITE_CONFIG_NOTE_MARKER not in notes:
+        additions.append(f"{marqueur}: {decision.reason}")
 
     if decision.read_failed and SITE_CONFIG_ALERT_MARKER not in notes:
         await slack.notify(

@@ -34,6 +34,11 @@ class SiteConfigDecision:
     allowed: bool
     reason: str | None = None
     read_failed: bool = False
+    # `attente` = la ligne n'existe pas encore. C'est le seul refus que le lot
+    # nocturne réglera tout seul ; un verdict qui refuse demande une décision
+    # humaine, et une lecture cassée demande une réparation. L'appelant s'en
+    # sert pour compter séparément « en attente » et « à relire ».
+    attente: bool = False
 
 
 async def check_site_config(company_id: str | None) -> SiteConfigDecision:
@@ -62,7 +67,9 @@ async def check_site_config(company_id: str | None) -> SiteConfigDecision:
         )
 
     if not rows:
-        return SiteConfigDecision(False, "aucun config produit (site_configs absent)")
+        return SiteConfigDecision(
+            False, "aucun config produit (site_configs absent)", attente=True,
+        )
 
     row = rows[0]
     verdict = (row.get("verdict") or "").strip()
