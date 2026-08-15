@@ -334,3 +334,43 @@ async def test_la_note_vise_le_bon_message(monkeypatch) -> None:
 
     await send.send_one_message(send.SendMessageIn(message_id="m-1"))
     assert seen and seen[0]["filters"] == {"id": "eq.m-1"}
+
+
+async def test_run_wf6_compte_les_sauts_sans_config(monkeypatch) -> None:
+    """Un lot mixte : 1 envoyable, 2 sans config. Le rapport doit le dire."""
+    from src.tools import send
+
+    drafts = [
+        {"id": "m-ok", "to_email": "a@x.ca", "created_at": "2026-08-14T00:00:00Z",
+         "track": "agence-ia"},
+        {"id": "m-1", "to_email": "b@x.ca", "created_at": "2026-08-14T00:01:00Z",
+         "track": "agence-ia"},
+        {"id": "m-2", "to_email": "c@x.ca", "created_at": "2026-08-14T00:02:00Z",
+         "track": "agence-ia"},
+    ]
+    monkeypatch.setenv("INSTANTLY_CAMPAIGN_ID_REACTI", "camp-agence")
+    monkeypatch.setattr(send, "count_pushed_today", AsyncMock(return_value=0))
+
+    async def _select(table, *, params=None, schema=None):
+        if table == "messages":
+            return drafts
+        return []
+    monkeypatch.setattr(send.db, "select", _select)
+
+    async def _send_one(payload):
+        if payload.message_id == "m-ok":
+            return send.SendMessageOut(message_id="m-ok", status="ok",
+                                       provider_message_id="lead-1")
+        return send.SendMessageOut(
+            message_id=payload.message_id, status="skipped_no_site_config",
+            skipped_reason="aucun config produit (site_configs absent)",
+        )
+    monkeypatch.setattr(send, "send_one_message", _send_one)
+
+    out = await send.run_wf6(send.RunWf6In(limit=3, track="agence-ia"))
+
+    assert out.processed == 3
+    assert out.pushed == 1
+    assert out.skipped_no_site_config == 2
+    assert out.skipped_other == 0
+    assert out.errors == 0

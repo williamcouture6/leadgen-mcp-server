@@ -491,6 +491,7 @@ class RunWf6Out(BaseModel):
     skipped_warmup: int
     skipped_suppressed: int
     skipped_platform_domain: int = 0
+    skipped_no_site_config: int = 0
     skipped_no_demo: int = 0
     skipped_other: int
     errors: int
@@ -519,7 +520,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         )
 
     items: list[RunWf6Item] = []
-    pushed = sk_cap = sk_warm = sk_supp = sk_plat = sk_nodemo = sk_other = errors = 0
+    pushed = sk_cap = sk_warm = sk_supp = sk_plat = sk_nocfg = sk_nodemo = sk_other = errors = 0
 
     if effective_limit <= 0:
         return RunWf6Out(
@@ -568,6 +569,8 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             sk_supp += 1
         elif res.status == "skipped_platform_domain":
             sk_plat += 1
+        elif res.status == "skipped_no_site_config":
+            sk_nocfg += 1
         elif res.status == "skipped_no_demo":
             sk_nodemo += 1
         elif res.status == "skipped_not_eligible":
@@ -594,6 +597,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         skipped_warmup=sk_warm,
         skipped_suppressed=sk_supp,
         skipped_platform_domain=sk_plat,
+        skipped_no_site_config=sk_nocfg,
         skipped_no_demo=sk_nodemo,
         skipped_other=sk_other,
         errors=errors,
