@@ -90,6 +90,33 @@ def test_pick_colors_falls_back_to_logo_when_no_palette_no_theme():
     assert c["_confidence"] == "medium"
 
 
+def test_pick_colors_prefers_css_frequency_over_logo_dominant():
+    """Site Divi (aucune palette déclarée) : l'orange qui sature le CSS bat le vert du
+    logo — cas Déneigement J. Lauzon, où le logo donnait #466f4b sur un site orange."""
+    c = BK._pick_colors({"theme_color": None}, {}, "#466f4b",
+                        css_colors={"primary": "#f9aa12", "secondary": "#36454f",
+                                    "_source": "frequency"})
+    assert c["primary"] == "#f9aa12"
+    assert c["secondary"] == "#36454f"
+    assert c["_confidence"] == "medium"   # déduit, pas déclaré → reste en revue
+
+
+def test_pick_colors_theme_color_wins_but_borrows_secondary_from_frequency():
+    c = BK._pick_colors({"theme_color": "#0B5"}, {}, "#466f4b",
+                        css_colors={"primary": "#f9aa12", "secondary": "#36454f",
+                                    "_source": "frequency"})
+    assert c["primary"] == "#0B5"
+    assert c["secondary"] == "#36454f"
+    assert c["_confidence"] == "high"
+
+
+def test_pick_colors_ignores_achromatic_theme_color():
+    """Beaucoup de thèmes posent `theme-color: #ffffff` : ce n'est pas la marque, et un
+    primaire blanc rendrait la démo illisible."""
+    c = BK._pick_colors({"theme_color": "#ffffff"}, {}, "#466f4b", css_colors={})
+    assert c["primary"] == "#466f4b"    # la couleur du logo, pas le blanc du thème
+
+
 @pytest.mark.asyncio
 async def test_build_brand_kit_orchestrates(monkeypatch):
     # company en DB (nom + adresse requis pour la vérif du match Places)
@@ -132,6 +159,9 @@ async def test_build_brand_kit_orchestrates(monkeypatch):
     async def fake_pexels(query, **_):
         return None
 
+    async def fake_validate_social(links):
+        return dict(links), []   # pas de réseau en test : tout valide
+
     monkeypatch.setattr(BK, "fetch_site_rich", fake_rich)
     monkeypatch.setattr(BK, "fetch_place_details", fake_place)
     monkeypatch.setattr(BK, "fetch_facebook_brand", fake_fb)
@@ -139,11 +169,14 @@ async def test_build_brand_kit_orchestrates(monkeypatch):
     monkeypatch.setattr(BK, "rehost_one", fake_rehost)
     monkeypatch.setattr(BK, "_rehost_with_bytes", fake_rehost_bytes)
     monkeypatch.setattr(BK, "fetch_pexels_image", fake_pexels)
+    monkeypatch.setattr(BK, "validate_social", fake_validate_social)
 
     out = await BK.build_brand_kit("c1")
 
     assert out["status"] == "ok"
     kit = written["patch"]["brand_kit"]
+    assert kit["social"]["facebook"] == "https://facebook.com/x"   # union + validé
+    assert kit["social"]["_meta"] == {"deadLinksDetected": [], "reviewed": False}
     assert kit["phone"] == "+1 450-555-0192"          # Places (match nom+adresse OK)
     assert kit["tagline"] == "Toiture clé en main"
     assert kit["logo_url"] == "https://cdn/c1/logo.png"

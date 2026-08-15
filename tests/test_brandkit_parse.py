@@ -32,6 +32,51 @@ def test_parse_jsonld_localbusiness():
 def test_parse_jsonld_handles_graph_and_missing():
     assert P.parse_jsonld("<html></html>", "https://x.test/") == P.EMPTY_JSONLD
 
+
+# --- Téléphone : les PME publient rarement `telephone` au 1er niveau d'un @type canonique.
+# Deux cas réels vus chez Déneigement J. Lauzon (2026-08-14) : le numéro vit sous
+# `contactPoint`, et un 2e nœud le porte au 1er niveau mais avec un @type maison
+# (« Déneigement commercial, industriel et institutionnel ») hors schema.org.
+
+def test_parse_jsonld_telephone_from_contact_point():
+    html = ('<script type="application/ld+json">'
+            '{"@type":"Organization","name":"Lauzon","url":"https://x.test",'
+            '"contactPoint":[{"@type":"ContactPoint","telephone":"450 627-0961",'
+            '"contactType":"customer support"}]}</script>')
+    assert P.parse_jsonld(html, "https://x.test/")["telephone"] == "450 627-0961"
+
+
+def test_parse_jsonld_accepts_custom_business_type_of_the_site_itself():
+    """@type maison mais nœud identifié comme le site (url/@id du domaine) → on lit ses
+    faits (téléphone, adresse, image) au lieu de jeter le nœud entier."""
+    html = ('<script type="application/ld+json">'
+            '{"@type":"Déneigement commercial, industriel et institutionnel",'
+            '"name":"Lauzon","url":"https://x.test","@id":"https://x.test",'
+            '"telephone":"450 627-0961","image":"https://x.test/photo.png",'
+            '"address":{"@type":"PostalAddress","streetAddress":"889, rang St-Antoine",'
+            '"addressLocality":"Laval","postalCode":"H7R6E8"}}</script>')
+    j = P.parse_jsonld(html, "https://x.test/")
+    assert j["telephone"] == "450 627-0961"
+    assert j["address"] == "889, rang St-Antoine, Laval, H7R6E8"
+    assert j["image"] == "https://x.test/photo.png"
+
+
+def test_parse_jsonld_ignores_custom_type_node_of_another_domain():
+    """Un nœud @type inconnu qui ne pointe PAS vers le site (widget, annuaire tiers)
+    reste ignoré — sinon on importerait le téléphone d'un autre commerce."""
+    html = ('<script type="application/ld+json">'
+            '{"@type":"WidgetTiers","url":"https://autre.test",'
+            '"telephone":"418 000-0000"}</script>')
+    assert P.parse_jsonld(html, "https://x.test/")["telephone"] is None
+
+
+def test_parse_jsonld_ignores_structural_nodes_even_on_the_site():
+    """Fil d'Ariane / article : même domaine, mais leur `image` n'est pas la marque."""
+    html = ('<script type="application/ld+json">'
+            '{"@type":"BlogPosting","url":"https://x.test/blogue/neige",'
+            '"image":"https://x.test/vignette-article.jpg"}</script>')
+    assert P.parse_jsonld(html, "https://x.test/")["image"] is None
+
 HTML_IMGS = """
 <html><body>
   <header><img src="/logo.png" alt="Logo Réno Belair"></header>
@@ -64,6 +109,65 @@ def test_extract_social_links():
     s = P.extract_social_links(HTML_IMGS)
     assert s["facebook"] == "https://facebook.com/renobelair"
     assert s["instagram"] == "https://instagram.com/renobelair"
+
+
+HTML_SOCIAL_WIDE = """
+<html><body><footer>
+  <a href="https://www.youtube.com/@renobelair">YT</a>
+  <a href="https://www.tiktok.com/@renobelair">TT</a>
+  <a href="https://twitter.com/renobelair">Tweet</a>
+  <a href="https://www.linkedin.com/company/renobelair">IN</a>
+  <a href="https://box.com/share/xyz">Boîte (piège: contient x.com)</a>
+</footer></body></html>
+"""
+
+
+def test_extract_social_links_widened_platforms():
+    s = P.extract_social_links(HTML_SOCIAL_WIDE)
+    assert s["youtube"] == "https://www.youtube.com/@renobelair"
+    assert s["tiktok"] == "https://www.tiktok.com/@renobelair"
+    assert s["linkedin"] == "https://www.linkedin.com/company/renobelair"
+    # twitter.com normalisé vers la plateforme 'x'
+    assert s["x"] == "https://twitter.com/renobelair"
+    # « box.com » ne doit PAS matcher x.com (netloc exact, pas sous-chaîne)
+    assert "box.com" not in " ".join(s.values())
+
+
+def test_extract_social_links_maps_google_and_x_com():
+    html = ('<a href="https://x.com/reno">X</a>'
+            '<a href="https://www.google.com/maps/place/Reno/@45,-73">Maps</a>'
+            '<a href="https://www.google.com/search?q=reno">Search (pas social)</a>')
+    s = P.extract_social_links(html)
+    assert s["x"] == "https://x.com/reno"
+    assert s["google"] == "https://www.google.com/maps/place/Reno/@45,-73"
+    # google.com hors /maps n'est pas un lien social → première occurrence 'google' garde Maps
+    assert "search" not in s["google"]
+
+
+def test_social_platform_rejects_junk_and_relative():
+    assert P._social_platform("#") is None
+    assert P._social_platform("javascript:void(0)") is None
+    assert P._social_platform("/contact") is None
+    assert P._social_platform("") is None
+    assert P._social_platform("https://facebook.com/x") == "facebook"
+
+
+def test_merge_social_links_unions_anchor_sameas_and_google():
+    anchor = {"facebook": "https://facebook.com/reno"}
+    same_as = ["https://www.instagram.com/reno", "https://twitter.com/reno",
+               "https://facebook.com/AUTRE"]  # doublon plateforme → ignoré
+    out = P.merge_social_links(anchor, same_as,
+                               google_maps_uri="https://maps.google.com/?cid=9")
+    assert out["facebook"] == "https://facebook.com/reno"   # ancre prime sur sameAs
+    assert out["instagram"] == "https://www.instagram.com/reno"
+    assert out["x"] == "https://twitter.com/reno"           # sameAs mergé + normalisé
+    assert out["google"] == "https://maps.google.com/?cid=9"
+
+
+def test_merge_social_links_google_not_overwritten_if_present():
+    out = P.merge_social_links({"google": "https://g.page/reno"}, [],
+                               google_maps_uri="https://maps.google.com/?cid=1")
+    assert out["google"] == "https://g.page/reno"  # ancre google conservée
 
 def test_find_rbq():
     assert P.find_rbq("Licence RBQ 1234-5678-01 valide") == "1234-5678-01"
@@ -138,6 +242,66 @@ def test_extract_css_colors_rejects_white_or_grey_primary():
 
 def test_extract_css_colors_absent_returns_empty():
     assert P.extract_css_colors("<html><body>rien</body></html>") == {}
+
+
+# --- Couleurs : repli par fréquence pour les thèmes sans variables de palette (Divi, etc.) ---
+# Un thème WordPress non-Elementor n'expose aucune variable `--e-global-color-*` : la
+# couleur de marque est simplement CELLE QUI REVIENT le plus dans le CSS inline. Sans ce
+# repli, `_pick_colors` tombait sur la couleur dominante du logo (vert #466f4b sur un site
+# dont toute l'identité est orange) — cas Déneigement J. Lauzon, 2026-08-14.
+HTML_CSS_DIVI = (
+    "<html><head><style>"
+    ".et_pb_button{background:#F9AA12;border-color:#f9aa12;color:#ffffff}"
+    "a:hover{color:#f9aa12}.et_pb_toggle_title:before{color:#f9aa12}"
+    ".footer{background:#36454F;color:#F2F2F2}.footer a{color:#36454f}"
+    "body{color:#595959;background:#ffffff}"
+    "</style><style>"
+    ".has-vivid-red-color{color:#cf2e2e}.has-luminous-vivid-orange-color{color:#ff6900}"
+    ".has-pale-pink-color{color:#f78da7}.has-vivid-cyan-blue-color{color:#0693e3}"
+    "</style></head><body></body></html>"
+)
+
+
+def test_extract_css_colors_frequency_fallback_picks_dominant_brand_color():
+    c = P.extract_css_colors(HTML_CSS_DIVI)
+    assert c["primary"] == "#f9aa12"     # l'orange de marque (le plus fréquent)
+    assert c["secondary"] == "#36454f"   # l'ardoise du footer
+    assert c["_source"] == "frequency"   # repli, pas une palette déclarée
+
+
+def test_extract_css_colors_frequency_ignores_wordpress_default_palette():
+    """Les couleurs du thème Gutenberg par défaut (une occurrence chacune) ne sont pas
+    la marque : sans ce garde-fou, un site sobre hériterait du rouge/orange de WordPress."""
+    html = ("<style>.has-vivid-red-color{color:#cf2e2e}"
+            ".has-luminous-vivid-orange-color{color:#ff6900}"
+            ".has-vivid-purple-color{color:#9b51e0}</style>")
+    assert P.extract_css_colors(html) == {}
+
+
+def test_extract_css_colors_frequency_ignores_near_duplicate_shade_as_secondary():
+    """#f9ab12 n'est qu'une nuance de #f9aa12 : le secondaire doit être une AUTRE couleur."""
+    html = ("<style>a{color:#f9aa12}b{color:#f9aa12}i{color:#f9aa12}"
+            "u{color:#f9ab12}s{color:#f9ab12}</style>")
+    c = P.extract_css_colors(html)
+    assert c["primary"] == "#f9aa12"
+    assert c.get("secondary") is None
+
+
+def test_extract_css_colors_frequency_reads_rgb_notation():
+    html = ("<style>.a{color:rgb(249,170,18)}.b{background:rgba(249, 170, 18, 1)}"
+            ".c{border-color:rgb(249,170,18)}.d{box-shadow:0 0 2px rgba(0,0,0,.1)}</style>")
+    assert P.extract_css_colors(html)["primary"] == "#f9aa12"
+
+
+def test_extract_css_colors_prefers_declared_palette_over_frequency():
+    """Une palette déclarée (Elementor) reste la source autoritative même si une autre
+    couleur revient plus souvent dans le CSS."""
+    html = (HTML_CSS_COLORS.replace("</head>", "")
+            + "<style>.x{color:#f9aa12}.y{color:#f9aa12}.z{color:#f9aa12}"
+              ".w{color:#f9aa12}</style></head><body></body></html>")
+    c = P.extract_css_colors(html)
+    assert c["primary"] == "#00a6c0"
+    assert c["_source"] == "css_vars"
 
 
 # --- Extraction logo déterministe (favicon dimensionné / apple-touch avant og:image) ---

@@ -19,6 +19,32 @@ def test_reviews_from_places():
 def test_reviews_from_places_empty():
     assert A.reviews_from_places({}) == []
 
+
+# La démo est du matériel de vente envoyé au prospect : on y met ses bons témoignages,
+# comme le ferait n'importe quel site vitrine. La note agrégée (`google_rating`) reste
+# celle de Google, elle, non filtrée — 4,2 reste 4,2.
+
+def test_reviews_from_places_keeps_only_4_and_5_stars():
+    place = {"reviews": [
+        {"rating": 1, "text": {"text": "Pire déneigeur"},
+         "authorAttribution": {"displayName": "Alexia H."}},
+        {"rating": 3, "text": {"text": "Correct sans plus"},
+         "authorAttribution": {"displayName": "Marc T."}},
+        {"rating": 4, "text": {"text": "Bon service"},
+         "authorAttribution": {"displayName": "Louise B."}},
+        {"rating": 5, "text": {"text": "Impeccable"},
+         "authorAttribution": {"displayName": "Sébastien L."}},
+    ]}
+    quotes = [r["quote"] for r in A.reviews_from_places(place)]
+    assert quotes == ["Bon service", "Impeccable"]
+
+
+def test_reviews_from_places_skips_review_without_rating():
+    """Sans note, impossible de savoir si l'avis dessert le prospect → on l'écarte."""
+    place = {"reviews": [{"text": {"text": "Aucune note"},
+                          "authorAttribution": {"displayName": "Anonyme"}}]}
+    assert A.reviews_from_places(place) == []
+
 def test_phone_and_url_and_hours():
     assert A.phone_from_places(PLACE) == "+1 450-555-0192"
     assert A.reviews_url_from_places(PLACE) == "https://maps.google.com/?cid=123"
@@ -170,6 +196,66 @@ def test_assemble_phone_falls_back_to_facebook():
     assert kit["confidence"]["phone"] == "medium"
 
 
+def test_rating_and_review_count_mappers():
+    place = {"rating": 4.7, "userRatingCount": 88}
+    assert A.rating_from_places(place) == 4.7
+    assert A.review_count_from_places(place) == 88
+    # absent → None (jamais 0 factice)
+    assert A.rating_from_places({}) is None
+    assert A.review_count_from_places({}) is None
+
+
+def test_assemble_writes_google_rating_from_places():
+    place = {"displayName": {"text": "BL Vitres"},
+             "formattedAddress": "11233 Av X, Montréal, QC H1G 4P1, Canada",
+             "rating": 4.9, "userRatingCount": 132, "reviews": []}
+    kit = A.assemble_brand_kit(
+        place=place, jsonld=dict(_EMPTY_JSONLD), head_meta=dict(_EMPTY_HEAD),
+        llm=dict(_EMPTY_LLM), images={}, colors=None, social={}, rbq=None,
+        company={"name": "BL Vitres Centre-Est", "address": "11233 Av X, Montréal, QC H1G 4P1"},
+    )
+    assert kit["google_rating"] == 4.9
+    assert kit["google_reviews_count"] == 132
+    assert kit["confidence"]["google_rating"] == "high"          # nom + adresse concordent
+    assert kit["confidence"]["google_reviews_count"] == "high"
+
+
+def test_assemble_google_rating_falls_back_to_jsonld_when_no_places():
+    # Aucune donnée Places → repli sur aggregateRating du JSON-LD du site (medium).
+    kit = A.assemble_brand_kit(
+        place={}, jsonld={**_EMPTY_JSONLD, "rating": 4.6, "rating_count": 41},
+        head_meta=dict(_EMPTY_HEAD), llm=dict(_EMPTY_LLM),
+        images={}, colors=None, social={}, rbq=None,
+        company={"name": "X", "address": "Y"},
+    )
+    assert kit["google_rating"] == 4.6
+    assert kit["google_reviews_count"] == 41
+    assert kit["confidence"]["google_rating"] == "medium"
+
+
+def test_assemble_google_rating_omitted_on_name_mismatch():
+    # Mauvais commerce (nom ne concorde pas) → on n'emprunte PAS sa note, et pas de JSON-LD
+    # de secours → clés absentes (pas de bruit null).
+    place = {"displayName": {"text": "Garage Pneus Plus"},
+             "formattedAddress": "99 Rue Z, Laval, QC H7A 1B2",
+             "rating": 4.9, "userRatingCount": 500, "reviews": []}
+    kit = A.assemble_brand_kit(
+        place=place, jsonld=dict(_EMPTY_JSONLD), head_meta=dict(_EMPTY_HEAD),
+        llm=dict(_EMPTY_LLM), images={}, colors=None, social={}, rbq=None,
+        company={"name": "BL Vitres", "address": "11233 Av X, Montréal, QC H1G 4P1"},
+    )
+    assert "google_rating" not in kit
+    assert "google_reviews_count" not in kit
+
+
+def test_preserve_nonempty_carries_over_google_rating():
+    existing = {"google_rating": 4.8, "google_reviews_count": 154}
+    out, carried = A.preserve_nonempty(existing, {"tagline": "x"})
+    assert out["google_rating"] == 4.8                 # repris (rebuild pauvre)
+    assert out["google_reviews_count"] == 154
+    assert "google_rating" in carried
+
+
 def test_hours_from_jsonld_mo_fr():
     h = A.hours_from_jsonld(["Mo-Fr 08:00-17:00", "Sa 09:00-12:00"])
     assert h.startswith("lundi: 08:00 – 17:00")
@@ -212,6 +298,64 @@ def test_derive_review_clean_kit():
     kit = {"hours": "x", "phone": "y", "logo_url": "l",
            "confidence": {"hours": "high", "phone": "high"}}
     assert A.derive_review(kit) == []
+
+
+# --- Filet anti-texte désaccentué --------------------------------------------
+# Le producteur a livré des FAQ en ASCII (« Les operations debutent des l'atteinte »)
+# pendant que le reste du kit était accentué — inacceptable dans une démo destinée à un
+# francophone. Le prompt est corrigé, mais le LLM reste probabiliste : on détecte le cas
+# sans liste de mots, en comparant chaque mot au vocabulaire ACCENTUÉ du kit lui-même.
+
+def test_unaccented_fields_detects_stripped_text_against_kit_vocabulary():
+    kit = {
+        "tagline": "Nos opérations débutent dès la première accumulation",
+        "services": [{"name": "Déneigement",
+                      "faq": [{"question": "Quand?",
+                               "reponse": "Les operations debutent des l'atteinte."}]}],
+    }
+    assert A.unaccented_fields(kit) == ["services[0].faq[0].reponse"]
+
+
+def test_unaccented_fields_silent_when_everything_is_accented():
+    kit = {"tagline": "Nos opérations débutent dès la première accumulation",
+           "services": [{"name": "Déneigement",
+                         "faq": [{"question": "Quand?",
+                                  "reponse": "Les opérations débutent dès l'atteinte."}]}]}
+    assert A.unaccented_fields(kit) == []
+
+
+def test_unaccented_fields_ignores_urls_and_short_words():
+    """Une URL contient forcément des mots sans accent : ce n'est pas de la prose."""
+    kit = {"tagline": "Nos opérations à Laval",
+           "logo_url": "https://cdn.test/operations-logo.png",
+           "services": [{"name": "Deneigement", "image_url": "https://cdn.test/operations.jpg"}]}
+    assert A.unaccented_fields(kit) == []
+
+
+def test_unaccented_fields_tolerates_one_ambiguous_word():
+    """« demande » (nom) est du français correct, mais se confond avec « demandé » plié.
+    Un seul mot douteux ne suffit donc pas : une vraie phrase désaccentuée en aligne
+    plusieurs."""
+    kit = {"tagline": "Travail demandé et livré à Laval",
+           "services": [{"details": "Remplissez le formulaire de demande en ligne."}]}
+    assert A.unaccented_fields(kit) == []
+
+
+def test_unaccented_fields_ignores_slugs():
+    """Un slug est ASCII par construction (`epandage-abrasif`), pas de la prose."""
+    kit = {"tagline": "Épandage d'abrasif et déneigement à Laval",
+           "pages": [{"slug": "epandage-abrasif", "titre": "Épandage d'abrasif"}]}
+    assert A.unaccented_fields(kit) == []
+
+
+def test_derive_review_flags_unaccented_text():
+    kit = {"hours": "x", "phone": "y", "logo_url": "l",
+           "confidence": {"hours": "high", "phone": "high"},
+           "tagline": "Nos opérations débutent dès la première accumulation",
+           "faq": [{"question": "Q", "reponse": "Les operations debutent tot."}]}
+    review = A.derive_review(kit)
+    assert [r for r in review if r["field"] == "faq[0].reponse"
+            and "accent" in r["reason"]]
 
 
 def test_assemble_hours_jsonld_fallback_when_no_places():

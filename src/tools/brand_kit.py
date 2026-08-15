@@ -562,6 +562,52 @@ async def fetch_facebook_brand(fb_url: str) -> dict[str, Any]:
     return parse.parse_facebook_html(r.text)
 
 
+_SOCIAL_TIMEOUT = 5.0
+
+
+async def _social_link_alive(client: httpx.AsyncClient, platform: str, url: str) -> bool:
+    """Un lien social est-il vivant ? Mort SEULEMENT si : structurel (mauvais domaine / `#` /
+    pseudo-protocole), erreur réseau (DNS/timeout/refus), ou HTTP 404/410 (profil supprimé).
+
+    Les 401/403/405/429/999/5xx = VIVANT : Facebook/Instagram/LinkedIn/X bloquent souvent les
+    robots (403, 999) alors que le profil existe — on ne jette pas un vrai lien pour ça. Le but
+    de la validation est d'attraper les liens MORTS (`#`, 404), pas les blocages anti-bot.
+    HEAD d'abord (léger), repli GET si HEAD refusé (beaucoup de CDN bloquent HEAD).
+    En 200/3xx, follow_redirects → l'URL finale doit encore pointer la bonne plateforme."""
+    if parse._social_platform(url) != platform:
+        return False  # vide / ancre interne / pseudo-protocole / mauvais domaine
+    try:
+        r = await client.head(url)
+        if r.status_code >= 400:
+            r = await client.get(url)
+    except Exception:  # noqa: BLE001 — DNS/timeout/refus → lien mort
+        return False
+    if r.status_code in (404, 410):
+        return False  # profil supprimé / page disparue = vraiment mort
+    if r.status_code >= 400:
+        return True   # 401/403/405/429/999/5xx : blocage anti-bot ou transitoire → on garde
+    # 200/3xx : l'URL finale doit encore matcher la plateforme (anti-redirect parking/vente)
+    return parse._social_platform(str(r.url)) == platform
+
+
+async def validate_social(links: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """Valide chaque (plateforme, url) : rejette `#`/`javascript:`/vide/ancre interne/
+    mauvais domaine, puis vérifie via HEAD (repli GET, timeout court, suivi des redirects)
+    que le lien vit et matche encore la plateforme. Fail-soft : ne lève JAMAIS — toute
+    erreur sur un lien = drop. Renvoie (liens_valides, plateformes_mortes)."""
+    valid: dict[str, str] = {}
+    dead: list[str] = []
+    headers = {"User-Agent": USER_AGENT}
+    async with httpx.AsyncClient(timeout=_SOCIAL_TIMEOUT, follow_redirects=True,
+                                 headers=headers) as client:
+        for platform, url in (links or {}).items():
+            if await _social_link_alive(client, platform, url):
+                valid[platform] = url
+            else:
+                dead.append(platform)
+    return valid, dead
+
+
 async def fetch_pexels_image(
     query: str, *, seed: str = "", per_page: int = 10
 ) -> tuple[bytes, str] | None:
@@ -592,15 +638,24 @@ async def fetch_pexels_image(
 def _pick_colors(head_meta: dict[str, Any], jsonld: dict[str, Any],
                  logo_color: str | None,
                  css_colors: dict[str, str] | None = None) -> dict[str, Any] | None:
-    # Palette CSS de marque (Elementor) = source la plus fiable, et seule à donner le
-    # secondaire. Sinon theme-color (meta), sinon couleur dominante du logo.
+    # Ordre de fiabilité : palette CSS déclarée (Elementor) > theme-color chromatique >
+    # palette déduite de la fréquence du CSS (thèmes sans variables : Divi & co) >
+    # couleur dominante du logo (dernier recours : un logo vert sur un site orange donne
+    # une démo hors marque — cas Déneigement J. Lauzon, 2026-08-14).
     css = css_colors or {}
-    if css.get("primary"):
-        return {"primary": css["primary"], "secondary": css.get("secondary"),
+    css_primary = css.get("primary")
+    derived = css.get("_source") == "frequency"
+    if css_primary and not derived:
+        return {"primary": css_primary, "secondary": css.get("secondary"),
                 "_confidence": "high"}
     theme = head_meta.get("theme_color")
-    if theme:
-        return {"primary": theme, "secondary": None, "_confidence": "high"}
+    theme_hex = parse._norm_hex(theme) if theme else None
+    if theme_hex and parse._is_chromatic(theme_hex):
+        # theme-color ne donne jamais de secondaire : on emprunte celui du CSS déduit.
+        return {"primary": theme, "secondary": css.get("secondary"), "_confidence": "high"}
+    if css_primary:
+        return {"primary": css_primary, "secondary": css.get("secondary"),
+                "_confidence": "medium"}
     if logo_color:
         return {"primary": logo_color, "secondary": None, "_confidence": "medium"}
     return None
@@ -908,6 +963,21 @@ async def build_brand_kit(company_id: str, model: str = _DEFAULT_MODEL) -> dict[
         images=images, colors=colors, social=rich["social"], rbq=rich["rbq"],
         company=company, facebook=fb, service_areas=rich.get("service_areas"),
     )
+
+    # Liens sociaux : union (ancres scrapées + JSON-LD sameAs + Google Maps de Places) →
+    # validation réseau (liens morts / mauvais domaine écartés, listés dans _meta). Le
+    # Google Maps de Places n'est ajouté que si le NOM concorde (jamais un autre commerce).
+    name_ok, _ = assemble.places_match(place, company)
+    merged_social = parse.merge_social_links(
+        rich.get("social"), (rich.get("jsonld") or {}).get("same_as"),
+        place.get("googleMapsUri") if name_ok else None,
+    )
+    try:
+        valid_social, dead_social = await validate_social(merged_social)
+    except Exception:  # noqa: BLE001 — validation indispo → on garde le merge brut
+        valid_social, dead_social = dict(merged_social), []
+    valid_social["_meta"] = {"deadLinksDetected": dead_social, "reviewed": False}
+    kit["social"] = valid_social
 
     # Garanties d'images (toujours, fallback Pexels par métier) : 1 image/service, fond stats,
     # galerie avant/après — le site démo affiche ces sections en permanence.

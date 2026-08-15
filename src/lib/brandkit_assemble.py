@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import Any
 
@@ -39,11 +40,23 @@ def hours_from_jsonld(opening_hours: list[str]) -> str | None:
     return " · ".join(parts)
 
 
+_MIN_REVIEW_RATING = 4   # la démo est du matériel de vente : on n'y colle pas un 1 étoile
+
+
 def reviews_from_places(place: dict[str, Any]) -> list[dict[str, Any]]:
+    """Témoignages à afficher sur la démo : avis Google 4-5 étoiles seulement.
+
+    Sélection, pas invention — comme la section témoignages de n'importe quel site vitrine.
+    La note agrégée `google_rating`/`google_reviews_count`, elle, reste celle de Google,
+    non filtrée. Un avis sans note est écarté (impossible de savoir s'il dessert le
+    prospect à qui on envoie la démo)."""
     out: list[dict[str, Any]] = []
     for rv in (place.get("reviews") or []):
         text = (rv.get("text") or {}).get("text") or (rv.get("originalText") or {}).get("text")
         if not text:
+            continue
+        rating = rv.get("rating")
+        if not isinstance(rating, (int, float)) or rating < _MIN_REVIEW_RATING:
             continue
         author = (rv.get("authorAttribution") or {}).get("displayName")
         avatar = (rv.get("authorAttribution") or {}).get("photoUri")
@@ -56,6 +69,16 @@ def reviews_from_places(place: dict[str, Any]) -> list[dict[str, Any]]:
             "source": "google",
         })
     return out
+
+
+def rating_from_places(place: dict[str, Any]) -> float | None:
+    r = place.get("rating")
+    return float(r) if isinstance(r, (int, float)) else None
+
+
+def review_count_from_places(place: dict[str, Any]) -> int | None:
+    c = place.get("userRatingCount")
+    return int(c) if isinstance(c, (int, float)) else None
 
 
 def phone_from_places(place: dict[str, Any]) -> str | None:
@@ -462,7 +485,13 @@ def finalize_flex_pages(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 # Champs de contenu (issus du LLM) qui peuvent sauter par variance/troncature d'un
 # build. Anti-clobber-vide : un run pauvre ne doit pas effacer du bon contenu en place.
-_CARRYOVER_FIELDS = ("tagline", "services", "team", "valeurs", "faq", "gallery", "pages")
+# NB : `social` n'est PAS reporté ici — kit["social"] porte toujours un `_meta`, donc il
+# n'est jamais « vide » au sens de preserve_nonempty ; le report ne se déclencherait jamais
+# et masquerait la détection de liens morts d'un rebuild. Les notes agrégées, elles, sont
+# des faits scalaires optionnels qu'un rebuild pauvre (Places momentanément absent) ne doit
+# pas effacer.
+_CARRYOVER_FIELDS = ("tagline", "services", "team", "valeurs", "faq", "gallery", "pages",
+                     "google_rating", "google_reviews_count")
 
 
 def preserve_nonempty(
@@ -534,6 +563,22 @@ def assemble_brand_kit(
     # Avis / lien avis : écartés si le NOM ne concorde pas (avis d'un autre commerce).
     kit["reviews"] = reviews_from_places(place) if name_ok else []
     kit["reviews_url"] = reviews_url_from_places(place) if name_ok else None
+
+    # Note Google agrégée + nombre d'avis : Places (si le NOM concorde) → repli sur le
+    # JSON-LD du site (aggregateRating). Omis si aucune des deux sources ne les donne.
+    places_rating = rating_from_places(place) if name_ok else None
+    places_review_count = review_count_from_places(place) if name_ok else None
+    rating_val = places_rating if places_rating is not None else jsonld.get("rating")
+    count_val = (places_review_count if places_review_count is not None
+                 else jsonld.get("rating_count"))
+    if rating_val is not None:
+        kit["google_rating"] = rating_val
+        confidence["google_rating"] = fact_conf if places_rating is not None else "medium"
+    if count_val is not None:
+        kit["google_reviews_count"] = count_val
+        confidence["google_reviews_count"] = (
+            fact_conf if places_review_count is not None else "medium")
+
     kit["social"] = social or None
     kit["rbq"] = rbq or llm.get("rbq")
     for f in ("reviews", "reviews_url", "social", "rbq"):
@@ -577,6 +622,60 @@ def assemble_brand_kit(
     return {k: v for k, v in kit.items() if v is not None}
 
 
+_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
+_MIN_WORD_LEN = 4          # « des », « cle » : trop court pour trancher sans faux positif
+_MIN_SUSPECT_WORDS = 2     # « demande » ≠ « demandé » plié : 1 seul mot ne prouve rien
+_MAX_ACCENT_FLAGS = 5      # la file de revue reste lisible
+_ASCII_BY_DESIGN_KEYS = {"slug", "id", "type", "overlay", "nav", "kind", "status"}
+
+
+def _fold(s: str) -> str:
+    """Minuscule sans accents ('Opérations' → 'operations')."""
+    return "".join(c for c in unicodedata.normalize("NFD", s.lower())
+                   if not unicodedata.combining(c))
+
+
+def _iter_text_fields(node: Any, path: str = "") -> Iterator[tuple[str, str]]:
+    """(chemin, texte) de chaque champ de prose du kit. Écarte les URLs et les clés
+    techniques (`_meta`, `*_url`), qui sont en ASCII par nature."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k.startswith("_") or "url" in k.lower() or k.lower() in _ASCII_BY_DESIGN_KEYS:
+                continue
+            yield from _iter_text_fields(v, f"{path}.{k}" if path else str(k))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from _iter_text_fields(v, f"{path}[{i}]")
+    elif isinstance(node, str) and not node.lower().startswith(("http://", "https://")):
+        yield path, node
+
+
+def unaccented_fields(kit: dict[str, Any]) -> list[str]:
+    """Champs dont le texte a perdu ses accents, détectés SANS liste de mots.
+
+    Le kit est son propre dictionnaire : on relève les mots réellement accentués ailleurs
+    dans le kit (« opérations », « débutent ») et on signale les champs qui en contiennent
+    la version ASCII. Un kit intégralement sans accents (nom propre, anglais) ne déclenche
+    donc rien — seule l'INCOHÉRENCE est suspecte. Cas d'origine : le prompt disait « clé
+    `reponse` sans accent » et le LLM désaccentuait les réponses de FAQ (2026-08-14)."""
+    fields = list(_iter_text_fields(kit))
+    accented: set[str] = set()
+    for _, text in fields:
+        for w in _WORD_RE.findall(text):
+            if len(w) >= _MIN_WORD_LEN and _fold(w) != w.lower():
+                accented.add(_fold(w))
+    if not accented:
+        return []
+    out: list[str] = []
+    for path, text in fields:
+        suspects = {w.lower() for w in _WORD_RE.findall(text)
+                    if len(w) >= _MIN_WORD_LEN and _fold(w) == w.lower()
+                    and w.lower() in accented}
+        if len(suspects) >= _MIN_SUSPECT_WORDS:
+            out.append(path)
+    return out
+
+
 def derive_review(kit: dict[str, Any]) -> list[dict[str, str]]:
     """Champs à faire vérifier par un humain (file de revue). Dérivé de confidence + présence."""
     review: list[dict[str, str]] = []
@@ -601,6 +700,9 @@ def derive_review(kit: dict[str, Any]) -> list[dict[str, str]]:
     no_photo = [m for m in (kit.get("team") or []) if not m.get("photo_url")]
     if no_photo:
         review.append({"field": "team", "reason": f"{len(no_photo)} membre(s) sans photo"})
+
+    for path in unaccented_fields(kit)[:_MAX_ACCENT_FLAGS]:
+        review.append({"field": path, "reason": "texte désaccentué — réécrire en français"})
 
     for p in kit.get("pages") or []:
         blocs = p.get("blocs") or []

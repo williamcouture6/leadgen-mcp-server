@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from collections import Counter
 from typing import Any
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -20,6 +21,14 @@ _JSONLD_TYPES = {
     "localbusiness", "organization", "professionalservice",
     "homeandconstructionbusiness", "generalcontractor", "plumber",
     "electrician", "roofingcontractor", "hvacbusiness", "store",
+}
+
+# Types structurels : jamais la fiche d'entreprise, même sur le bon domaine (leur `image`
+# est une vignette d'article, leur `telephone` n'existe pas).
+_JSONLD_STRUCTURAL_TYPES = {
+    "breadcrumblist", "itemlist", "collectionpage", "webpage", "aboutpage",
+    "contactpage", "article", "blogposting", "newsarticle", "faqpage",
+    "product", "review", "searchaction", "person",
 }
 
 
@@ -125,10 +134,53 @@ def _iter_jsonld_objects(html: str) -> list[dict[str, Any]]:
     return out
 
 
-def _type_matches(node: dict[str, Any]) -> bool:
+def _node_types(node: dict[str, Any]) -> list[str]:
     t = node.get("@type")
     types = [t] if isinstance(t, str) else (t or [])
-    return any(isinstance(x, str) and x.lower() in _JSONLD_TYPES for x in types)
+    return [x.lower() for x in types if isinstance(x, str)]
+
+
+def _type_matches(node: dict[str, Any]) -> bool:
+    return any(t in _JSONLD_TYPES for t in _node_types(node))
+
+
+def _same_site_url(a: str | None, b: str | None) -> bool:
+    """Deux URLs sur le même hôte, insensible à `www.` et tolérant au `None`.
+
+    (Distinct de `_same_host` plus bas, qui compare des netloc bruts pour le crawl.)"""
+    def host(u: str | None) -> str:
+        try:
+            h = (urlparse((u or "").strip()).hostname or "").lower()
+        except ValueError:
+            return ""
+        return h[4:] if h.startswith("www.") else h
+    ha, hb = host(a), host(b)
+    return bool(ha) and ha == hb
+
+
+def _is_site_node(node: dict[str, Any], base_url: str) -> bool:
+    """Nœud qui décrit LE site lui-même, malgré un `@type` hors schema.org.
+
+    Beaucoup de PME publient leur fiche avec un @type maison décrivant leur métier
+    (vu en prod : `"@type": "Déneigement commercial, industriel et institutionnel"`).
+    Le nœud est valable — c'est le vocabulaire qui ne l'est pas. On l'accepte quand il
+    s'identifie au site (`url`/`@id` du même hôte), jamais s'il pointe ailleurs (widget
+    ou fiche d'un tiers). Les nœuds structurels (fil d'Ariane, article…) restent exclus :
+    leur `image` est une vignette, pas la marque."""
+    if any(t in _JSONLD_STRUCTURAL_TYPES for t in _node_types(node)):
+        return False
+    return any(_same_site_url(node.get(k), base_url) for k in ("url", "@id"))
+
+
+def _telephone_from_contact_point(node: dict[str, Any]) -> str | None:
+    """`contactPoint` (objet ou liste) → 1er téléphone. Les PME le publient plus souvent
+    là qu'au 1er niveau du nœud."""
+    cp = node.get("contactPoint")
+    entries = cp if isinstance(cp, list) else [cp]
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("telephone"):
+            return str(entry["telephone"]).strip()
+    return None
 
 
 def _as_float(v: Any) -> float | None:
@@ -150,7 +202,7 @@ def parse_jsonld(html: str, base_url: str) -> dict[str, Any]:
     result["opening_hours"] = []
     result["same_as"] = []
     for node in _iter_jsonld_objects(html):
-        if not _type_matches(node):
+        if not (_type_matches(node) or _is_site_node(node, base_url)):
             continue
         logo = node.get("logo")
         if isinstance(logo, dict):
@@ -164,8 +216,9 @@ def parse_jsonld(html: str, base_url: str) -> dict[str, Any]:
             img = img[0] if img else None
         if img and not result["image"]:
             result["image"] = _abs(base_url, img)
-        if node.get("telephone") and not result["telephone"]:
-            result["telephone"] = str(node["telephone"]).strip()
+        tel = node.get("telephone") or _telephone_from_contact_point(node)
+        if tel and not result["telephone"]:
+            result["telephone"] = str(tel).strip()
         same = node.get("sameAs")
         if isinstance(same, str):
             same = [same]
@@ -194,12 +247,46 @@ def parse_jsonld(html: str, base_url: str) -> dict[str, Any]:
 
 RBQ_RE = re.compile(r"\b(\d{4}-\d{4}-\d{2})\b")
 
-_SOCIAL_HOSTS = {
-    "facebook": "facebook.com",
-    "instagram": "instagram.com",
-    "linkedin": "linkedin.com",
-    "google": "g.page",
+# Plateforme normalisée → hôtes reconnus (netloc, sans « www. »). `twitter.com` mappe
+# vers `x`. `google` couvre g.page + Google Maps (google.com/maps, maps.google.com, liens
+# courts maps.app.goo.gl) — un lien google.com hors /maps n'est PAS considéré social.
+_SOCIAL_HOSTS: dict[str, tuple[str, ...]] = {
+    "facebook": ("facebook.com",),
+    "instagram": ("instagram.com",),
+    "linkedin": ("linkedin.com",),
+    "youtube": ("youtube.com",),
+    "tiktok": ("tiktok.com",),
+    "x": ("x.com", "twitter.com"),
+    "google": ("g.page", "maps.google.com", "maps.app.goo.gl", "google.com"),
 }
+
+
+def _social_platform(url: str | None) -> str | None:
+    """Plateforme sociale normalisée d'une URL (par netloc), ou None.
+
+    Robuste aux faux positifs de sous-chaîne (« box.com » ≠ x.com) : on compare le
+    netloc exact (ou un sous-domaine). `twitter.com` → `x`."""
+    u = (url or "").strip()
+    if not u or u.lower().startswith(("#", "javascript:", "mailto:", "tel:")):
+        return None
+    try:
+        parsed = urlparse(u if "//" in u else "//" + u)
+    except ValueError:
+        return None
+    host = (parsed.netloc or "").split(":")[0].lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return None
+    path = (parsed.path or "").lower()
+    for platform, hosts in _SOCIAL_HOSTS.items():
+        for h in hosts:
+            if host == h or host.endswith("." + h):
+                # google.com n'est « social » que pour les liens Maps.
+                if platform == "google" and h == "google.com" and "/maps" not in path:
+                    continue
+                return platform
+    return None
 
 
 def _img_kind_hint(src: str, alt: str, in_header: bool, in_hero: bool) -> str:
@@ -253,15 +340,35 @@ def dedup_and_id(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def extract_social_links(html: str) -> dict[str, str]:
+    """Liens sociaux ancrés dans le HTML, clés par plateforme normalisée
+    (facebook, instagram, linkedin, youtube, tiktok, x, google). 1re occurrence gagne."""
     soup = BeautifulSoup(html, "html.parser")
     found: dict[str, str] = {}
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
-        low = href.lower()
-        for key, host in _SOCIAL_HOSTS.items():
-            if host in low and key not in found:
-                found[key] = href
+        platform = _social_platform(href)
+        if platform and platform not in found:
+            found[platform] = href
     return found
+
+
+def merge_social_links(
+    anchor: dict[str, str] | None,
+    same_as: list[str] | None = None,
+    google_maps_uri: str | None = None,
+) -> dict[str, str]:
+    """Union des liens sociaux : ancres scrapées + `sameAs` (JSON-LD) + Google Maps (Places).
+
+    Dédup par plateforme, l'ancre scrapée prime. Le `googleMapsUri` de Places renseigne la
+    plateforme `google` si absente. Pur (aucun réseau)."""
+    out: dict[str, str] = dict(anchor or {})
+    for url in same_as or []:
+        platform = _social_platform(url)
+        if platform and platform not in out:
+            out[platform] = url
+    if google_maps_uri and "google" not in out:
+        out["google"] = google_maps_uri
+    return out
 
 
 def find_rbq(text: str) -> str | None:
@@ -366,9 +473,86 @@ def _is_chromatic(hex6: str) -> bool:
     return (max(r, g, b) - min(r, g, b)) >= 24   # chroma suffisante (pas gris)
 
 
+def _rgb_distance(a: str, b: str) -> int:
+    """Distance euclidienne RGB entre deux '#rrggbb'. < ~60 = même couleur à l'œil."""
+    ar, ag, ab = int(a[1:3], 16), int(a[3:5], 16), int(a[5:7], 16)
+    br, bg, bb = int(b[1:3], 16), int(b[3:5], 16), int(b[5:7], 16)
+    return int(((ar - br) ** 2 + (ag - bg) ** 2 + (ab - bb) ** 2) ** 0.5)
+
+
+# Palette par défaut de l'éditeur WordPress (Gutenberg) : présente sur des millions de
+# sites qui ne l'utilisent pas. Déclarée une fois chacune dans le CSS → jamais la marque,
+# sauf si elle revient vraiment souvent (le site l'a alors adoptée).
+_WP_DEFAULT_PALETTE = {
+    "#f78da7", "#cf2e2e", "#ff6900", "#fcb900", "#7bdcb5", "#00d084",
+    "#8ed1fc", "#0693e3", "#9b51e0", "#abb8c3", "#eeeeee", "#313131",
+}
+_WP_DEFAULT_ADOPTED_HITS = 5   # au-delà, la couleur est vraiment utilisée par le thème
+_MIN_PRIMARY_HITS = 3          # une couleur vue 1-2 fois n'est pas une identité
+_MIN_SECONDARY_HITS = 2
+_MIN_SECONDARY_DISTANCE = 60   # sinon c'est une nuance de la primaire
+
+_CSS_HEX_RE = re.compile(r"#[0-9a-fA-F]{3,8}\b")
+_CSS_RGB_RE = re.compile(
+    r"rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*([\d.]+)\s*)?\)"
+)
+
+
+def _css_source_text(html: str) -> str:
+    """Le CSS réellement porté par la page : blocs <style> + attributs style=""."""
+    blocks = re.findall(r"<style[^>]*>(.*?)</style>", html, re.S | re.I)
+    attrs = re.findall(r"style=\"([^\"]*)\"", html)
+    return "\n".join(blocks + attrs)
+
+
+def _css_color_counts(css: str) -> Counter[str]:
+    """Compte les couleurs chromatiques déclarées dans le CSS (hex + rgb/rgba opaques)."""
+    counts: Counter[str] = Counter()
+    for raw in _CSS_HEX_RE.findall(css):
+        hx = _norm_hex(raw)
+        if hx and _is_chromatic(hx):
+            counts[hx] += 1
+    for r, g, b, alpha in _CSS_RGB_RE.findall(css):
+        if alpha and float(alpha) < 0.9:      # translucide = ombre/voile, pas la marque
+            continue
+        if any(int(v) > 255 for v in (r, g, b)):
+            continue
+        hx = "#%02x%02x%02x" % (int(r), int(g), int(b))
+        if _is_chromatic(hx):
+            counts[hx] += 1
+    return counts
+
+
+def _palette_by_frequency(html: str) -> dict[str, str]:
+    """Palette déduite de la couleur qui revient le plus dans le CSS de la page.
+
+    Repli pour les thèmes sans variables de palette (Divi, thèmes maison…), où la couleur
+    de marque n'est déclarée nulle part explicitement mais sature le CSS du thème."""
+    counts = _css_color_counts(_css_source_text(html))
+    ranked = [
+        (hx, n) for hx, n in counts.most_common()
+        if hx not in _WP_DEFAULT_PALETTE or n >= _WP_DEFAULT_ADOPTED_HITS
+    ]
+    if not ranked or ranked[0][1] < _MIN_PRIMARY_HITS:
+        return {}
+    primary = ranked[0][0]
+    out = {"primary": primary}
+    for hx, n in ranked[1:]:
+        if n >= _MIN_SECONDARY_HITS and _rgb_distance(primary, hx) >= _MIN_SECONDARY_DISTANCE:
+            out["secondary"] = hx
+            break
+    return out
+
+
 def extract_css_colors(html: str) -> dict[str, str]:
-    """Palette de marque depuis les variables CSS globales (Elementor) inline dans le
-    HTML. Renvoie {primary, secondary?} si une primaire chromatique est trouvée, sinon {}."""
+    """Palette de marque du site. Deux sources, par ordre de fiabilité :
+
+    1. `css_vars` — variables de palette globales déclarées (Elementor) : autoritatif ;
+    2. `frequency` — couleur dominante du CSS de la page : déduit, mais bien plus juste
+       que la couleur moyenne du logo (un logo vert sur un site orange, vu en prod).
+
+    Renvoie {primary, secondary?, _source} si une primaire chromatique est trouvée,
+    sinon {}."""
     out: dict[str, str] = {}
     for role, var in _CSS_COLOR_VARS:
         m = re.search(re.escape(var) + r"\s*:\s*(#[0-9a-fA-F]{3,8})", html)
@@ -376,7 +560,10 @@ def extract_css_colors(html: str) -> dict[str, str]:
             hx = _norm_hex(m.group(1))
             if hx and _is_chromatic(hx):
                 out[role] = hx
-    return out if out.get("primary") else {}
+    if out.get("primary"):
+        return {**out, "_source": "css_vars"}
+    freq = _palette_by_frequency(html)
+    return {**freq, "_source": "frequency"} if freq else {}
 
 
 _FB_PHONE_RE = re.compile(r'"phone(?:_?number)?"\s*:\s*"([+\d][\d\s().\-]{6,})"')

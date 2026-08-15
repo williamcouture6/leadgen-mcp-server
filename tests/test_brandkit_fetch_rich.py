@@ -97,7 +97,8 @@ async def test_fetch_site_rich_extracts_css_palette(monkeypatch):
     monkeypatch.setattr(BK.render_client, "fetch_rendered", fake_rendered)
 
     rich = await BK.fetch_site_rich("https://css.test/")
-    assert rich["css_colors"] == {"primary": "#00a6c0", "secondary": "#0e2f3a"}
+    assert rich["css_colors"] == {"primary": "#00a6c0", "secondary": "#0e2f3a",
+                                  "_source": "css_vars"}
 
 
 @pytest.mark.asyncio
