@@ -395,7 +395,10 @@ async def test_supprime_sans_config_est_marque_failed(monkeypatch) -> None:
 
 def _wf6_wire(monkeypatch, drafts: list[dict], *, ok_ids: set[str]):
     """Stub run_wf6 : renvoie `drafts` à la requête, et fait réussir seulement
-    les message_id de `ok_ids`. Retourne la liste des params de requête vus."""
+    les message_id de `ok_ids`. Retourne (params de requête vus, écritures vues).
+
+    `db.update` est patché lui aussi : run_wf6 écrit maintenant l'horodatage de
+    tentative, sans ce patch les tests taperaient le réseau."""
     from src.tools import send
 
     seen_params: list[dict] = []
@@ -416,11 +419,18 @@ def _wf6_wire(monkeypatch, drafts: list[dict], *, ok_ids: set[str]):
             skipped_reason="aucun config produit (site_configs absent)",
         )
 
+    updates: list[tuple[str, dict, dict]] = []
+
+    async def _update(table, patch, **kw):
+        updates.append((table, patch, kw.get("filters") or {}))
+        return [{}]
+
     monkeypatch.setenv("INSTANTLY_CAMPAIGN_ID_REACTI", "camp-agence")
     monkeypatch.setattr(send, "count_pushed_today", AsyncMock(return_value=0))
     monkeypatch.setattr(send.db, "select", _select)
+    monkeypatch.setattr(send.db, "update", _update)
     monkeypatch.setattr(send, "send_one_message", _send_one)
-    return seen_params
+    return seen_params, updates
 
 
 def _drafts(n: int) -> list[dict]:
@@ -464,7 +474,7 @@ async def test_la_sur_recolte_sarrete_a_la_limite(monkeypatch) -> None:
 async def test_la_requete_demande_plus_que_la_limite(monkeypatch) -> None:
     from src.tools import send
 
-    seen = _wf6_wire(monkeypatch, _drafts(30), ok_ids=set())
+    seen, _ = _wf6_wire(monkeypatch, _drafts(30), ok_ids=set())
     await send.run_wf6(send.RunWf6In(limit=2, track="agence-ia"))
 
     assert seen[0]["limit"] == "10"  # 2 × DRAFT_OVERFETCH_FACTOR
@@ -475,7 +485,57 @@ async def test_la_sur_recolte_est_plafonnee(monkeypatch) -> None:
     lire 5 000 lignes à chaque passe."""
     from src.tools import send
 
-    seen = _wf6_wire(monkeypatch, _drafts(50), ok_ids=set())
+    seen, _ = _wf6_wire(monkeypatch, _drafts(50), ok_ids=set())
     await send.run_wf6(send.RunWf6In(limit=50, track="agence-ia", daily_cap=500))
 
     assert seen[0]["limit"] == str(send.DRAFT_OVERFETCH_MAX)
+
+
+async def test_la_file_tourne_jamais_tentes_dabord(monkeypatch) -> None:
+    """Sans rotation, les mêmes plus vieux reviennent à chaque passe et un
+    bloqué définitif occupe un créneau pour toujours."""
+    from src.tools import send
+
+    seen, _ = _wf6_wire(monkeypatch, _drafts(3), ok_ids=set())
+    await send.run_wf6(send.RunWf6In(limit=2, track="agence-ia"))
+
+    assert seen[0]["order"] == "last_send_attempt_at.asc.nullsfirst,created_at.asc"
+
+
+async def test_un_saut_horodate_la_tentative(monkeypatch) -> None:
+    """C'est l'horodatage qui fait reculer le bloqué : sans lui, il reste en
+    tête et la file se fige à nouveau."""
+    from src.tools import send
+
+    _, updates = _wf6_wire(monkeypatch, _drafts(2), ok_ids=set())
+    await send.run_wf6(send.RunWf6In(limit=2, track="agence-ia"))
+
+    stamps = [(f, p) for t, p, f in updates if "last_send_attempt_at" in p]
+    assert len(stamps) == 2
+    assert {f["id"] for f, _ in stamps} == {"eq.m-0", "eq.m-1"}
+
+
+async def test_un_envoi_reussi_nest_pas_horodate_par_la_boucle(monkeypatch) -> None:
+    """Un message poussé quitte le statut draft, donc il sort de la requête :
+    l'horodater serait une écriture pour rien."""
+    from src.tools import send
+
+    drafts = _drafts(2)
+    _, updates = _wf6_wire(monkeypatch, drafts, ok_ids={"m-0", "m-1"})
+    await send.run_wf6(send.RunWf6In(limit=2, track="agence-ia"))
+
+    assert not [p for _, p, _ in updates if "last_send_attempt_at" in p]
+
+
+async def test_un_horodatage_qui_echoue_ne_casse_pas_la_passe(monkeypatch) -> None:
+    from src.tools import send
+
+    _wf6_wire(monkeypatch, _drafts(2), ok_ids=set())
+
+    async def _boom(*a, **k):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(send.db, "update", _boom)
+
+    out = await send.run_wf6(send.RunWf6In(limit=2, track="agence-ia"))
+    assert out.skipped_no_site_config == 2
+    assert out.errors == 0

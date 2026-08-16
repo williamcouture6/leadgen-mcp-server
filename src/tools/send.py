@@ -3,15 +3,19 @@
 Logique :
   1. Lit `messages` où status='draft' AND compliance_check_passed=true AND
      direction='outbound' (déjà validé par WF-5).
-  2. Defense in depth :
+  2. Defense in depth, dans l'ordre où le code les exécute :
      - Warmup gate (WARMUP_END_DATE) — refuse l'envoi pendant le warmup même
        si WF-5 a approuvé (cas où le draft a été approuvé avant la fenêtre).
+     - Domaine de plateforme / big tech — filet final avant l'action
+       irréversible : une adresse @facebook.com / @meta.com / @doordash.com
+       arrivée en DB malgré les blocklists amont ne part jamais (message
+       marqué 'failed').
+     - Suppression list — check email + domaine du contact contre
+       suppression_list (opt-outs, hard bounces, DNCL).
      - Garde config produit (P4.10) — track agence-ia : pas de site refait par
        le pipeline (`agence.site_configs` verdict 'ok'), pas de courriel.
      - Garde démo (P3) — track agence-ia : pas de lien démo unique dans le
        corps, pas de courriel (frappe retentée ici avant de sauter).
-     - Suppression list — check email + domaine du contact contre
-       suppression_list (opt-outs, hard bounces, DNCL).
      - Daily cap — limite N pushs/jour, fenêtre America/Toronto.
   3. Fetch contact + company pour enrichir le lead Instantly (first_name,
      last_name, company_name).
@@ -541,7 +545,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             daily_cap=daily_cap, already_pushed_today=already, items=[],
         )
 
-    # Fetch drafts éligibles, ordre FIFO (created_at asc)
+    # Fetch drafts éligibles
     drafts = await db.select(
         "messages",
         params={
@@ -550,7 +554,11 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             "status": "eq.draft",
             "compliance_check_passed": "is.true",
             "track": f"eq.{track}",
-            "order": "created_at.asc",
+            # Jamais tenté d'abord, puis le moins récemment tenté. Un draft que
+            # la garde refuse recule ainsi derrière les frais au lieu d'occuper
+            # la tête de file pour toujours — et repasse quand même à son tour,
+            # donc il partira le jour où son config arrivera.
+            "order": "last_send_attempt_at.asc.nullsfirst,created_at.asc",
             "limit": str(min(effective_limit * DRAFT_OVERFETCH_FACTOR, DRAFT_OVERFETCH_MAX)),
         },
     )
@@ -592,6 +600,17 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             sk_other += 1
         else:
             errors += 1
+
+        if res.status != "ok":
+            # Un message poussé quitte 'draft' et sort de la requête : inutile
+            # de l'horodater. Un message sauté doit reculer dans la file.
+            try:
+                await db.update(
+                    "messages", {"last_send_attempt_at": datetime.now(timezone.utc).isoformat()},
+                    filters={"id": f"eq.{d['id']}"},
+                )
+            except Exception:  # noqa: BLE001 — un horodatage perdu ne casse pas la passe
+                pass
 
         items.append(RunWf6Item(
             message_id=d["id"], to_email=d.get("to_email"),
