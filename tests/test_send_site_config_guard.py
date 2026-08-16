@@ -356,6 +356,9 @@ async def test_run_wf6_compte_les_sauts_sans_config(monkeypatch) -> None:
             return drafts
         return []
     monkeypatch.setattr(send.db, "select", _select)
+    # run_wf6 horodate les tentatives sautées : sans ce patch le test tape le
+    # réseau (l'échec est avalé, mais il coûte ~7 s de DNS par message).
+    monkeypatch.setattr(send.db, "update", AsyncMock(return_value=[{}]))
 
     async def _send_one(payload):
         if payload.message_id == "m-ok":
@@ -393,15 +396,18 @@ async def test_supprime_sans_config_est_marque_failed(monkeypatch) -> None:
     assert any(p.get("status") == "failed" for _, p in updates)
 
 
-def _wf6_wire(monkeypatch, drafts: list[dict], *, ok_ids: set[str]):
-    """Stub run_wf6 : renvoie `drafts` à la requête, et fait réussir seulement
-    les message_id de `ok_ids`. Retourne (params de requête vus, écritures vues).
+def _wf6_wire(monkeypatch, drafts: list[dict], *, ok_ids: set[str],
+              boom_ids: set[str] | None = None):
+    """Stub run_wf6 : renvoie `drafts` à la requête, fait réussir les
+    message_id de `ok_ids`, fait LEVER ceux de `boom_ids` (le reste est sauté).
+    Retourne (params de requête vus, écritures vues).
 
     `db.update` est patché lui aussi : run_wf6 écrit maintenant l'horodatage de
     tentative, sans ce patch les tests taperaient le réseau."""
     from src.tools import send
 
     seen_params: list[dict] = []
+    boom_ids = boom_ids or set()
 
     async def _select(table, *, params=None, schema=None):
         if table == "messages":
@@ -411,6 +417,8 @@ def _wf6_wire(monkeypatch, drafts: list[dict], *, ok_ids: set[str]):
         return []
 
     async def _send_one(payload):
+        if payload.message_id in boom_ids:
+            raise RuntimeError(f"boom {payload.message_id}")
         if payload.message_id in ok_ids:
             return send.SendMessageOut(message_id=payload.message_id, status="ok",
                                        provider_message_id=f"lead-{payload.message_id}")
@@ -525,6 +533,24 @@ async def test_un_envoi_reussi_nest_pas_horodate_par_la_boucle(monkeypatch) -> N
     await send.run_wf6(send.RunWf6In(limit=2, track="agence-ia"))
 
     assert not [p for _, p, _ in updates if "last_send_attempt_at" in p]
+
+
+async def test_une_exception_horodate_aussi_la_tentative(monkeypatch) -> None:
+    """Deuxième porte vers la même famine : un message qui LÈVE reste 'draft'
+    tout comme un message sauté. Sans horodatage il garderait sa place en tête
+    et re-consommerait un créneau à chaque passe — une ligne malformée, ou un
+    contact qui 404 pour toujours, suffirait. La rotation couvre toute issue
+    qui laisse le message en draft, pas seulement les sauts propres."""
+    from src.tools import send
+
+    _, updates = _wf6_wire(monkeypatch, _drafts(2), ok_ids={"m-1"},
+                           boom_ids={"m-0"})
+    out = await send.run_wf6(send.RunWf6In(limit=2, track="agence-ia"))
+
+    assert out.errors == 1
+    assert out.pushed == 1
+    # le levant est horodaté, le poussé ne l'est pas (il quitte 'draft')
+    assert [f for _, p, f in updates if "last_send_attempt_at" in p] == [{"id": "eq.m-0"}]
 
 
 async def test_un_horodatage_qui_echoue_ne_casse_pas_la_passe(monkeypatch) -> None:

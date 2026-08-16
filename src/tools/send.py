@@ -515,6 +515,19 @@ class RunWf6Out(BaseModel):
     items: list[RunWf6Item]
 
 
+async def _horodater_tentative(message_id: str) -> None:
+    """Fait reculer un message dans la file. Posé sur TOUTE tentative qui n'a
+    pas abouti — saut comme exception : un message qui lève garderait sinon sa
+    place en tête et re-consommerait un créneau à chaque passe."""
+    try:
+        await db.update(
+            "messages", {"last_send_attempt_at": datetime.now(timezone.utc).isoformat()},
+            filters={"id": f"eq.{message_id}"},
+        )
+    except Exception:  # noqa: BLE001 — un horodatage perdu ne casse pas la passe
+        pass
+
+
 async def run_wf6(payload: RunWf6In) -> RunWf6Out:
     """Pass complet WF-6 : pousse jusqu'à `limit` drafts approuvés à Instantly,
     en respectant le daily cap (compté sur fenêtre Toronto)."""
@@ -578,6 +591,9 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             )
         except Exception as e:  # noqa: BLE001
             errors += 1
+            # Le message reste 'draft' : il doit reculer comme un saut, sinon
+            # une ligne qui lève à tous les coups garde la tête de file.
+            await _horodater_tentative(d["id"])
             items.append(RunWf6Item(
                 message_id=d["id"], to_email=d.get("to_email"),
                 status="error", error_text=repr(e),
@@ -604,13 +620,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         if res.status != "ok":
             # Un message poussé quitte 'draft' et sort de la requête : inutile
             # de l'horodater. Un message sauté doit reculer dans la file.
-            try:
-                await db.update(
-                    "messages", {"last_send_attempt_at": datetime.now(timezone.utc).isoformat()},
-                    filters={"id": f"eq.{d['id']}"},
-                )
-            except Exception:  # noqa: BLE001 — un horodatage perdu ne casse pas la passe
-                pass
+            await _horodater_tentative(d["id"])
 
         items.append(RunWf6Item(
             message_id=d["id"], to_email=d.get("to_email"),
