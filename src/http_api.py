@@ -756,8 +756,22 @@ class ReactiDiscoverIn(BaseModel):
 
 
 class ReactiDiscoverOut(BaseModel):
+    """Issue d'UNE passe de découverte.
+
+    `status` — cinq valeurs, mutuellement exclusives :
+      - 'found'            : au moins un courriel public retenu (voir contacts_inserted).
+      - 'a_reessayer'      : la réponse du modèle a tronqué (stop_reason='max_tokens').
+                             RIEN n'a été écrit sur la company, elle reste 'sourced' et
+                             repassera. ⚠️ Ce n'est PAS un succès : compter une passe
+                             tronquée dans 'found' ferait dire au rapport de lot qu'on a
+                             trouvé dix entreprises alors qu'on n'a rien trouvé du tout.
+      - 'no_web_presence'  : verdict terminal, avec sa raison en base — vraie absence,
+                             ou troncature répétée jusqu'au DISCOVERY_TRUNCATION_CAP.
+      - 'error'            : l'appel LLM a levé.
+      - 'company_not_found': l'id ne correspond à aucune ligne.
+    """
     company_id: str
-    status: str  # "found" | "no_web_presence" | "error" | "company_not_found"
+    status: str
     contacts_inserted: int = 0
     contacts_duplicate: int = 0
     website_backfilled: bool = False
@@ -866,6 +880,15 @@ async def reacti_discover_contact(payload: ReactiDiscoverIn) -> ReactiDiscoverOu
             company_id=payload.company_id, status="no_web_presence",
         )
 
+    if actions.motif == "reponse_tronquee":
+        # Sous le plafond : on n'écrit rien, la company repassera. Mais on le DIT,
+        # au lieu de tomber dans le 'found' de la fin de fonction — un lot où le
+        # modèle a tronqué dix fois rapporterait « dix trouvées » et apprendrait à
+        # l'opérateur à faire confiance à un chiffre faux.
+        return ReactiDiscoverOut(
+            company_id=payload.company_id, status="a_reessayer",
+        )
+
     if actions.new_status == "no_web_presence":
         await db_tools.db.update(
             "companies",
@@ -928,6 +951,10 @@ class RunReactiWf2Out(BaseModel):
     processed: int
     found: int
     no_web_presence: int
+    # Passes tronquées restées sous le plafond : rien n'a été écrit, ces companies
+    # repasseront. Compteur séparé pour que 'found' ne gonfle plus des passes qui
+    # n'ont rien trouvé — le rapport de lot doit pouvoir être lu au pied de la lettre.
+    a_reessayer: int = 0
     failed: int
     items: list[RunReactiWf2Item]
 
@@ -957,7 +984,7 @@ async def run_reacti_wf2(payload: RunReactiWf2In) -> RunReactiWf2Out:
     results = await asyncio.gather(*(_one(co) for co in backlog))
 
     items: list[RunReactiWf2Item] = []
-    found = no_web = failed = 0
+    found = no_web = a_reessayer = failed = 0
     for co, res, err in results:
         if res is None:
             failed += 1
@@ -969,6 +996,8 @@ async def run_reacti_wf2(payload: RunReactiWf2In) -> RunReactiWf2Out:
             found += 1
         elif res.status == "no_web_presence":
             no_web += 1
+        elif res.status == "a_reessayer":
+            a_reessayer += 1
         else:
             failed += 1
         items.append(RunReactiWf2Item(
@@ -978,7 +1007,7 @@ async def run_reacti_wf2(payload: RunReactiWf2In) -> RunReactiWf2Out:
 
     return RunReactiWf2Out(
         processed=len(backlog), found=found, no_web_presence=no_web,
-        failed=failed, items=items,
+        a_reessayer=a_reessayer, failed=failed, items=items,
     )
 
 
