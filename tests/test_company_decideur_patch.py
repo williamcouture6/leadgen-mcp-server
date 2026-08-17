@@ -2,12 +2,21 @@
 
 Pas de réseau : on monkeypatche db.update pour capturer le patch envoyé à
 companies et vérifier les colonnes decideur_confirme/decideur_potentiel.
+db.select est mocké aussi depuis que le statut dépend des contacts en base.
 """
 from __future__ import annotations
 
-import os
-
 import pytest
+
+
+def _fake_contacts(monkeypatch: pytest.MonkeyPatch, n: int) -> None:
+    """Le statut lit désormais `contacts` : sans ce mock, appel réseau réel."""
+    import src.tools.db as dbt
+
+    async def fake_select(table, *, params=None, schema=None):
+        return [{"id": f"ct-{i}"} for i in range(n)] if table == "contacts" else []
+
+    monkeypatch.setattr(dbt.db, "select", fake_select)
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +40,7 @@ async def test_update_company_research_sets_confirme(monkeypatch: pytest.MonkeyP
         return [{"id": "co-1"}]
 
     monkeypatch.setattr(dbt.db, "update", fake_update)
+    _fake_contacts(monkeypatch, 1)
 
     research = {"decideur_candidats": [
         {"nom_complet": "Jean Tremblay", "titre": "Propriétaire",
@@ -58,6 +68,7 @@ async def test_update_company_research_sets_potentiel(monkeypatch: pytest.Monkey
         return [{"id": "co-2"}]
 
     monkeypatch.setattr(dbt.db, "update", fake_update)
+    _fake_contacts(monkeypatch, 1)
 
     research = {"decideur_candidats": [
         {"nom_complet": "Luc Roy", "titre": "Directeur", "source_url": "s", "confidence": "medium"}
@@ -75,8 +86,12 @@ async def test_update_company_research_sets_potentiel(monkeypatch: pytest.Monkey
 async def test_update_company_research_promotes_status_enriched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Succès research => status passe à 'enriched', mais jamais sur une boîte
-    déjà disqualified/suppressed (gardé par le filtre PostgREST)."""
+    """Research AVEC contact => status passe à 'enriched', mais jamais sur une boîte
+    déjà disqualified/suppressed (gardé par le filtre PostgREST).
+
+    Sans contact le statut vaut 'researched_no_contact' — couvert par
+    tests/test_save_research_status.py.
+    """
     import src.tools.db as dbt
 
     captured: dict = {}
@@ -87,6 +102,7 @@ async def test_update_company_research_promotes_status_enriched(
         return [{"id": "co-3"}]
 
     monkeypatch.setattr(dbt.db, "update", fake_update)
+    _fake_contacts(monkeypatch, 1)
 
     await dbt.update_company_research("co-3", {"company_summary": "x"}, emails_found=[])
 

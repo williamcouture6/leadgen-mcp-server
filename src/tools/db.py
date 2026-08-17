@@ -818,22 +818,56 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     return patch
 
 
+async def _statut_apres_recherche(
+    company_id: str,
+    emails_found: list[dict[str, Any]] | None,
+) -> str:
+    """'enriched' si la passe a un contact à montrer, sinon 'researched_no_contact'.
+
+    Deux sources d'évidence, et il faut les deux :
+
+    1. Les contacts DÉJÀ en base — couvre les re-passes et le backfill (le script
+       `backfill_research_columns.py` relit les contacts existants).
+    2. Les `emails_found` de la passe courante — indispensable parce que
+       `http_api.research_company_by_id` appelle cette fonction AVANT sa boucle
+       d'insertion des contacts scrapés. À cet instant la table `contacts` est vide
+       même quand le scraping a ramené trois adresses : ne compter que la base ferait
+       basculer 100 % des premières passes en 'researched_no_contact', l'inverse exact
+       du bug corrigé ici. Un courriel non vide finit toujours contact —
+       `insert_contact` ne rejette que l'adresse vide (skipped_no_email), le doublon
+       renvoyant une ligne déjà présente.
+    """
+    if any((e or {}).get("email") for e in (emails_found or [])):
+        return "enriched"
+    contacts_existants = await db.select(
+        "contacts",
+        params={"select": "id", "company_id": f"eq.{company_id}", "limit": "1"},
+    )
+    return "enriched" if contacts_existants else "researched_no_contact"
+
+
 async def update_company_research(
     company_id: str,
     research_json: dict[str, Any],
     emails_found: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Patch companies.research_json (+ colonnes flat lead_potential_* et décideur)
-    et promeut le status à 'enriched'.
+    et pose le status selon ce qui a été TROUVÉ.
 
     Met à jour le payload du Research Agent, le score de potentiel extrait, et le
     décideur résumé (decideur_confirme/decideur_potentiel, mutuellement exclusifs)
     calculé depuis decideur_candidats + les emails nominatifs scrapés.
 
-    `status` passe à 'enriched' (signal fiable « a été researché » — `last_enriched_at`
-    horodaté au passage). Le filtre `status not.in.(disqualified,suppressed)` protège
-    les boîtes terminales : on ne ressuscite jamais un lead écarté, et l'UPDATE entier
-    (research_json inclus) est donc sauté pour ces boîtes — voulu, elles sont hors pipeline.
+    `status` passe à 'enriched' s'il y a au moins un contact, sinon à
+    'researched_no_contact' (0001_initial_schema.sql définit 'enriched' = « contacts
+    trouvés » ; le poser inconditionnellement faisait annoncer des contacts inexistants
+    à 145 entreprises). `last_enriched_at` est horodaté dans les deux cas : il porte la
+    ré-éligibilité à 90 jours de `list_companies_to_research`.
+
+    Le filtre `status not.in.(disqualified,suppressed)` protège les boîtes terminales :
+    on ne ressuscite jamais un lead écarté, et l'UPDATE entier (research_json inclus)
+    est donc sauté pour ces boîtes — voulu, elles sont hors pipeline.
+    'researched_no_contact' n'est PAS terminal et reste donc hors de ce filtre.
     """
     confirme, potentiel = summarize_company_decideur(
         (research_json or {}).get("decideur_candidats"), emails_found
@@ -842,7 +876,7 @@ async def update_company_research(
         "research_json": research_json,
         "decideur_confirme": confirme,
         "decideur_potentiel": potentiel,
-        "status": "enriched",
+        "status": await _statut_apres_recherche(company_id, emails_found),
         "last_enriched_at": datetime.now(timezone.utc).isoformat(),
     }
     patch.update(extract_lead_potential_patch(research_json))
