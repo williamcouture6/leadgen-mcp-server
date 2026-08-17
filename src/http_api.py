@@ -414,7 +414,8 @@ async def companies_to_research(
     require_website: bool = True,
     track: str = "agence-ia",  # défaut = track live ; OPT retiré = jamais scrapé sauf demande explicite
 ) -> list[dict[str, Any]]:
-    """Companies sans research_json. Utilisé par n8n pour visualiser le backlog."""
+    """Backlog de recherche : jamais researchée, OU researchée sans contact il y a
+    plus de 90 jours. Utilisé par n8n pour visualiser le backlog."""
     return await db_tools.list_companies_to_research(
         limit=limit, require_website=require_website, track=track
     )

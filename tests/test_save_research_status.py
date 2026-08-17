@@ -9,6 +9,8 @@ côté agent de recherche, pas la fonction DB.
 """
 from __future__ import annotations
 
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -98,3 +100,88 @@ async def test_last_enriched_at_est_pose_dans_les_deux_cas(
         patches = _capture(monkeypatch, n_contacts=n)
         await dbt.update_company_research("co-1", {"a": 1})
         assert patches[0].get("last_enriched_at")
+
+
+# ----------------------------------------------------------------------
+# Ré-éligibilité à 90 jours (Task C3)
+# ----------------------------------------------------------------------
+
+
+def _params_backlog(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    from src.tools import db as dbt
+
+    vus: list[dict] = []
+
+    async def _select(table: str, *, params: Any = None, schema: Any = None) -> list[dict]:
+        vus.append(params or {})
+        return []
+
+    monkeypatch.setattr(dbt.db, "select", _select)
+    return vus
+
+
+async def test_researched_no_contact_revient_apres_90_jours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Une entreprise sans courriel aujourd'hui peut en publier un dans trois
+    mois. Ne jamais repasser figerait 145 fiches ; repasser à chaque cron
+    coûterait cher pour rien."""
+    from src.tools import db as dbt
+
+    vus = _params_backlog(monkeypatch)
+    await dbt.list_companies_to_research(limit=10, track="agence-ia")
+
+    params = vus[0]
+    assert "researched_no_contact" in str(params), "le statut doit être éligible"
+    assert "last_enriched_at" in str(params)
+
+
+async def test_les_deux_portes_du_backlog_sont_dans_une_seule_clause_or(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`research_json is null` ne peut PAS rester un filtre de premier niveau.
+
+    Toute company 'researched_no_contact' a par construction un research_json (c'est
+    la passe de recherche qui pose ce statut). Un `research_json=is.null` en ET
+    global annulerait donc la seconde porte en silence : la clause 90 jours serait
+    posée, les tests passeraient, et pas une seule fiche ne reviendrait jamais.
+    La condition sur research_json appartient à la porte 'sourced'.
+    """
+    from src.tools import db as dbt
+
+    vus = _params_backlog(monkeypatch)
+    await dbt.list_companies_to_research(limit=10, track="agence-ia")
+
+    params = vus[0]
+    assert "research_json" not in params, "annulerait la porte researched_no_contact"
+    clause = params["or"]
+    assert clause.startswith("(and(status.eq.sourced,research_json.is.null),")
+    assert "and(status.eq.researched_no_contact,last_enriched_at.lt." in clause
+    assert clause.endswith("))")
+
+
+async def test_le_seuil_de_reprise_vaut_bien_90_jours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.tools import db as dbt
+
+    vus = _params_backlog(monkeypatch)
+    await dbt.list_companies_to_research(limit=10, track="agence-ia")
+
+    m = re.search(r"last_enriched_at\.lt\.([^,)]+)", vus[0]["or"])
+    assert m, "pas de seuil daté dans la clause or"
+    seuil = datetime.fromisoformat(m.group(1))
+    ecart = datetime.now(timezone.utc) - seuil
+    assert timedelta(days=89) < ecart < timedelta(days=91), ecart
+
+
+async def test_les_statuts_terminaux_restent_hors_du_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """La clause `or` ne doit pas rouvrir une porte que le filtre terminal ferme."""
+    from src.tools import db as dbt
+
+    vus = _params_backlog(monkeypatch)
+    await dbt.list_companies_to_research(limit=10, track="agence-ia")
+
+    assert vus[0]["status"] == "not.in.(disqualified,no_web_presence)"

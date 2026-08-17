@@ -726,7 +726,8 @@ async def list_companies_to_research(
     require_website: bool = True,
     track: str = "agence-ia",  # track live ; OPT retiré = jamais sélectionné sauf track="OPT" explicite
 ) -> list[dict[str, Any]]:
-    """Companies sans research_json.
+    """Backlog de recherche : jamais researchée, OU researchée sans contact il y a
+    plus de 90 jours.
 
     OPT : exige un website (`require_website=True`) — pas de site = pas de matière.
     REACTI : peut tourner avec `require_website=False` pour traiter les boîtes sans
@@ -736,9 +737,22 @@ async def list_companies_to_research(
 
     Exclut les statuts terminaux (disqualified, no_web_presence).
     """
+    # Deux portes vers le backlog : jamais researchée, OU researchée sans contact
+    # il y a plus de 90 jours (un site peut publier une adresse entre-temps).
+    # 90 jours : repasser tout le parc à chaque cron coûterait cher pour peu de
+    # rendement, ne jamais repasser figerait 145 entreprises pour toujours.
+    #
+    # ⚠️ `research_json is null` vit DANS la porte 'sourced', jamais en filtre de
+    # premier niveau : toute company 'researched_no_contact' a par construction un
+    # research_json (c'est la passe de recherche qui pose ce statut), donc un ET
+    # global sur research_json annulerait la seconde porte en silence.
+    limite_reprise = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     params: dict[str, str] = {
         "select": "id,name,domain,website,city,icp_segment,industry,google_place_id,status,track",
-        "research_json": "is.null",
+        "or": (
+            "(and(status.eq.sourced,research_json.is.null),"
+            f"and(status.eq.researched_no_contact,last_enriched_at.lt.{limite_reprise}))"
+        ),
         "google_place_id": "not.is.null",
         "status": "not.in.(disqualified,no_web_presence)",
         "track": f"eq.{track}",
