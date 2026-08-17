@@ -169,3 +169,54 @@ def test_decide_found_but_no_emails_marks_no_web_presence() -> None:
     discovery = {**rd._EMPTY_DISCOVERY, "found": True, "confidence": "high"}
     actions = rd.decide_discovery_actions(discovery)
     assert actions.new_status == "no_web_presence"
+
+
+def test_une_reponse_tronquee_ne_disqualifie_pas() -> None:
+    """max_tokens est une panne technique, pas un fait sur l'entreprise.
+    Elle doit repasser, pas être condamnée par un statut terminal."""
+    from src.tools.reacti_discover import decide_discovery_actions
+
+    actions = decide_discovery_actions({}, tronquee=True)
+    assert actions.new_status is None
+    assert actions.motif == "reponse_tronquee"
+
+
+def test_une_vraie_absence_reste_terminale() -> None:
+    from src.tools.reacti_discover import decide_discovery_actions
+
+    actions = decide_discovery_actions(
+        {"found": False, "confidence": "low", "match_reasoning": "aucune trace"},
+        tronquee=False,
+    )
+    assert actions.new_status == "no_web_presence"
+    assert actions.motif == "pas_trouvee"
+
+
+def test_le_motif_distingue_les_trois_vraies_causes() -> None:
+    """Aujourd'hui les trois s'écrasent en une seule valeur ; la raison est
+    calculée puis jetée."""
+    from src.tools.reacti_discover import decide_discovery_actions
+
+    cas = [
+        ({"found": False, "confidence": "high"}, "pas_trouvee"),
+        ({"found": True, "confidence": "low"}, "confiance_faible"),
+        ({"found": True, "confidence": "high", "emails": []}, "aucun_courriel_publie"),
+    ]
+    for discovery, motif_attendu in cas:
+        actions = decide_discovery_actions(discovery, tronquee=False)
+        assert actions.new_status == "no_web_presence"
+        assert actions.motif == motif_attendu, discovery
+
+
+def test_un_succes_na_pas_de_motif() -> None:
+    from src.tools.reacti_discover import decide_discovery_actions
+
+    actions = decide_discovery_actions({
+        "found": True, "confidence": "high", "page_kind": "own_site",
+        "discovered_url": "https://exemple.ca",
+        "emails": [{"email": "info@exemple.ca", "kind": "generic",
+                    "published_on_own_page": True}],
+    }, tronquee=False)
+    assert actions.new_status is None
+    assert actions.motif is None
+    assert len(actions.contacts) == 1

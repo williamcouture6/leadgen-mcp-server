@@ -71,6 +71,7 @@ class DiscoveryUsage(BaseModel):
 
 class DiscoveryLLMResult(BaseModel):
     discovery: dict[str, Any]
+    tronquee: bool = False
     model: str
     usage: DiscoveryUsage
 
@@ -155,6 +156,7 @@ def _call_discovery_llm(
     usage = resp.usage
     return DiscoveryLLMResult(
         discovery=discovery,
+        tronquee=truncated,
         model=model,
         usage=DiscoveryUsage(
             input_tokens=getattr(usage, "input_tokens", 0) or 0,
@@ -176,26 +178,31 @@ class DiscoveryActions(BaseModel):
     new_status: Literal["no_web_presence"] | None = None
     website_backfill: str | None = None
     contacts: list[dict[str, Any]] = []
+    # Pourquoi l'entreprise est écartée, quand elle l'est. Aujourd'hui les trois
+    # vraies causes et la panne technique s'écrasent en un seul 'no_web_presence'.
+    motif: str | None = None
 
 
-def decide_discovery_actions(discovery: dict[str, Any]) -> DiscoveryActions:
+def decide_discovery_actions(
+    discovery: dict[str, Any], *, tronquee: bool = False,
+) -> DiscoveryActions:
     """Traduit la sortie LLM en actions. Fonction pure (pas d'I/O).
 
-    Règles (voir spec) :
-    - confidence='low' OU not found OU 0 email → 'no_web_presence' (on préfère
-      rater que polluer le pipeline d'un faux positif).
-    - sinon → insérer chaque courriel comme contact ; backfill website seulement
-      si la page est la page propre de la boîte (own_site|facebook).
-    - email_verification_source = 'reacti_discovery_own_page' si publié sur la
-      page propre, sinon 'reacti_discovery_directory' (base légale honnête).
+    ⚠️ `tronquee` = la réponse du modèle a fini en stop_reason='max_tokens'. Elle
+    NE DOIT PAS produire de statut terminal : c'est une panne de deux secondes,
+    pas un fait sur l'entreprise. On la laisse en 'sourced' pour qu'elle repasse.
+    Le plafond de tentatives est appliqué par l'appelant (voir B2).
     """
+    if tronquee:
+        return DiscoveryActions(new_status=None, motif="reponse_tronquee")
+
     emails = discovery.get("emails") or []
-    if (
-        not discovery.get("found")
-        or discovery.get("confidence") == "low"
-        or not emails
-    ):
-        return DiscoveryActions(new_status="no_web_presence")
+    if not discovery.get("found"):
+        return DiscoveryActions(new_status="no_web_presence", motif="pas_trouvee")
+    if discovery.get("confidence") == "low":
+        return DiscoveryActions(new_status="no_web_presence", motif="confiance_faible")
+    if not emails:
+        return DiscoveryActions(new_status="no_web_presence", motif="aucun_courriel_publie")
 
     page_kind = discovery.get("page_kind")
     discovered_url = discovery.get("discovered_url")
@@ -219,7 +226,7 @@ def decide_discovery_actions(discovery: dict[str, Any]) -> DiscoveryActions:
         })
 
     if not contacts:
-        return DiscoveryActions(new_status="no_web_presence")
+        return DiscoveryActions(new_status="no_web_presence", motif="aucun_courriel_publie")
 
     return DiscoveryActions(
         new_status=None,
