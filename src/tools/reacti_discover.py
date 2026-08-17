@@ -180,7 +180,13 @@ class DiscoveryActions(BaseModel):
     contacts: list[dict[str, Any]] = []
     # Pourquoi l'entreprise est écartée, quand elle l'est. Aujourd'hui les trois
     # vraies causes et la panne technique s'écrasent en un seul 'no_web_presence'.
-    motif: str | None = None
+    # Literal et pas str : cette valeur est persistée dans
+    # companies.disqualified_reason (préfixée 'discovery:'), et une faute de
+    # frappe y coulerait en silence. Le plafond du côté appelant compose sa
+    # propre valeur ('reponse_tronquee_x3') sans passer par ce champ.
+    motif: Literal[
+        "reponse_tronquee", "pas_trouvee", "confiance_faible", "aucun_courriel_publie",
+    ] | None = None
 
 
 def decide_discovery_actions(
@@ -192,6 +198,15 @@ def decide_discovery_actions(
     NE DOIT PAS produire de statut terminal : c'est une panne de deux secondes,
     pas un fait sur l'entreprise. On la laisse en 'sourced' pour qu'elle repasse.
     Le plafond de tentatives est appliqué par l'appelant (voir B2).
+
+    Règles (voir spec) :
+    - confidence='low' OU not found OU 0 email → 'no_web_presence' (on préfère
+      rater que polluer le pipeline d'un faux positif). Le `motif` dit laquelle
+      des trois s'applique.
+    - sinon → insérer chaque courriel comme contact ; backfill website seulement
+      si la page est la page propre de la boîte (own_site|facebook).
+    - email_verification_source = 'reacti_discovery_own_page' si publié sur la
+      page propre, sinon 'reacti_discovery_directory' (base légale honnête).
     """
     if tronquee:
         return DiscoveryActions(new_status=None, motif="reponse_tronquee")

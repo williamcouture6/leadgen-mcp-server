@@ -220,3 +220,31 @@ def test_un_succes_na_pas_de_motif() -> None:
     assert actions.new_status is None
     assert actions.motif is None
     assert len(actions.contacts) == 1
+
+
+_PLAFOND = 3
+
+
+async def test_trois_troncatures_finissent_par_trancher(monkeypatch) -> None:
+    """Une entreprise qui tronque systématiquement ne doit pas boucler
+    indéfiniment — mais son verdict doit dire que c'est technique."""
+    from src import http_api
+
+    assert http_api.DISCOVERY_TRUNCATION_CAP == _PLAFOND
+
+
+async def test_le_motif_est_ecrit_dans_disqualified_reason(monkeypatch) -> None:
+    """La raison était calculée puis jetée : les 88 no_web_presence en base
+    n'ont aucun disqualified_reason."""
+    from src import http_api
+
+    ecrits: list[dict] = []
+
+    async def _update(table, patch, **kw):
+        ecrits.append({"table": table, **patch})
+        return [{}]
+
+    monkeypatch.setattr(http_api.sb, "update", _update)
+    patch = http_api._patch_no_web_presence(motif="aucun_courriel_publie")
+    assert patch["status"] == "no_web_presence"
+    assert patch["disqualified_reason"] == "discovery:aucun_courriel_publie"

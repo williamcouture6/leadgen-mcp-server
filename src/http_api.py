@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
+from . import supabase_client as sb
 from .tools import booking as booking_tools
 from .tools import compliance as compliance_tools
 from .tools import db as db_tools
@@ -737,6 +738,18 @@ async def run_wf3(payload: RunWf3In) -> RunWf3Out:
 
 # ---------------- REACTI discovery (WF-reacti-2 — PME sans site web) ----------------
 
+# Une entreprise dont la réponse LLM tronque systématiquement ne doit ni boucler
+# ni être condamnée en silence : au-delà de ce nombre de passes vides, on tranche
+# ET on écrit que la cause est technique, pour pouvoir la rejuger plus tard.
+DISCOVERY_TRUNCATION_CAP = 3
+
+
+def _patch_no_web_presence(*, motif: str) -> dict[str, str]:
+    """Le statut ET sa raison. La raison était calculée puis jetée — d'où 88
+    lignes 'no_web_presence' sans un mot d'explication en base."""
+    return {"status": "no_web_presence", "disqualified_reason": f"discovery:{motif}"}
+
+
 class ReactiDiscoverIn(BaseModel):
     company_id: str
     model: str = "claude-sonnet-4-6"
@@ -800,7 +813,27 @@ async def reacti_discover_contact(payload: ReactiDiscoverIn) -> ReactiDiscoverOu
             company_id=payload.company_id, status="error", error_text=repr(e),
         )
 
-    actions = reacti_discover_tools.decide_discovery_actions(llm.discovery)
+    actions = reacti_discover_tools.decide_discovery_actions(
+        llm.discovery, tronquee=llm.tronquee,
+    )
+
+    # Plafond de troncatures. On COMPTE ici, AVANT l'audit : la passe courante n'est
+    # pas encore en base, et c'est précisément ce que le `+ 1` représente. Compter
+    # après l'audit la compterait deux fois et ferait tomber le plafond à la
+    # deuxième troncature. On ne TRANCHE qu'après l'audit (plus bas), pour que la
+    # passe qui déclenche le plafond laisse quand même sa trace dans agent_runs.
+    plafond_atteint = False
+    if actions.motif == "reponse_tronquee":
+        vides = await sb.select(
+            "agent_runs",
+            params={
+                "select": "id",
+                "agent": "eq.reacti_discover",
+                "company_id": f"eq.{payload.company_id}",
+                "output_payload->>tronquee": "eq.true",
+            },
+        )
+        plafond_atteint = len(vides) + 1 >= DISCOVERY_TRUNCATION_CAP
 
     # Audit (non bloquant)
     try:
@@ -809,7 +842,9 @@ async def reacti_discover_contact(payload: ReactiDiscoverIn) -> ReactiDiscoverOu
                 agent="reacti_discover", model=llm.model,
                 company_id=payload.company_id,
                 input_payload={"name": co.get("name"), "city": co.get("city")},
-                output_payload=llm.discovery,
+                # `tronquee` dans le payload : c'est LUI que compte le plafond
+                # ci-dessus. Sans cette clé le comptage ne trouve jamais rien.
+                output_payload={**llm.discovery, "tronquee": llm.tronquee},
                 input_tokens=llm.usage.input_tokens,
                 output_tokens=llm.usage.output_tokens,
                 cache_read_tokens=llm.usage.cache_read_input_tokens,
@@ -819,10 +854,22 @@ async def reacti_discover_contact(payload: ReactiDiscoverIn) -> ReactiDiscoverOu
     except Exception:  # noqa: BLE001
         pass
 
+    if plafond_atteint:
+        # La cause reste technique et le verdict le dit : 'reponse_tronquee_x3' se
+        # retrouve en base et peut être rejugé, au lieu d'un no_web_presence muet.
+        await sb.update(
+            "companies",
+            _patch_no_web_presence(motif=f"reponse_tronquee_x{DISCOVERY_TRUNCATION_CAP}"),
+            filters={"id": f"eq.{payload.company_id}"},
+        )
+        return ReactiDiscoverOut(
+            company_id=payload.company_id, status="no_web_presence",
+        )
+
     if actions.new_status == "no_web_presence":
         await db_tools.db.update(
             "companies",
-            {"status": "no_web_presence"},
+            _patch_no_web_presence(motif=actions.motif or "inconnu"),
             filters={"id": f"eq.{payload.company_id}"},
         )
         return ReactiDiscoverOut(
