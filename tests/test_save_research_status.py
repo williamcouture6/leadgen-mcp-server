@@ -175,6 +175,24 @@ async def test_le_seuil_de_reprise_vaut_bien_90_jours(
     assert timedelta(days=89) < ecart < timedelta(days=91), ecart
 
 
+async def test_la_file_tourne_jamais_recherchees_dabord(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Même rotation que la file d'envoi (P4.10) : jamais tenté d'abord.
+
+    Les 145 'researched_no_contact' ont été créées AVANT la plupart des 'sourced'
+    (2026-05-28→06-12 contre 2026-06-12→07-08). En `created_at.asc` pur, elles
+    front-runneraient donc 225 entreprises jamais recherchées à chaque passe : une
+    file qui sert les échecs connus avant les pistes neuves.
+    """
+    from src.tools import db as dbt
+
+    vus = _params_backlog(monkeypatch)
+    await dbt.list_companies_to_research(limit=10, track="agence-ia")
+
+    assert vus[0]["order"] == "last_enriched_at.asc.nullsfirst,created_at.asc"
+
+
 async def test_les_statuts_terminaux_restent_hors_du_backlog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

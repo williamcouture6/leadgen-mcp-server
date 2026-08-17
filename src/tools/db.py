@@ -756,7 +756,15 @@ async def list_companies_to_research(
         "google_place_id": "not.is.null",
         "status": "not.in.(disqualified,no_web_presence)",
         "track": f"eq.{track}",
-        "order": "created_at.asc",
+        # La file TOURNE : jamais recherchée d'abord, puis la moins récemment
+        # recherchée, created_at en départage. Même rotation que la file d'envoi
+        # (P4.10 / migration 0028, `last_send_attempt_at.asc.nullsfirst`), et pour la
+        # même raison : en `created_at.asc` pur, les 145 'researched_no_contact' —
+        # créées AVANT la plupart des 'sourced' — front-runneraient à chaque passe
+        # 225 entreprises jamais recherchées. Une file qui sert les échecs connus
+        # avant les pistes neuves priorise le mauvais travail. `last_enriched_at`
+        # joue ici le rôle de `last_send_attempt_at` : NULL = jamais recherchée.
+        "order": "last_enriched_at.asc.nullsfirst,created_at.asc",
         "limit": str(limit),
     }
     if require_website:
