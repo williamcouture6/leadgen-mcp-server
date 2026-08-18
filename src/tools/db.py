@@ -611,7 +611,8 @@ async def list_contacts_to_personalize(
     On filtre côté Python plutôt que via une jointure PostgREST compliquée :
     1) On récupère les contacts avec email + status='new' ou 'ready'.
     2) On joint manuellement avec companies.research_json.
-    3) On exclut ceux qui ont déjà un message outbound (peu importe le status).
+    3) On exclut ceux qui ont déjà un message outbound NON abandonné (tout
+       status sauf 'failed' — voir le commentaire sur la requête messages).
     4) On garde les top-N contacts par company selon priorité.
     """
     contacts = await db.select(
@@ -645,12 +646,27 @@ async def list_contacts_to_personalize(
     # track est ignoré (company=None dans la boucle). Isolation OPT/REACTI.
     by_id = {c["id"]: c for c in companies if (c.get("track") or "OPT") == track}
 
+    # `status=not.in.(failed)` : un message ABANDONNÉ ne gèle plus son contact.
+    # 'failed' = « ne partira jamais » (garde d'envoi : blocklist domaine, opt-out,
+    # ou draft retiré à la main). Sans cette exclusion, un draft refusé par WF-5
+    # (compliance_check_passed=false, jamais re-jugé car WF-5 ne juge que le NULL)
+    # gelait son contact À VIE, et la seule sortie était de DELETE le message —
+    # ce qui détruit la trace du refus (sujet, corps, verdict, notes). Garder la
+    # ligne et la marquer 'failed' est la façon de retirer un draft SANS effacer
+    # cette histoire.
+    # Seul 'failed' est retiré du jeu bloquant. draft/queued/sent/delivered/replied
+    # = message vivant ou déjà remis (contact engagé, surtout pas de 2e courriel).
+    # 'bounced' bloque aussi : l'adresse est morte, re-drafter ne ferait que
+    # re-bouncer (jetons brûlés + réputation d'envoi) — ça se règle au niveau
+    # contact, pas en régénérant un draft.
+    # (messages.status est NOT NULL DEFAULT 'draft' → pas de piège NULL avec not.in.)
     existing_msgs = await db.select(
         "messages",
         params={
             "select": "contact_id",
             "contact_id": f"in.({','.join(c['id'] for c in contacts)})",
             "direction": "eq.outbound",
+            "status": "not.in.(failed)",
         },
     )
     already_drafted = {m["contact_id"] for m in existing_msgs}
@@ -726,7 +742,8 @@ async def list_companies_to_research(
     require_website: bool = True,
     track: str = "agence-ia",  # track live ; OPT retiré = jamais sélectionné sauf track="OPT" explicite
 ) -> list[dict[str, Any]]:
-    """Companies sans research_json.
+    """Backlog de recherche : jamais researchée, OU researchée sans contact il y a
+    plus de 90 jours.
 
     OPT : exige un website (`require_website=True`) — pas de site = pas de matière.
     REACTI : peut tourner avec `require_website=False` pour traiter les boîtes sans
@@ -736,13 +753,34 @@ async def list_companies_to_research(
 
     Exclut les statuts terminaux (disqualified, no_web_presence).
     """
+    # Deux portes vers le backlog : jamais researchée, OU researchée sans contact
+    # il y a plus de 90 jours (un site peut publier une adresse entre-temps).
+    # 90 jours : repasser tout le parc à chaque cron coûterait cher pour peu de
+    # rendement, ne jamais repasser figerait 145 entreprises pour toujours.
+    #
+    # ⚠️ `research_json is null` vit DANS la porte 'sourced', jamais en filtre de
+    # premier niveau : toute company 'researched_no_contact' a par construction un
+    # research_json (c'est la passe de recherche qui pose ce statut), donc un ET
+    # global sur research_json annulerait la seconde porte en silence.
+    limite_reprise = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     params: dict[str, str] = {
         "select": "id,name,domain,website,city,icp_segment,industry,google_place_id,status,track",
-        "research_json": "is.null",
+        "or": (
+            "(and(status.eq.sourced,research_json.is.null),"
+            f"and(status.eq.researched_no_contact,last_enriched_at.lt.{limite_reprise}))"
+        ),
         "google_place_id": "not.is.null",
         "status": "not.in.(disqualified,no_web_presence)",
         "track": f"eq.{track}",
-        "order": "created_at.asc",
+        # La file TOURNE : jamais recherchée d'abord, puis la moins récemment
+        # recherchée, created_at en départage. Même rotation que la file d'envoi
+        # (P4.10 / migration 0028, `last_send_attempt_at.asc.nullsfirst`), et pour la
+        # même raison : en `created_at.asc` pur, les 145 'researched_no_contact' —
+        # créées AVANT la plupart des 'sourced' — front-runneraient à chaque passe
+        # 225 entreprises jamais recherchées. Une file qui sert les échecs connus
+        # avant les pistes neuves priorise le mauvais travail. `last_enriched_at`
+        # joue ici le rôle de `last_send_attempt_at` : NULL = jamais recherchée.
+        "order": "last_enriched_at.asc.nullsfirst,created_at.asc",
         "limit": str(limit),
     }
     if require_website:
@@ -818,22 +856,56 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     return patch
 
 
+async def _statut_apres_recherche(
+    company_id: str,
+    emails_found: list[dict[str, Any]] | None,
+) -> str:
+    """'enriched' si la passe a un contact à montrer, sinon 'researched_no_contact'.
+
+    Deux sources d'évidence, et il faut les deux :
+
+    1. Les contacts DÉJÀ en base — couvre les re-passes et le backfill (le script
+       `backfill_research_columns.py` relit les contacts existants).
+    2. Les `emails_found` de la passe courante — indispensable parce que
+       `http_api.research_company_by_id` appelle cette fonction AVANT sa boucle
+       d'insertion des contacts scrapés. À cet instant la table `contacts` est vide
+       même quand le scraping a ramené trois adresses : ne compter que la base ferait
+       basculer 100 % des premières passes en 'researched_no_contact', l'inverse exact
+       du bug corrigé ici. Un courriel non vide finit toujours contact —
+       `insert_contact` ne rejette que l'adresse vide (skipped_no_email), le doublon
+       renvoyant une ligne déjà présente.
+    """
+    if any((e or {}).get("email") for e in (emails_found or [])):
+        return "enriched"
+    contacts_existants = await db.select(
+        "contacts",
+        params={"select": "id", "company_id": f"eq.{company_id}", "limit": "1"},
+    )
+    return "enriched" if contacts_existants else "researched_no_contact"
+
+
 async def update_company_research(
     company_id: str,
     research_json: dict[str, Any],
     emails_found: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Patch companies.research_json (+ colonnes flat lead_potential_* et décideur)
-    et promeut le status à 'enriched'.
+    et pose le status selon ce qui a été TROUVÉ.
 
     Met à jour le payload du Research Agent, le score de potentiel extrait, et le
     décideur résumé (decideur_confirme/decideur_potentiel, mutuellement exclusifs)
     calculé depuis decideur_candidats + les emails nominatifs scrapés.
 
-    `status` passe à 'enriched' (signal fiable « a été researché » — `last_enriched_at`
-    horodaté au passage). Le filtre `status not.in.(disqualified,suppressed)` protège
-    les boîtes terminales : on ne ressuscite jamais un lead écarté, et l'UPDATE entier
-    (research_json inclus) est donc sauté pour ces boîtes — voulu, elles sont hors pipeline.
+    `status` passe à 'enriched' s'il y a au moins un contact, sinon à
+    'researched_no_contact' (0001_initial_schema.sql définit 'enriched' = « contacts
+    trouvés » ; le poser inconditionnellement faisait annoncer des contacts inexistants
+    à 145 entreprises). `last_enriched_at` est horodaté dans les deux cas : il porte la
+    ré-éligibilité à 90 jours de `list_companies_to_research`.
+
+    Le filtre `status not.in.(disqualified,suppressed)` protège les boîtes terminales :
+    on ne ressuscite jamais un lead écarté, et l'UPDATE entier (research_json inclus)
+    est donc sauté pour ces boîtes — voulu, elles sont hors pipeline.
+    'researched_no_contact' n'est PAS terminal et reste donc hors de ce filtre.
     """
     confirme, potentiel = summarize_company_decideur(
         (research_json or {}).get("decideur_candidats"), emails_found
@@ -842,7 +914,7 @@ async def update_company_research(
         "research_json": research_json,
         "decideur_confirme": confirme,
         "decideur_potentiel": potentiel,
-        "status": "enriched",
+        "status": await _statut_apres_recherche(company_id, emails_found),
         "last_enriched_at": datetime.now(timezone.utc).isoformat(),
     }
     patch.update(extract_lead_potential_patch(research_json))

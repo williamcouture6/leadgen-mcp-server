@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
+from . import supabase_client as sb
 from .tools import booking as booking_tools
 from .tools import compliance as compliance_tools
 from .tools import db as db_tools
@@ -136,9 +137,10 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     date_str = start_local.strftime("%Y-%m-%d")
 
     async def _cnt(table: str, extra: dict[str, str], date_field: str = "created_at") -> int:
-        params = {"select": "id", date_field: f"gte.{cutoff}", **extra}
-        rows = await sb.select(table, params=params)
-        return len(rows)
+        # count() exact côté serveur. Avant : `len(await sb.select(...))`, qui
+        # plafonnait en silence à 1000 (max-rows PostgREST) — une bonne journée
+        # de sourcing aurait affiché « sourcées 1000 » pour toujours.
+        return await sb.count(table, params={date_field: f"gte.{cutoff}", **extra})
 
     lines: list[str] = []
     totals: dict[str, Any] = {}
@@ -159,14 +161,55 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             date_field="scheduled_at",
         )
         replies = await _cnt("messages", {**t, "direction": "eq.inbound"})
+        # Drafts que la garde P4.10 refuse de pousser, comptés SANS filtre de
+        # date : un draft coincé depuis deux semaines est justement celui qu'on
+        # veut voir. Deux nombres, parce qu'ils appellent des gestes différents
+        # — « en attente » se règle au prochain lot nocturne, « à relire »
+        # attend une décision de William.
+        #
+        # Le tri se fait en Python plutôt qu'en filtres PostgREST : la règle
+        # « porte attente ET PAS bloque » demanderait deux conditions sur la
+        # même colonne, donc un `and=(...)` imbriqué qu'aucun test sur mock ne
+        # peut valider — une syntaxe fausse compterait faux en silence. Le
+        # volume rend le débat théorique : quelques dizaines de drafts.
+        #
+        # select_all : on a besoin du CONTENU (compliance_notes) de chaque
+        # draft, pas d'un nombre, et sans filtre de date le lot peut dépasser
+        # le plafond de 1000 lignes de PostgREST.
+        bloques = await sb.select_all(
+            "messages",
+            order="id",
+            params={
+                "select": "id,compliance_notes",
+                "track": f"eq.{tk}",
+                "direction": "eq.outbound",
+                "status": "eq.draft",
+            },
+        )
+        waiting_config = to_review = 0
+        for row in bloques:
+            notes = row.get("compliance_notes") or ""
+            if send_tools.SITE_CONFIG_NOTE_MARKER in notes:
+                # Un lead qui a attendu PUIS reçu un verdict qui refuse porte
+                # les deux marqueurs : c'est son histoire. Il compte dans l'état
+                # le plus actionnable, pas dans les deux.
+                to_review += 1
+            elif send_tools.SITE_CONFIG_WAIT_MARKER in notes:
+                waiting_config += 1
         totals[tk] = {
             "sourced": sourced, "emails": emails, "drafts": drafts,
             "pushed": pushed, "sent": sent, "replies": replies,
+            "waiting_config": waiting_config, "to_review": to_review,
         }
-        lines.append(
+        ligne = (
             f"*{tk}* — sourcées {sourced} · emails {emails} · drafts {drafts} · "
             f"poussés {pushed} · envoyés {sent} · réponses {replies}"
         )
+        if waiting_config:
+            ligne += f"\n  ⏸ en attente de config {waiting_config}"
+        if to_review:
+            ligne += f"\n  🔎 à relire {to_review}"
+        lines.append(ligne)
 
     bookings = await _cnt("booking_events", {})
     totals["bookings_total"] = bookings
@@ -176,6 +219,37 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         + "\n".join(lines)
         + f"\n📅 RDV bookés: {bookings}"
     )
+
+    # État du PARC, sans filtre de date : c'est l'entreprise coincée depuis six
+    # semaines qu'on veut voir, pas l'activité du jour. Même patron que la ligne
+    # « ⏸ en attente de config » de P4.10.
+    #
+    # `track` est figé sur 'agence-ia' à dessein, il ne suit PAS payload.tracks :
+    # le projet a pivoté sur une offre unique le 2026-06-07 et 'OPT' est du legacy
+    # gelé, qu'on ne prospecte plus. Ne pas « corriger » en bouclant sur les tracks.
+    #
+    # select_all : 816 lignes aujourd'hui pour agence-ia, sur un plafond PostgREST
+    # de 1000 — et ce compteur grossit à chaque run de sourcing. Un `select()` se
+    # serait fait couper sans erreur, rendant un top 3 faux dans le planner order.
+    lignes_motifs = await sb.select_all(
+        "v_pourquoi_pas_de_courriel",
+        order="company_id",
+        params={"select": "motif,recontactable", "track": "eq.agence-ia"},
+    )
+    compte: dict[str, int] = {}
+    a_juger = 0
+    for row in lignes_motifs:
+        motif = row.get("motif") or "?"
+        if motif != "en_file":
+            compte[motif] = compte.get(motif, 0) + 1
+        if row.get("recontactable") == "a_juger":
+            a_juger += 1
+
+    if compte:
+        top3 = sorted(compte.items(), key=lambda kv: kv[1], reverse=True)[:3]
+        text += "\n🧱 " + " · ".join(f"{m} {n}" for m, n in top3)
+    if a_juger:
+        text += f"\n🔎 {a_juger} entreprises que le temps ne réparera pas"
 
     posted = False
     if payload.post:
@@ -377,7 +451,8 @@ async def companies_to_research(
     require_website: bool = True,
     track: str = "agence-ia",  # défaut = track live ; OPT retiré = jamais scrapé sauf demande explicite
 ) -> list[dict[str, Any]]:
-    """Companies sans research_json. Utilisé par n8n pour visualiser le backlog."""
+    """Backlog de recherche : jamais researchée, OU researchée sans contact il y a
+    plus de 90 jours. Utilisé par n8n pour visualiser le backlog."""
     return await db_tools.list_companies_to_research(
         limit=limit, require_website=require_website, track=track
     )
@@ -434,6 +509,7 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
             research_tools.ResearchCompanyIn(
                 google_place_id=co["google_place_id"],
                 website=co.get("website"),
+                company_name=co.get("name"),
                 model=payload.model,
                 track=payload.track,
             )
@@ -701,14 +777,40 @@ async def run_wf3(payload: RunWf3In) -> RunWf3Out:
 
 # ---------------- REACTI discovery (WF-reacti-2 — PME sans site web) ----------------
 
+# Une entreprise dont la réponse LLM tronque systématiquement ne doit ni boucler
+# ni être condamnée en silence : au-delà de ce nombre de passes vides, on tranche
+# ET on écrit que la cause est technique, pour pouvoir la rejuger plus tard.
+DISCOVERY_TRUNCATION_CAP = 3
+
+
+def _patch_no_web_presence(*, motif: str) -> dict[str, str]:
+    """Le statut ET sa raison. La raison était calculée puis jetée — d'où 88
+    lignes 'no_web_presence' sans un mot d'explication en base."""
+    return {"status": "no_web_presence", "disqualified_reason": f"discovery:{motif}"}
+
+
 class ReactiDiscoverIn(BaseModel):
     company_id: str
     model: str = "claude-sonnet-4-6"
 
 
 class ReactiDiscoverOut(BaseModel):
+    """Issue d'UNE passe de découverte.
+
+    `status` — cinq valeurs, mutuellement exclusives :
+      - 'found'            : au moins un courriel public retenu (voir contacts_inserted).
+      - 'a_reessayer'      : la réponse du modèle a tronqué (stop_reason='max_tokens').
+                             RIEN n'a été écrit sur la company, elle reste 'sourced' et
+                             repassera. ⚠️ Ce n'est PAS un succès : compter une passe
+                             tronquée dans 'found' ferait dire au rapport de lot qu'on a
+                             trouvé dix entreprises alors qu'on n'a rien trouvé du tout.
+      - 'no_web_presence'  : verdict terminal, avec sa raison en base — vraie absence,
+                             ou troncature répétée jusqu'au DISCOVERY_TRUNCATION_CAP.
+      - 'error'            : l'appel LLM a levé.
+      - 'company_not_found': l'id ne correspond à aucune ligne.
+    """
     company_id: str
-    status: str  # "found" | "no_web_presence" | "error" | "company_not_found"
+    status: str
     contacts_inserted: int = 0
     contacts_duplicate: int = 0
     website_backfilled: bool = False
@@ -764,7 +866,27 @@ async def reacti_discover_contact(payload: ReactiDiscoverIn) -> ReactiDiscoverOu
             company_id=payload.company_id, status="error", error_text=repr(e),
         )
 
-    actions = reacti_discover_tools.decide_discovery_actions(llm.discovery)
+    actions = reacti_discover_tools.decide_discovery_actions(
+        llm.discovery, tronquee=llm.tronquee,
+    )
+
+    # Plafond de troncatures. On COMPTE ici, AVANT l'audit : la passe courante n'est
+    # pas encore en base, et c'est précisément ce que le `+ 1` représente. Compter
+    # après l'audit la compterait deux fois et ferait tomber le plafond à la
+    # deuxième troncature. On ne TRANCHE qu'après l'audit (plus bas), pour que la
+    # passe qui déclenche le plafond laisse quand même sa trace dans agent_runs.
+    plafond_atteint = False
+    if actions.motif == "reponse_tronquee":
+        vides = await sb.select(
+            "agent_runs",
+            params={
+                "select": "id",
+                "agent": "eq.reacti_discover",
+                "company_id": f"eq.{payload.company_id}",
+                "output_payload->>tronquee": "eq.true",
+            },
+        )
+        plafond_atteint = len(vides) + 1 >= DISCOVERY_TRUNCATION_CAP
 
     # Audit (non bloquant)
     try:
@@ -773,7 +895,9 @@ async def reacti_discover_contact(payload: ReactiDiscoverIn) -> ReactiDiscoverOu
                 agent="reacti_discover", model=llm.model,
                 company_id=payload.company_id,
                 input_payload={"name": co.get("name"), "city": co.get("city")},
-                output_payload=llm.discovery,
+                # `tronquee` dans le payload : c'est LUI que compte le plafond
+                # ci-dessus. Sans cette clé le comptage ne trouve jamais rien.
+                output_payload={**llm.discovery, "tronquee": llm.tronquee},
                 input_tokens=llm.usage.input_tokens,
                 output_tokens=llm.usage.output_tokens,
                 cache_read_tokens=llm.usage.cache_read_input_tokens,
@@ -783,10 +907,31 @@ async def reacti_discover_contact(payload: ReactiDiscoverIn) -> ReactiDiscoverOu
     except Exception:  # noqa: BLE001
         pass
 
+    if plafond_atteint:
+        # La cause reste technique et le verdict le dit : 'reponse_tronquee_x3' se
+        # retrouve en base et peut être rejugé, au lieu d'un no_web_presence muet.
+        await sb.update(
+            "companies",
+            _patch_no_web_presence(motif=f"reponse_tronquee_x{DISCOVERY_TRUNCATION_CAP}"),
+            filters={"id": f"eq.{payload.company_id}"},
+        )
+        return ReactiDiscoverOut(
+            company_id=payload.company_id, status="no_web_presence",
+        )
+
+    if actions.motif == "reponse_tronquee":
+        # Sous le plafond : on n'écrit rien, la company repassera. Mais on le DIT,
+        # au lieu de tomber dans le 'found' de la fin de fonction — un lot où le
+        # modèle a tronqué dix fois rapporterait « dix trouvées » et apprendrait à
+        # l'opérateur à faire confiance à un chiffre faux.
+        return ReactiDiscoverOut(
+            company_id=payload.company_id, status="a_reessayer",
+        )
+
     if actions.new_status == "no_web_presence":
         await db_tools.db.update(
             "companies",
-            {"status": "no_web_presence"},
+            _patch_no_web_presence(motif=actions.motif or "inconnu"),
             filters={"id": f"eq.{payload.company_id}"},
         )
         return ReactiDiscoverOut(
@@ -845,6 +990,10 @@ class RunReactiWf2Out(BaseModel):
     processed: int
     found: int
     no_web_presence: int
+    # Passes tronquées restées sous le plafond : rien n'a été écrit, ces companies
+    # repasseront. Compteur séparé pour que 'found' ne gonfle plus des passes qui
+    # n'ont rien trouvé — le rapport de lot doit pouvoir être lu au pied de la lettre.
+    a_reessayer: int = 0
     failed: int
     items: list[RunReactiWf2Item]
 
@@ -874,7 +1023,7 @@ async def run_reacti_wf2(payload: RunReactiWf2In) -> RunReactiWf2Out:
     results = await asyncio.gather(*(_one(co) for co in backlog))
 
     items: list[RunReactiWf2Item] = []
-    found = no_web = failed = 0
+    found = no_web = a_reessayer = failed = 0
     for co, res, err in results:
         if res is None:
             failed += 1
@@ -886,6 +1035,8 @@ async def run_reacti_wf2(payload: RunReactiWf2In) -> RunReactiWf2Out:
             found += 1
         elif res.status == "no_web_presence":
             no_web += 1
+        elif res.status == "a_reessayer":
+            a_reessayer += 1
         else:
             failed += 1
         items.append(RunReactiWf2Item(
@@ -895,7 +1046,7 @@ async def run_reacti_wf2(payload: RunReactiWf2In) -> RunReactiWf2Out:
 
     return RunReactiWf2Out(
         processed=len(backlog), found=found, no_web_presence=no_web,
-        failed=failed, items=items,
+        a_reessayer=a_reessayer, failed=failed, items=items,
     )
 
 

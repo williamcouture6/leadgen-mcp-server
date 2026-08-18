@@ -45,6 +45,7 @@ from ..lib import instantly as instantly_lib
 from ..lib import slack as slack_lib
 from ..lib.calcom import CalcomError, format_slots_for_prompt, get_available_slots
 from ..lib.pricing import estimated_cost_usd
+from .research import sans_diagnostic
 
 # ----------------------------------------------------------------------
 # Config
@@ -201,7 +202,9 @@ def _call_composer(
         "## lead_reply (réponse positive du prospect)\n"
         f"```\n{lead_reply_text}\n```\n\n"
         "## research_json (contexte entreprise)\n"
-        f"```json\n{json.dumps(research_json or {}, ensure_ascii=False, indent=2)}\n```\n\n"
+        # `sans_diagnostic` retire la télémétrie du scraper d'emails : bruit pur
+        # pour le composeur, et des adresses tierces qu'il n'a pas à voir.
+        f"```json\n{json.dumps(sans_diagnostic(research_json), ensure_ascii=False, indent=2)}\n```\n\n"
         f"## booking_url\n`{booking_url}`\n\n"
         f"{slots_block}\n"
     )
@@ -562,7 +565,7 @@ def strip_quote_and_signature(body: str) -> str:
         for split_idx in range(len(tail_lines) - 1, max(0, len(tail_lines) - 6), -1):
             if not tail_lines[split_idx].strip():
                 tail = tail_lines[split_idx + 1:]
-                if 1 <= len(tail) <= 5 and all(len(l.strip()) < 80 for l in tail):
+                if 1 <= len(tail) <= 5 and all(len(ligne.strip()) < 80 for ligne in tail):
                     joined_tail = " ".join(tail)
                     if _PHONE_RE.search(joined_tail) or "@" in joined_tail:
                         cleaned = "\n".join(tail_lines[:split_idx]).rstrip()

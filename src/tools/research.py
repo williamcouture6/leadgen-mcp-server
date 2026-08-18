@@ -15,6 +15,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -27,7 +28,6 @@ from pydantic import BaseModel
 from tenacity import (
     retry,
     retry_if_exception,
-    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
@@ -93,10 +93,25 @@ EMAIL_BLOCKLIST_LOCAL = {
     "noreply", "no-reply", "donotreply", "do-not-reply", "mailer-daemon",
     "postmaster", "abuse", "security", "webmaster", "spam",
 }
+# Domaines jamais légitimes. Le match couvre AUSSI les sous-domaines (voir
+# `_domaine_bloque`) : `sentry.wixpress.com` passait au travers d'une liste qui
+# ne contenait que `wixpress.com` et `sentry-next.wixpress.com`.
 EMAIL_BLOCKLIST_DOMAINS = {
-    "sentry.io", "sentry-next.wixpress.com", "wixpress.com",
-    "googlegroups.com", "example.com", "domain.com",
+    "sentry.io", "wixpress.com", "googlegroups.com",
+    # gabarits laissés tels quels par le thème / le constructeur de site — en
+    # anglais comme en français (relevés sur le terrain le 2026-08-17).
+    "example.com", "domain.com", "yourdomain.com", "companyname.com",
+    "exemple.com", "monsite.com", "mondomaine.com", "votredomaine.com",
+    "courriel.xyz",
 }
+
+# EMAIL_REGEX prend un nom de fichier `logo@2x.png` pour une adresse : 47 des 86
+# « rejets » du lot terrain étaient ce bruit-là. On les écarte AVANT de compter
+# quoi que ce soit — ce ne sont pas des candidats, juste des images.
+EMAIL_EXTENSIONS_IMAGE = (
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif",
+    ".tif", ".tiff",
+)
 EMAIL_GENERIC_LOCAL = {
     "info", "contact", "hello", "bonjour", "allo", "salut",
     "sales", "ventes", "vente", "admin", "marketing", "support", "service",
@@ -201,7 +216,319 @@ def _brand_affine(base_dom: str, email_dom: str) -> bool:
     return _lcs_len(_domain_main_label(base_dom), _domain_main_label(email_dom)) >= _BRAND_AFFINITY_MIN
 
 
-def _extract_emails_from_html(html: str, base_url: str) -> list[dict[str, str]]:
+# ----------------------------------------------------------------------
+# Propriété d'une adresse : le domaine du courriel vs le NOM de la company
+# ----------------------------------------------------------------------
+#
+# `_brand_affine` compare le domaine du courriel à celui du SITE. C'est la
+# mauvaise référence : le site n'est pas toujours la marque. www.fext.ca redirige
+# vers exterminationmtl.com ; « Vitres Royal » se fait héberger sur un domaine SEO
+# montrealwindowcleaning.ca ; deux boîtes sont référencées via une fiche
+# 411habitation.com. Dans les trois cas l'adresse publiée est bien celle de la
+# boîte — sur le domaine de sa MARQUE, et sa marque c'est son NOM.
+# Mesure du 2026-08-17 (145 companies re-scrapées, 105 adresses jetées listées) :
+# 20 de ces adresses étaient celles des boîtes elles-mêmes. 14 sont récupérées
+# par cette règle ; les 6 autres restent dehors exprès (domaine perso à local non
+# nominatif, ou adresse cassée par l'éditeur du site).
+#
+# Ce bloc ne FABRIQUE jamais d'adresse : il ne fait que juger un domaine déjà
+# lu sur la page. Aucune fonction ici ne produit de "@".
+
+# Formes juridiques et mots-outils : présents dans un nom sur deux, ne disent rien
+# de la marque.
+_NOM_SUFFIXES_LEGAUX = {
+    "inc", "incorporee", "incorporated", "ltee", "ltd", "limitee", "limited",
+    "enr", "senc", "sencrl", "srl", "sa", "cie", "corp", "co",
+}
+_NOM_MOTS_OUTILS = {
+    "le", "la", "les", "l", "de", "du", "des", "d", "et", "en", "au", "aux",
+    "a", "the", "of", "and", "pour", "chez", "sur", "par",
+}
+# Enveloppes corporatives : « Groupe X », « Les Entreprises X », « Services X ».
+# Le radical de marque, c'est X — jamais l'enveloppe (sinon « Groupe Machin »
+# matcherait n'importe quel groupe*.com).
+_NOM_MOTS_ENVELOPPE = {
+    "groupe", "groupes", "entreprise", "entreprises", "compagnie", "company",
+    "service", "services", "equipe", "team",
+}
+# Géographie : partagée par tous les concurrents du même marché, donc aucun
+# signal de propriété (« ... Montreal » traîne dans un nom Google Places sur trois).
+_NOM_MOTS_GEO = {
+    "montreal", "mtl", "quebec", "laval", "longueuil", "gatineau", "sherbrooke",
+    "levis", "terrebonne", "brossard", "repentigny", "lachine", "laurentides",
+    "monteregie", "canada", "qc",
+}
+_NOM_MOTS_NON_DISTINCTIFS = (
+    _NOM_SUFFIXES_LEGAUX | _NOM_MOTS_OUTILS | _NOM_MOTS_ENVELOPPE | _NOM_MOTS_GEO
+)
+
+# Le nom Google Places traîne souvent un descripteur derrière un tiret ou une
+# barre : « Groupe Omnex - Tonte de pelouse Repentigny ». On garde le nom entier
+# pour le radical (le descripteur peut porter la marque : « Entretiens AP -
+# Lavage de vitres » → lavagedefenetresap.com) mais l'acronyme, lui, se calcule
+# AUSSI sur la tête seule.
+_NOM_SEPARATEURS_DESCRIPTEUR = ("-", "–", "—", "|", "/", ",", ":")
+
+# Seuils. Le radical reprend celui de `_brand_affine` (5) : en dessous, « ideal »
+# ou « omnex » deviendraient « idea »/« omne », et le bruit passe.
+_NOM_RADICAL_MIN = 5
+# Égalité EXACTE entre le label du domaine (dépouillé de son enveloppe) et un mot
+# du nom : 4 lettres, ou 3 si le mot est écrit en CAPITALES dans le nom (c'est
+# alors un sigle de marque : « Entreprises CRC » → lesentreprisescrc.com, tandis
+# que le « Pro » de « Services Pro » ne donne aucun droit sur pro.com).
+_NOM_LABEL_EXACT_MIN = 4
+_NOM_SIGLE_EXACT_MIN = 3
+# Initiales : 2 lettres matcheraient tout, 3 restent très collisionnelles
+# (17 576 combinaisons), 4 en font 456 976 — et l'égalité doit être exacte.
+_NOM_ACRONYME_MIN = 4
+
+# Enveloppes retirées du label d'un domaine avant l'égalité exacte
+# (lesentreprisescrc → crc, cvpeinc → cvpe). Ordre = du plus long au plus court.
+_LABEL_ENVELOPPES = (
+    "lesentreprises", "entreprises", "entreprise", "compagnie", "services",
+    "service", "groupe", "les", "inc", "ltee", "enr", "cie",
+)
+_SUFFIXES_COMPOSES = {"qc.ca", "co.uk", "com.au", "co.nz"}
+
+
+def _sans_accents(texte: str) -> str:
+    """« Déneigement Idéal » → « Deneigement Ideal » (les domaines n'ont pas d'accents)."""
+    decompose = unicodedata.normalize("NFKD", texte)
+    return "".join(c for c in decompose if not unicodedata.combining(c))
+
+
+def _tokens_nom(nom: str) -> list[str]:
+    """Mots distinctifs d'un nom de company, dans l'ordre, sans accent ni ponctuation."""
+    plat = re.sub(r"[^a-z0-9]+", " ", _sans_accents(nom or "").lower())
+    return [
+        mot for mot in plat.split()
+        if len(mot) >= 2 and not mot.isdigit() and mot not in _NOM_MOTS_NON_DISTINCTIFS
+    ]
+
+
+def _sigles_nom(nom: str) -> set[str]:
+    """Mots écrits tout en CAPITALES dans le nom d'origine (FEXT, CRC, AP)."""
+    return {
+        mot.lower()
+        for mot in re.split(r"[^A-Za-zÀ-ÿ0-9]+", _sans_accents(nom or ""))
+        if len(mot) >= 2 and mot.isupper()
+    }
+
+
+def _label_de_marque(dom: str) -> str:
+    """Label de marque d'un domaine, TLD retiré, réduit à [a-z0-9].
+
+    Distinct de `_domain_main_label` (qui ne connaît qu'une liste fermée de TLD et
+    rend « coop » pour groupex.coop) : ici on retire simplement le dernier
+    segment, ou les deux derniers pour un suffixe composé (regardvert.qc.ca).
+    """
+    parts = [p for p in (dom or "").lower().split(".") if p]
+    if len(parts) >= 3 and ".".join(parts[-2:]) in _SUFFIXES_COMPOSES:
+        parts = parts[:-2]
+    elif len(parts) >= 2:
+        parts = parts[:-1]
+    return re.sub(r"[^a-z0-9]", "", parts[-1]) if parts else ""
+
+
+def _label_reduit(label: str) -> str:
+    """Label dépouillé de ses enveloppes de tête/queue, tant qu'il reste ≥ 3 lettres."""
+    encore = True
+    while encore:
+        encore = False
+        for mot in _LABEL_ENVELOPPES:
+            if label.startswith(mot) and len(label) - len(mot) >= _NOM_SIGLE_EXACT_MIN:
+                label = label[len(mot):]
+                encore = True
+            if label.endswith(mot) and len(label) - len(mot) >= _NOM_SIGLE_EXACT_MIN:
+                label = label[: -len(mot)]
+                encore = True
+    return label
+
+
+def _marque_affine_nom(nom: str | None, email_dom: str) -> bool:
+    """Vrai si le domaine du courriel porte la marque de la company (son NOM).
+
+    Trois règles, de la plus large à la plus étroite :
+      1. **radical** — sous-chaîne commune ≥ 5 entre le label du domaine et les
+         mots distinctifs du nom collés (Amiral Extermination → amiralservice.com).
+      2. **mot exact** — le label dépouillé de son enveloppe EST un mot distinctif
+         du nom, ≥ 4 lettres (FEXT → fext.ca) ou ≥ 3 si c'est un sigle en
+         capitales (Entreprises CRC → lesentreprisescrc.com).
+      3. **initiales** — le label dépouillé EST l'acronyme du nom, ≥ 4 initiales
+         (Centre Ville Paysagiste Entretien Inc → cvpeinc.com).
+    """
+    tokens = _tokens_nom(nom or "")
+    label = _label_de_marque(email_dom)
+    if not tokens or not label:
+        return False
+
+    compact = "".join(tokens)
+    if _lcs_len(compact, label) >= _NOM_RADICAL_MIN:
+        return True
+
+    noyau = _label_reduit(label)
+    if len(noyau) < _NOM_SIGLE_EXACT_MIN:
+        return False
+
+    sigles = _sigles_nom(nom or "")
+    for tok in (*tokens, compact):
+        if tok != noyau:
+            continue
+        if len(tok) >= _NOM_LABEL_EXACT_MIN or tok in sigles:
+            return True
+
+    coupe = re.escape("".join(_NOM_SEPARATEURS_DESCRIPTEUR))
+    tete = re.split(f"[{coupe}]", nom or "", maxsplit=1)[0]
+    for variante in (tokens, _tokens_nom(tete)):
+        acronyme = "".join(t[0] for t in variante)
+        if len(acronyme) >= _NOM_ACRONYME_MIN and acronyme == noyau:
+            return True
+    return False
+
+
+# Forme minimale d'une adresse réelle, appliquée après normalisation (minuscules,
+# ponctuation de bord retirée).
+_LOCAL_VALIDE = re.compile(r"^[a-z0-9][a-z0-9._%+\-]*$")
+_DOMAINE_VALIDE = re.compile(r"^[a-z0-9]([a-z0-9.\-]*[a-z0-9])?\.[a-z]{2,}$")
+
+
+def _domaine_bloque(dom: str) -> bool:
+    """Domaine dans la blocklist — sous-domaines compris (sentry.wixpress.com)."""
+    return any(dom == bl or dom.endswith("." + bl) for bl in EMAIL_BLOCKLIST_DOMAINS)
+
+
+def _est_nom_de_fichier_image(brut: str) -> bool:
+    """`chosen-sprite@2x.png` : ce que EMAIL_REGEX prend pour une adresse."""
+    dom = _addr_normalisee(brut).rpartition("@")[2]
+    return dom.endswith(EMAIL_EXTENSIONS_IMAGE)
+
+
+def _addr_normalisee(brut: str) -> str:
+    return brut.strip().strip(".,;:<>()[]\"'").lower()
+
+
+# ----------------------------------------------------------------------
+# Diagnostic d'extraction des courriels — voir/compter, jamais décider
+# ----------------------------------------------------------------------
+#
+# Pourquoi : 145 companies sur 816 portaient « recherche faite, aucun courriel
+# trouvé ». Les 145 avaient un site, les 145 avaient été scrapées, le scraper
+# rendait zéro adresse à chaque fois. Une vérif manuelle sur 12 en a trouvé 10
+# qui publient pourtant une adresse. Rien n'a sonné pendant deux mois parce
+# qu'aucun chiffre nulle part ne disait « on a vu 47 adresses et on les a
+# TOUTES jetées ». Ce bloc produit ce chiffre. Il ne filtre rien, ne réordonne
+# rien, ne décide rien : il ne fait qu'incrémenter des compteurs.
+
+# Clé unique posée dans `companies.research_json` (jsonb).
+DIAGNOSTIC_KEY = "diagnostic_courriels"
+_DIAG_VERSION = 1
+# Plafond des listes d'adresses (par page ET pour la passe) : le diagnostic
+# atterrit dans la row de CHAQUE company — on veut un ordre de grandeur, pas un
+# dump de page. Une page-annuaire pathologique ne doit pas faire enfler le jsonb.
+_DIAG_REJETS_MAX = 10
+
+_MOTIFS_REJET = ("local_bloque", "domaine_bloque", "hors_domaine")
+_SOURCES_CANDIDAT = ("texte", "mailto", "cloudflare")
+
+
+def _diag_page_neuve(url: str, statut: str, coquille_vide: bool = False) -> dict[str, Any]:
+    """Compteurs vierges pour UNE page scannée."""
+    return {
+        "url": url,
+        "statut": statut,
+        "coquille_vide": coquille_vide,
+        "candidats": {"texte": 0, "mailto": 0, "cloudflare": 0, "total": 0},
+        "rejets": {m: 0 for m in _MOTIFS_REJET},
+        # adresses effectivement jetées par la règle de domaine (suspect n°1)
+        "rejets_hors_domaine": [],
+        "acceptes": 0,
+    }
+
+
+def _diag_passe_neuve(statut_site: str) -> dict[str, Any]:
+    """Compteurs vierges pour UNE passe de research (site complet)."""
+    return {
+        "version": _DIAG_VERSION,
+        "statut_site": statut_site,
+        "pages": [],
+        "pages_en_echec": [],
+        "rejets_hors_domaine": [],
+        "adresses_retenues": [],
+        "totaux": {
+            "pages_visitees": 0,
+            "pages_en_echec": 0,
+            "coquilles_vides": 0,
+            "candidats": {"texte": 0, "mailto": 0, "cloudflare": 0, "total": 0},
+            "rejets": {m: 0 for m in _MOTIFS_REJET},
+            "acceptes": 0,
+        },
+    }
+
+
+def _diag_finalise(diag: dict[str, Any], emails_by_addr: dict[str, dict[str, str]]) -> None:
+    """Agrège les compteurs par page en totaux de passe. Purement additif."""
+    tot = diag["totaux"]
+    tot["pages_visitees"] = len(diag["pages"]) + len(diag["pages_en_echec"])
+    tot["pages_en_echec"] = len(diag["pages_en_echec"])
+    tot["coquilles_vides"] = sum(1 for p in diag["pages"] if p["coquille_vide"])
+    for page in diag["pages"]:
+        for src in _SOURCES_CANDIDAT:
+            tot["candidats"][src] += page["candidats"][src]
+        tot["candidats"]["total"] += page["candidats"]["total"]
+        for motif in _MOTIFS_REJET:
+            tot["rejets"][motif] += page["rejets"][motif]
+    # Union dédupliquée des adresses jetées par la règle de domaine, plafonnée :
+    # c'est la liste que l'humain lit pour trancher « filtre trop strict ou non ».
+    vus: set[str] = set()
+    for page in diag["pages"]:
+        for addr in page["rejets_hors_domaine"]:
+            if addr not in vus and len(diag["rejets_hors_domaine"]) < _DIAG_REJETS_MAX:
+                vus.add(addr)
+                diag["rejets_hors_domaine"].append(addr)
+    # Adresses retenues + LA page où on les a vues. Répond plus tard à « combien
+    # de boîtes n'avaient une adresse QUE sur leur page de politique de vie privée ».
+    # Nom distinct du compteur `acceptes` (int) pour qu'une même clé n'ait jamais
+    # deux types selon le niveau — on interroge ce jsonb en SQL.
+    diag["adresses_retenues"] = [
+        {"email": em["email"], "url": em.get("source_url")} for em in emails_by_addr.values()
+    ]
+    tot["acceptes"] = len(emails_by_addr)
+
+
+# Heuristique « coquille SPA » : le HTML brut ne contient AUCUN lien (`<a href>`)
+# ni AUCUN élément de navigation (`<nav>`, `[role=navigation]`). Un site statique
+# normal — même une page unique — publie au minimum un menu ou un lien. Une SPA
+# (React/Vue/Angular) sert un `<div id="root"></div>` + un bundle JS : zéro lien
+# dans le HTML brut, donc zéro page interne à suivre et zéro courriel visible.
+# Volontairement grossière : on veut l'ORDRE DE GRANDEUR du problème, pas un
+# verdict. Faux positifs possibles (landing 100% image), faux négatifs certains
+# (SPA qui rend son menu côté serveur). Aucun renderer headless n'est déployé
+# (RENDER_SERVICE_URL vide) — ce compteur est aujourd'hui la SEULE mesure du trou.
+def _est_coquille_vide(html: str) -> bool:
+    soup = BeautifulSoup(html, "html.parser")
+    if soup.find("a", href=True) is not None:
+        return False
+    if soup.find("nav") is not None:
+        return False
+    return soup.select_one("[role=navigation]") is None
+
+
+def sans_diagnostic(research_json: dict[str, Any] | None) -> dict[str, Any]:
+    """Copie de `research_json` privée de la clé de diagnostic.
+
+    Le diagnostic est de la télémétrie interne : il n'a rien à faire dans un
+    prompt LLM aval (personalize, juge compliance), où il ne ferait qu'ajouter
+    du bruit et des adresses tierces. Copie superficielle — l'original intact.
+    """
+    return {k: v for k, v in (research_json or {}).items() if k != DIAGNOSTIC_KEY}
+
+
+def _extract_emails_from_html(
+    html: str,
+    base_url: str,
+    diag: dict[str, Any] | None = None,
+    company_name: str | None = None,
+) -> list[dict[str, str]]:
     """Extrait les emails d'un HTML. Filtre blocklist + emails hors-domaine.
 
     Trois sources de candidats :
@@ -214,46 +541,97 @@ def _extract_emails_from_html(html: str, base_url: str) -> list[dict[str, str]]:
         de marque avec le site (domaine-frère, ex: famillelajoie.com →
         fermehorticolelajoie.com). Un domaine tiers sans radical commun reste exclu.
     Retourne [{email, local, domain, kind}] dédupliqué.
+
+    `company_name` (optionnel) ouvre une 4e porte de propriété : le domaine porte
+    la marque de la boîte (`_marque_affine_nom`). Elle vaut pour les deux sources
+    — le verrou same-domain du texte libre existait parce que la prose ne dit pas
+    à qui appartient l'adresse ; le nom, lui, le dit. Sans `company_name` le
+    comportement est exactement l'ancien.
+
+    `diag` (optionnel) = dict de `_diag_page_neuve()` rempli au passage : compteurs
+    de candidats par source et de rejets par motif. **Écriture seule** — aucune
+    valeur de `diag` n'est relue pour décider quoi que ce soit, l'extraction est
+    strictement identique avec ou sans (verrouillé par
+    `test_extraction_identique_avec_ou_sans_diag`).
+    Les candidats sont comptés en OCCURRENCES (l'adresse du footer répétée 3 fois
+    compte 3 fois : c'est ce que le scanner voit), les rejets et les acceptés en
+    ADRESSES DISTINCTES (« on a vu 47 adresses et on les a jetées »).
     """
     base_dom = _domain_of(base_url)
     seen: dict[str, dict[str, str]] = {}
     soup = BeautifulSoup(html, "html.parser")
 
-    # (addr_brut, is_explicit) — explicit = mailto/cfemail (intentionnel, owner-placed)
-    candidates: list[tuple[str, bool]] = [(m, False) for m in EMAIL_REGEX.findall(html)]
+    # (addr_brut, source) — source ∈ texte | mailto | cloudflare.
+    # mailto/cfemail = *explicit* (intentionnel, owner-placed) ; texte = non.
+    candidates: list[tuple[str, str]] = [(m, "texte") for m in EMAIL_REGEX.findall(html)]
     for a in soup.find_all("a", href=True):
         href = a["href"]
         low = href.lower()
         if low.startswith("mailto:"):
             addr = href[7:].split("?")[0].strip()
             if addr:
-                candidates.append((addr, True))
+                candidates.append((addr, "mailto"))
         elif "/cdn-cgi/l/email-protection#" in low:
             dec = _decode_cfemail(href.split("#", 1)[1])
             if dec:
-                candidates.append((dec, True))
+                candidates.append((dec, "cloudflare"))
     for el in soup.select("[data-cfemail]"):
         dec = _decode_cfemail(el.get("data-cfemail", ""))
         if dec:
-            candidates.append((dec, True))
+            candidates.append((dec, "cloudflare"))
 
-    for raw, is_explicit in candidates:
-        addr = raw.strip().strip(".,;:<>()[]\"'").lower()
+    # `logo@2x.png` n'a jamais été un candidat : hors des compteurs, pas un rejet.
+    candidates = [c for c in candidates if not _est_nom_de_fichier_image(c[0])]
+
+    if diag is not None:
+        for _, src in candidates:
+            diag["candidats"][src] += 1
+        diag["candidats"]["total"] = len(candidates)
+
+    rejets_vus: set[str] = set()  # une adresse rejetée n'est comptée qu'une fois
+
+    def _compte_rejet(addr: str, motif: str) -> None:
+        if diag is None or addr in rejets_vus:
+            return
+        rejets_vus.add(addr)
+        diag["rejets"][motif] += 1
+        if motif == "hors_domaine" and len(diag["rejets_hors_domaine"]) < _DIAG_REJETS_MAX:
+            diag["rejets_hors_domaine"].append(addr)
+
+    for raw, source in candidates:
+        is_explicit = source != "texte"
+        addr = _addr_normalisee(raw)
         if "@" not in addr:
             continue
         local, _, dom = addr.partition("@")
-        if not local or not dom:
+        # Ce qui n'a pas la FORME d'une adresse n'a jamais été un candidat (même
+        # esprit que le `"@" not in addr` au-dessus) : `%20info@x.com` (artefact
+        # d'URL-encodage), ou un domaine truffé d'espaces de largeur nulle par
+        # un éditeur WYSIWYG : des chaînes cassées, pas des adresses.
+        if not _LOCAL_VALIDE.match(local) or not _DOMAINE_VALIDE.match(dom):
             continue
         if local in EMAIL_BLOCKLIST_LOCAL:
+            _compte_rejet(addr, "local_bloque")
             continue
-        if dom in EMAIL_BLOCKLIST_DOMAINS:
+        if _domaine_bloque(dom):
+            _compte_rejet(addr, "domaine_bloque")
             continue
         kind = _classify_email(local)
         is_same_domain = bool(base_dom) and (dom == base_dom or dom.endswith("." + base_dom))
         is_personal_nominative = dom in EMAIL_PERSONAL_DOMAINS and kind == "nominative"
         # owner-placed cross-domain : accepté seulement si domaine-frère (radical commun).
         is_owner_sibling = is_explicit and bool(base_dom) and _brand_affine(base_dom, dom)
-        if not (is_same_domain or is_personal_nominative or is_owner_sibling):
+        # le domaine porte le NOM de la boîte : c'est son domaine de marque, même
+        # si le site vit ailleurs (redirection, domaine SEO, fiche d'annuaire).
+        # Jamais sur un domaine perso : là, seule la règle du local nominatif
+        # décide (une boîte ne possède pas gmail.com, quel que soit son nom).
+        is_owner_by_name = (
+            bool(company_name)
+            and dom not in EMAIL_PERSONAL_DOMAINS
+            and _marque_affine_nom(company_name, dom)
+        )
+        if not (is_same_domain or is_personal_nominative or is_owner_sibling or is_owner_by_name):
+            _compte_rejet(addr, "hors_domaine")
             continue
         if addr in seen:
             continue
@@ -263,6 +641,8 @@ def _extract_emails_from_html(html: str, base_url: str) -> list[dict[str, str]]:
             "domain": dom,
             "kind": kind,
         }
+    if diag is not None:
+        diag["acceptes"] = len(seen)
     return list(seen.values())
 
 
@@ -316,14 +696,31 @@ def _rank_internal_pages(base_url: str, html: str, max_links: int) -> list[str]:
     return [u for _, _, u in scored[:max_links]]
 
 
-async def fetch_site(url: str, max_pages: int = 5, timeout: float = 15.0) -> dict[str, Any]:
+async def fetch_site(
+    url: str,
+    max_pages: int = 5,
+    timeout: float = 15.0,
+    company_name: str | None = None,
+) -> dict[str, Any]:
     """Fetch homepage + up to (max_pages-1) linked internal pages.
 
-    Returns: {url, status, pages: [{url, text}], tech_keyword_hits: [str]}
+    Returns: {url, status, pages: [{url, text}], tech_keyword_hits: [str],
+              emails_found: [...], diagnostic_courriels: {...}}
+
+    `diagnostic_courriels` (voir `_diag_passe_neuve`) trace ce que la passe a VU :
+    pages scannées + statut HTTP, pages en échec, coquilles SPA, candidats par
+    source, rejets par motif, et adresses retenues avec leur page d'origine.
+    Ces compteurs sont en écriture seule — aucun ne conditionne un fetch ou un
+    filtre, le scrape est identique à ce qu'il était avant l'instrumentation.
+
+    `company_name` (optionnel) sert à reconnaître le domaine de marque de la boîte
+    quand son site vit ailleurs — voir `_marque_affine_nom`. Il n'est JAMAIS utilisé
+    pour composer une adresse, seulement pour juger une adresse lue sur la page.
     """
+    diag = _diag_passe_neuve("unknown")
     out: dict[str, Any] = {
         "url": url, "status": "unknown", "pages": [],
-        "tech_keyword_hits": [], "emails_found": [],
+        "tech_keyword_hits": [], "emails_found": [], DIAGNOSTIC_KEY: diag,
     }
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "fr-CA,fr;q=0.9,en;q=0.5"}
     emails_by_addr: dict[str, dict[str, str]] = {}
@@ -333,15 +730,25 @@ async def fetch_site(url: str, max_pages: int = 5, timeout: float = 15.0) -> dic
             r = await client.get(url)
         except httpx.HTTPError as e:
             out["status"] = f"error: {type(e).__name__}"
+            diag["statut_site"] = out["status"]
+            diag["pages_en_echec"].append({"url": url, "statut": out["status"]})
+            _diag_finalise(diag, emails_by_addr)
             return out
 
         out["status"] = f"http_{r.status_code}"
+        diag["statut_site"] = out["status"]
         if r.status_code >= 400:
+            diag["pages_en_echec"].append({"url": str(r.url), "statut": out["status"]})
+            _diag_finalise(diag, emails_by_addr)
             return out
 
         home_text = _clean_text(r.text)
         out["pages"].append({"url": str(r.url), "text": home_text})
-        for em in _extract_emails_from_html(r.text, str(r.url)):
+        diag_home = _diag_page_neuve(str(r.url), out["status"], _est_coquille_vide(r.text))
+        diag["pages"].append(diag_home)
+        for em in _extract_emails_from_html(
+            r.text, str(r.url), diag=diag_home, company_name=company_name
+        ):
             em["source_url"] = str(r.url)
             emails_by_addr.setdefault(em["email"], em)
 
@@ -352,15 +759,29 @@ async def fetch_site(url: str, max_pages: int = 5, timeout: float = 15.0) -> dic
                 rp = await client.get(href)
                 if rp.status_code < 400:
                     out["pages"].append({"url": str(rp.url), "text": _clean_text(rp.text)})
-                    for em in _extract_emails_from_html(rp.text, str(rp.url)):
+                    diag_page = _diag_page_neuve(
+                        str(rp.url), f"http_{rp.status_code}", _est_coquille_vide(rp.text)
+                    )
+                    diag["pages"].append(diag_page)
+                    for em in _extract_emails_from_html(
+                        rp.text, str(rp.url), diag=diag_page, company_name=company_name
+                    ):
                         em["source_url"] = str(rp.url)
                         emails_by_addr.setdefault(em["email"], em)
-            except httpx.HTTPError:
+                else:
+                    diag["pages_en_echec"].append(
+                        {"url": str(rp.url), "statut": f"http_{rp.status_code}"}
+                    )
+            except httpx.HTTPError as e:
+                diag["pages_en_echec"].append(
+                    {"url": href, "statut": f"error: {type(e).__name__}"}
+                )
                 continue
 
     haystack = " ".join(p["text"].lower() for p in out["pages"])
     out["tech_keyword_hits"] = [kw.strip() for kw in TECH_KEYWORDS if kw in haystack]
     out["emails_found"] = list(emails_by_addr.values())
+    _diag_finalise(diag, emails_by_addr)
     return out
 
 
@@ -622,6 +1043,9 @@ def _call_llm(
 class ResearchCompanyIn(BaseModel):
     google_place_id: str
     website: str | None = None
+    # nom en base (`companies.name`) : sert au scraper à reconnaître le domaine de
+    # marque de la boîte. Optionnel — à défaut, le displayName Google Places.
+    company_name: str | None = None
     model: str = _DEFAULT_MODEL
     track: str = "agence-ia"  # track live ; OPT retiré (legacy) — sélectionne les critères de scoring
 
@@ -644,10 +1068,14 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
 
     place = await fetch_place_details(payload.google_place_id)
     website = payload.website or place.get("websiteUri")
+    nom = payload.company_name or (place.get("displayName") or {}).get("text") or None
     if website:
-        site = await fetch_site(website)
+        site = await fetch_site(website, company_name=nom)
     else:
-        site = {"status": "no_website", "pages": [], "tech_keyword_hits": []}
+        site = {
+            "status": "no_website", "pages": [], "tech_keyword_hits": [],
+            DIAGNOSTIC_KEY: _diag_passe_neuve("no_website"),
+        }
 
     place_block = _format_place_for_llm(place)
     site_block = _format_site_for_llm(site)
@@ -656,8 +1084,15 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
         _call_llm, place_block, site_block, payload.model, 2000, payload.track
     )
 
+    # Le diagnostic voyage DANS research_json : c'est le seul champ persisté tel
+    # quel dans `companies.research_json`, donc le seul endroit interrogeable en
+    # SQL pour repérer une passe qui a tout jeté. Copie superficielle pour ne pas
+    # muter le dict rendu par le LLM.
+    research_json = dict(llm_result.research_json or {})
+    research_json[DIAGNOSTIC_KEY] = site.get(DIAGNOSTIC_KEY) or _diag_passe_neuve("unknown")
+
     return ResearchCompanyOut(
-        research_json=llm_result.research_json,
+        research_json=research_json,
         model=llm_result.model,
         duration_ms=int((time.monotonic() - started) * 1000),
         usage=llm_result.usage,
