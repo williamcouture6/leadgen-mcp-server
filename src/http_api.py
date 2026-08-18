@@ -137,9 +137,10 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     date_str = start_local.strftime("%Y-%m-%d")
 
     async def _cnt(table: str, extra: dict[str, str], date_field: str = "created_at") -> int:
-        params = {"select": "id", date_field: f"gte.{cutoff}", **extra}
-        rows = await sb.select(table, params=params)
-        return len(rows)
+        # count() exact côté serveur. Avant : `len(await sb.select(...))`, qui
+        # plafonnait en silence à 1000 (max-rows PostgREST) — une bonne journée
+        # de sourcing aurait affiché « sourcées 1000 » pour toujours.
+        return await sb.count(table, params={date_field: f"gte.{cutoff}", **extra})
 
     lines: list[str] = []
     totals: dict[str, Any] = {}
@@ -171,8 +172,13 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         # même colonne, donc un `and=(...)` imbriqué qu'aucun test sur mock ne
         # peut valider — une syntaxe fausse compterait faux en silence. Le
         # volume rend le débat théorique : quelques dizaines de drafts.
-        bloques = await sb.select(
+        #
+        # select_all : on a besoin du CONTENU (compliance_notes) de chaque
+        # draft, pas d'un nombre, et sans filtre de date le lot peut dépasser
+        # le plafond de 1000 lignes de PostgREST.
+        bloques = await sb.select_all(
             "messages",
+            order="id",
             params={
                 "select": "id,compliance_notes",
                 "track": f"eq.{tk}",
@@ -217,8 +223,17 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     # État du PARC, sans filtre de date : c'est l'entreprise coincée depuis six
     # semaines qu'on veut voir, pas l'activité du jour. Même patron que la ligne
     # « ⏸ en attente de config » de P4.10.
-    lignes_motifs = await sb.select(
+    #
+    # `track` est figé sur 'agence-ia' à dessein, il ne suit PAS payload.tracks :
+    # le projet a pivoté sur une offre unique le 2026-06-07 et 'OPT' est du legacy
+    # gelé, qu'on ne prospecte plus. Ne pas « corriger » en bouclant sur les tracks.
+    #
+    # select_all : 816 lignes aujourd'hui pour agence-ia, sur un plafond PostgREST
+    # de 1000 — et ce compteur grossit à chaque run de sourcing. Un `select()` se
+    # serait fait couper sans erreur, rendant un top 3 faux dans le planner order.
+    lignes_motifs = await sb.select_all(
         "v_pourquoi_pas_de_courriel",
+        order="company_id",
         params={"select": "motif,recontactable", "track": "eq.agence-ia"},
     )
     compte: dict[str, int] = {}

@@ -80,6 +80,100 @@ async def select(
         return r.json()
 
 
+# PostgREST plafonne TOUTE réponse à `max-rows`, réglé à 1000 sur ce projet
+# (mesuré le 2026-08-17 : la vue v_pourquoi_pas_de_courriel a 1895 lignes, un
+# GET sans filtre en rend exactement 1000). Le plafond est serveur : `limit=5000`
+# ne le lève pas. Rien ne signale la troncature — pas d'erreur, pas d'en-tête —
+# donc `len(await select(...))` rend 1000 et ment sans prévenir.
+#
+# D'où les deux primitives ci-dessous. Règle : dès qu'une relation PEUT dépasser
+# 1000 lignes, ne jamais compter avec `len(select(...))`.
+#   - besoin d'un NOMBRE  → count()      : exact, zéro ligne transférée
+#   - besoin des LIGNES   → select_all() : pagine par tranches ordonnées
+#
+# Les agrégats côté serveur (`select=motif,count()`), qui auraient évité la
+# pagination, sont désactivés sur ce projet : PGRST123 « Use of aggregate
+# functions is not allowed ».
+_PAGE_MAX = 1000
+
+
+def _total_depuis_content_range(header: str | None) -> int:
+    """`*/1895` ou `0-999/1895` → 1895.
+
+    Lève plutôt que de rendre 0 : un compte faux et silencieux est exactement
+    le défaut que ces primitives existent pour fermer."""
+    total = (header or "").rpartition("/")[2]
+    if not total.isdigit():
+        raise RuntimeError(
+            f"Content-Range illisible ({header!r}) — compte impossible. "
+            "Vérifier que la requête porte bien Prefer: count=exact."
+        )
+    return int(total)
+
+
+@retry(**_RETRY_KW)
+async def count(
+    table: str,
+    *,
+    params: dict[str, str] | None = None,
+    schema: str | None = None,
+) -> int:
+    """Compte EXACT côté serveur, sans ramener de lignes (Prefer: count=exact).
+
+    Le total arrive dans l'en-tête Content-Range ; `limit=0` évite de payer le
+    transfert des lignes. Insensible au plafond max-rows, contrairement à
+    `len(await select(...))`."""
+    headers = _headers()
+    headers["Prefer"] = "count=exact"
+    if schema:
+        headers["Accept-Profile"] = schema
+    q = {**(params or {}), "limit": "0"}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(_rest_url(table), headers=headers, params=q)
+        r.raise_for_status()
+        return _total_depuis_content_range(r.headers.get("Content-Range"))
+
+
+async def select_all(
+    table: str,
+    *,
+    order: str,
+    params: dict[str, str] | None = None,
+    page_size: int = _PAGE_MAX,
+    schema: str | None = None,
+) -> list[dict[str, Any]]:
+    """Toutes les lignes, tranche par tranche, sans se faire couper à 1000.
+
+    `order` est OBLIGATOIRE et doit porter sur une colonne unique et stable
+    (`id`, `company_id`) : sans ORDER BY, deux requêtes offset successives
+    peuvent sauter ou dupliquer des lignes, l'ordre des lignes n'étant garanti
+    par rien côté Postgres.
+
+    Chaque tranche passe par `select()`, donc garde ses retries : une panne
+    réseau sur la tranche 2 ne refait pas la tranche 1."""
+    # Une tranche plus grande que le plafond serveur serait un piège : la
+    # réponse reviendrait coupée à 1000, donc « plus courte que demandé », et
+    # la boucle conclurait à tort qu'elle a tout lu.
+    page_size = max(1, min(page_size, _PAGE_MAX))
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = await select(
+            table,
+            params={
+                **(params or {}),
+                "order": order,
+                "limit": str(page_size),
+                "offset": str(offset),
+            },
+            schema=schema,
+        )
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        offset += page_size
+
+
 @retry(**_RETRY_KW)
 async def insert(
     table: str,
