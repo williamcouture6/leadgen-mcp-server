@@ -214,6 +214,28 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         + f"\n📅 RDV bookés: {bookings}"
     )
 
+    # État du PARC, sans filtre de date : c'est l'entreprise coincée depuis six
+    # semaines qu'on veut voir, pas l'activité du jour. Même patron que la ligne
+    # « ⏸ en attente de config » de P4.10.
+    lignes_motifs = await sb.select(
+        "v_pourquoi_pas_de_courriel",
+        params={"select": "motif,recontactable", "track": "eq.agence-ia"},
+    )
+    compte: dict[str, int] = {}
+    a_juger = 0
+    for row in lignes_motifs:
+        motif = row.get("motif") or "?"
+        if motif != "en_file":
+            compte[motif] = compte.get(motif, 0) + 1
+        if row.get("recontactable") == "a_juger":
+            a_juger += 1
+
+    if compte:
+        top3 = sorted(compte.items(), key=lambda kv: kv[1], reverse=True)[:3]
+        text += "\n🧱 " + " · ".join(f"{m} {n}" for m, n in top3)
+    if a_juger:
+        text += f"\n🔎 {a_juger} entreprises que le temps ne réparera pas"
+
     posted = False
     if payload.post:
         posted = await slack_lib.notify(
