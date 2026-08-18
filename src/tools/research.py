@@ -15,6 +15,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -92,10 +93,25 @@ EMAIL_BLOCKLIST_LOCAL = {
     "noreply", "no-reply", "donotreply", "do-not-reply", "mailer-daemon",
     "postmaster", "abuse", "security", "webmaster", "spam",
 }
+# Domaines jamais légitimes. Le match couvre AUSSI les sous-domaines (voir
+# `_domaine_bloque`) : `sentry.wixpress.com` passait au travers d'une liste qui
+# ne contenait que `wixpress.com` et `sentry-next.wixpress.com`.
 EMAIL_BLOCKLIST_DOMAINS = {
-    "sentry.io", "sentry-next.wixpress.com", "wixpress.com",
-    "googlegroups.com", "example.com", "domain.com",
+    "sentry.io", "wixpress.com", "googlegroups.com",
+    # gabarits laissés tels quels par le thème / le constructeur de site — en
+    # anglais comme en français (relevés sur le terrain le 2026-08-17).
+    "example.com", "domain.com", "yourdomain.com", "companyname.com",
+    "exemple.com", "monsite.com", "mondomaine.com", "votredomaine.com",
+    "courriel.xyz",
 }
+
+# EMAIL_REGEX prend un nom de fichier `logo@2x.png` pour une adresse : 47 des 86
+# « rejets » du lot terrain étaient ce bruit-là. On les écarte AVANT de compter
+# quoi que ce soit — ce ne sont pas des candidats, juste des images.
+EMAIL_EXTENSIONS_IMAGE = (
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif",
+    ".tif", ".tiff",
+)
 EMAIL_GENERIC_LOCAL = {
     "info", "contact", "hello", "bonjour", "allo", "salut",
     "sales", "ventes", "vente", "admin", "marketing", "support", "service",
@@ -198,6 +214,197 @@ def _brand_affine(base_dom: str, email_dom: str) -> bool:
     domaine-frère légitime (site famillelajoie.com → info@fermehorticolelajoie.com,
     « lajoie » commun) d'un email tiers sans lien (setjardin.ca → unionmd.ca)."""
     return _lcs_len(_domain_main_label(base_dom), _domain_main_label(email_dom)) >= _BRAND_AFFINITY_MIN
+
+
+# ----------------------------------------------------------------------
+# Propriété d'une adresse : le domaine du courriel vs le NOM de la company
+# ----------------------------------------------------------------------
+#
+# `_brand_affine` compare le domaine du courriel à celui du SITE. C'est la
+# mauvaise référence : le site n'est pas toujours la marque. www.fext.ca redirige
+# vers exterminationmtl.com ; « Vitres Royal » se fait héberger sur un domaine SEO
+# montrealwindowcleaning.ca ; deux boîtes sont référencées via une fiche
+# 411habitation.com. Dans les trois cas l'adresse publiée est bien celle de la
+# boîte — sur le domaine de sa MARQUE, et sa marque c'est son NOM.
+# Mesure du 2026-08-17 (145 companies re-scrapées, 105 adresses jetées listées) :
+# 20 de ces adresses étaient celles des boîtes elles-mêmes. 14 sont récupérées
+# par cette règle ; les 6 autres restent dehors exprès (domaine perso à local non
+# nominatif, ou adresse cassée par l'éditeur du site).
+#
+# Ce bloc ne FABRIQUE jamais d'adresse : il ne fait que juger un domaine déjà
+# lu sur la page. Aucune fonction ici ne produit de "@".
+
+# Formes juridiques et mots-outils : présents dans un nom sur deux, ne disent rien
+# de la marque.
+_NOM_SUFFIXES_LEGAUX = {
+    "inc", "incorporee", "incorporated", "ltee", "ltd", "limitee", "limited",
+    "enr", "senc", "sencrl", "srl", "sa", "cie", "corp", "co",
+}
+_NOM_MOTS_OUTILS = {
+    "le", "la", "les", "l", "de", "du", "des", "d", "et", "en", "au", "aux",
+    "a", "the", "of", "and", "pour", "chez", "sur", "par",
+}
+# Enveloppes corporatives : « Groupe X », « Les Entreprises X », « Services X ».
+# Le radical de marque, c'est X — jamais l'enveloppe (sinon « Groupe Machin »
+# matcherait n'importe quel groupe*.com).
+_NOM_MOTS_ENVELOPPE = {
+    "groupe", "groupes", "entreprise", "entreprises", "compagnie", "company",
+    "service", "services", "equipe", "team",
+}
+# Géographie : partagée par tous les concurrents du même marché, donc aucun
+# signal de propriété (« ... Montreal » traîne dans un nom Google Places sur trois).
+_NOM_MOTS_GEO = {
+    "montreal", "mtl", "quebec", "laval", "longueuil", "gatineau", "sherbrooke",
+    "levis", "terrebonne", "brossard", "repentigny", "lachine", "laurentides",
+    "monteregie", "canada", "qc",
+}
+_NOM_MOTS_NON_DISTINCTIFS = (
+    _NOM_SUFFIXES_LEGAUX | _NOM_MOTS_OUTILS | _NOM_MOTS_ENVELOPPE | _NOM_MOTS_GEO
+)
+
+# Le nom Google Places traîne souvent un descripteur derrière un tiret ou une
+# barre : « Groupe Omnex - Tonte de pelouse Repentigny ». On garde le nom entier
+# pour le radical (le descripteur peut porter la marque : « Entretiens AP -
+# Lavage de vitres » → lavagedefenetresap.com) mais l'acronyme, lui, se calcule
+# AUSSI sur la tête seule.
+_NOM_SEPARATEURS_DESCRIPTEUR = ("-", "–", "—", "|", "/", ",", ":")
+
+# Seuils. Le radical reprend celui de `_brand_affine` (5) : en dessous, « ideal »
+# ou « omnex » deviendraient « idea »/« omne », et le bruit passe.
+_NOM_RADICAL_MIN = 5
+# Égalité EXACTE entre le label du domaine (dépouillé de son enveloppe) et un mot
+# du nom : 4 lettres, ou 3 si le mot est écrit en CAPITALES dans le nom (c'est
+# alors un sigle de marque : « Entreprises CRC » → lesentreprisescrc.com, tandis
+# que le « Pro » de « Services Pro » ne donne aucun droit sur pro.com).
+_NOM_LABEL_EXACT_MIN = 4
+_NOM_SIGLE_EXACT_MIN = 3
+# Initiales : 2 lettres matcheraient tout, 3 restent très collisionnelles
+# (17 576 combinaisons), 4 en font 456 976 — et l'égalité doit être exacte.
+_NOM_ACRONYME_MIN = 4
+
+# Enveloppes retirées du label d'un domaine avant l'égalité exacte
+# (lesentreprisescrc → crc, cvpeinc → cvpe). Ordre = du plus long au plus court.
+_LABEL_ENVELOPPES = (
+    "lesentreprises", "entreprises", "entreprise", "compagnie", "services",
+    "service", "groupe", "les", "inc", "ltee", "enr", "cie",
+)
+_SUFFIXES_COMPOSES = {"qc.ca", "co.uk", "com.au", "co.nz"}
+
+
+def _sans_accents(texte: str) -> str:
+    """« Déneigement Idéal » → « Deneigement Ideal » (les domaines n'ont pas d'accents)."""
+    decompose = unicodedata.normalize("NFKD", texte)
+    return "".join(c for c in decompose if not unicodedata.combining(c))
+
+
+def _tokens_nom(nom: str) -> list[str]:
+    """Mots distinctifs d'un nom de company, dans l'ordre, sans accent ni ponctuation."""
+    plat = re.sub(r"[^a-z0-9]+", " ", _sans_accents(nom or "").lower())
+    return [
+        mot for mot in plat.split()
+        if len(mot) >= 2 and not mot.isdigit() and mot not in _NOM_MOTS_NON_DISTINCTIFS
+    ]
+
+
+def _sigles_nom(nom: str) -> set[str]:
+    """Mots écrits tout en CAPITALES dans le nom d'origine (FEXT, CRC, AP)."""
+    return {
+        mot.lower()
+        for mot in re.split(r"[^A-Za-zÀ-ÿ0-9]+", _sans_accents(nom or ""))
+        if len(mot) >= 2 and mot.isupper()
+    }
+
+
+def _label_de_marque(dom: str) -> str:
+    """Label de marque d'un domaine, TLD retiré, réduit à [a-z0-9].
+
+    Distinct de `_domain_main_label` (qui ne connaît qu'une liste fermée de TLD et
+    rend « coop » pour groupex.coop) : ici on retire simplement le dernier
+    segment, ou les deux derniers pour un suffixe composé (regardvert.qc.ca).
+    """
+    parts = [p for p in (dom or "").lower().split(".") if p]
+    if len(parts) >= 3 and ".".join(parts[-2:]) in _SUFFIXES_COMPOSES:
+        parts = parts[:-2]
+    elif len(parts) >= 2:
+        parts = parts[:-1]
+    return re.sub(r"[^a-z0-9]", "", parts[-1]) if parts else ""
+
+
+def _label_reduit(label: str) -> str:
+    """Label dépouillé de ses enveloppes de tête/queue, tant qu'il reste ≥ 3 lettres."""
+    encore = True
+    while encore:
+        encore = False
+        for mot in _LABEL_ENVELOPPES:
+            if label.startswith(mot) and len(label) - len(mot) >= _NOM_SIGLE_EXACT_MIN:
+                label = label[len(mot):]
+                encore = True
+            if label.endswith(mot) and len(label) - len(mot) >= _NOM_SIGLE_EXACT_MIN:
+                label = label[: -len(mot)]
+                encore = True
+    return label
+
+
+def _marque_affine_nom(nom: str | None, email_dom: str) -> bool:
+    """Vrai si le domaine du courriel porte la marque de la company (son NOM).
+
+    Trois règles, de la plus large à la plus étroite :
+      1. **radical** — sous-chaîne commune ≥ 5 entre le label du domaine et les
+         mots distinctifs du nom collés (Amiral Extermination → amiralservice.com).
+      2. **mot exact** — le label dépouillé de son enveloppe EST un mot distinctif
+         du nom, ≥ 4 lettres (FEXT → fext.ca) ou ≥ 3 si c'est un sigle en
+         capitales (Entreprises CRC → lesentreprisescrc.com).
+      3. **initiales** — le label dépouillé EST l'acronyme du nom, ≥ 4 initiales
+         (Centre Ville Paysagiste Entretien Inc → cvpeinc.com).
+    """
+    tokens = _tokens_nom(nom or "")
+    label = _label_de_marque(email_dom)
+    if not tokens or not label:
+        return False
+
+    compact = "".join(tokens)
+    if _lcs_len(compact, label) >= _NOM_RADICAL_MIN:
+        return True
+
+    noyau = _label_reduit(label)
+    if len(noyau) < _NOM_SIGLE_EXACT_MIN:
+        return False
+
+    sigles = _sigles_nom(nom or "")
+    for tok in (*tokens, compact):
+        if tok != noyau:
+            continue
+        if len(tok) >= _NOM_LABEL_EXACT_MIN or tok in sigles:
+            return True
+
+    coupe = re.escape("".join(_NOM_SEPARATEURS_DESCRIPTEUR))
+    tete = re.split(f"[{coupe}]", nom or "", maxsplit=1)[0]
+    for variante in (tokens, _tokens_nom(tete)):
+        acronyme = "".join(t[0] for t in variante)
+        if len(acronyme) >= _NOM_ACRONYME_MIN and acronyme == noyau:
+            return True
+    return False
+
+
+# Forme minimale d'une adresse réelle, appliquée après normalisation (minuscules,
+# ponctuation de bord retirée).
+_LOCAL_VALIDE = re.compile(r"^[a-z0-9][a-z0-9._%+\-]*$")
+_DOMAINE_VALIDE = re.compile(r"^[a-z0-9]([a-z0-9.\-]*[a-z0-9])?\.[a-z]{2,}$")
+
+
+def _domaine_bloque(dom: str) -> bool:
+    """Domaine dans la blocklist — sous-domaines compris (sentry.wixpress.com)."""
+    return any(dom == bl or dom.endswith("." + bl) for bl in EMAIL_BLOCKLIST_DOMAINS)
+
+
+def _est_nom_de_fichier_image(brut: str) -> bool:
+    """`chosen-sprite@2x.png` : ce que EMAIL_REGEX prend pour une adresse."""
+    dom = _addr_normalisee(brut).rpartition("@")[2]
+    return dom.endswith(EMAIL_EXTENSIONS_IMAGE)
+
+
+def _addr_normalisee(brut: str) -> str:
+    return brut.strip().strip(".,;:<>()[]\"'").lower()
 
 
 # ----------------------------------------------------------------------
@@ -320,6 +527,7 @@ def _extract_emails_from_html(
     html: str,
     base_url: str,
     diag: dict[str, Any] | None = None,
+    company_name: str | None = None,
 ) -> list[dict[str, str]]:
     """Extrait les emails d'un HTML. Filtre blocklist + emails hors-domaine.
 
@@ -333,6 +541,12 @@ def _extract_emails_from_html(
         de marque avec le site (domaine-frère, ex: famillelajoie.com →
         fermehorticolelajoie.com). Un domaine tiers sans radical commun reste exclu.
     Retourne [{email, local, domain, kind}] dédupliqué.
+
+    `company_name` (optionnel) ouvre une 4e porte de propriété : le domaine porte
+    la marque de la boîte (`_marque_affine_nom`). Elle vaut pour les deux sources
+    — le verrou same-domain du texte libre existait parce que la prose ne dit pas
+    à qui appartient l'adresse ; le nom, lui, le dit. Sans `company_name` le
+    comportement est exactement l'ancien.
 
     `diag` (optionnel) = dict de `_diag_page_neuve()` rempli au passage : compteurs
     de candidats par source et de rejets par motif. **Écriture seule** — aucune
@@ -366,6 +580,9 @@ def _extract_emails_from_html(
         if dec:
             candidates.append((dec, "cloudflare"))
 
+    # `logo@2x.png` n'a jamais été un candidat : hors des compteurs, pas un rejet.
+    candidates = [c for c in candidates if not _est_nom_de_fichier_image(c[0])]
+
     if diag is not None:
         for _, src in candidates:
             diag["candidats"][src] += 1
@@ -383,16 +600,20 @@ def _extract_emails_from_html(
 
     for raw, source in candidates:
         is_explicit = source != "texte"
-        addr = raw.strip().strip(".,;:<>()[]\"'").lower()
+        addr = _addr_normalisee(raw)
         if "@" not in addr:
             continue
         local, _, dom = addr.partition("@")
-        if not local or not dom:
+        # Ce qui n'a pas la FORME d'une adresse n'a jamais été un candidat (même
+        # esprit que le `"@" not in addr` au-dessus) : `%20info@x.com` (artefact
+        # d'URL-encodage), ou un domaine truffé d'espaces de largeur nulle par
+        # un éditeur WYSIWYG : des chaînes cassées, pas des adresses.
+        if not _LOCAL_VALIDE.match(local) or not _DOMAINE_VALIDE.match(dom):
             continue
         if local in EMAIL_BLOCKLIST_LOCAL:
             _compte_rejet(addr, "local_bloque")
             continue
-        if dom in EMAIL_BLOCKLIST_DOMAINS:
+        if _domaine_bloque(dom):
             _compte_rejet(addr, "domaine_bloque")
             continue
         kind = _classify_email(local)
@@ -400,7 +621,16 @@ def _extract_emails_from_html(
         is_personal_nominative = dom in EMAIL_PERSONAL_DOMAINS and kind == "nominative"
         # owner-placed cross-domain : accepté seulement si domaine-frère (radical commun).
         is_owner_sibling = is_explicit and bool(base_dom) and _brand_affine(base_dom, dom)
-        if not (is_same_domain or is_personal_nominative or is_owner_sibling):
+        # le domaine porte le NOM de la boîte : c'est son domaine de marque, même
+        # si le site vit ailleurs (redirection, domaine SEO, fiche d'annuaire).
+        # Jamais sur un domaine perso : là, seule la règle du local nominatif
+        # décide (une boîte ne possède pas gmail.com, quel que soit son nom).
+        is_owner_by_name = (
+            bool(company_name)
+            and dom not in EMAIL_PERSONAL_DOMAINS
+            and _marque_affine_nom(company_name, dom)
+        )
+        if not (is_same_domain or is_personal_nominative or is_owner_sibling or is_owner_by_name):
             _compte_rejet(addr, "hors_domaine")
             continue
         if addr in seen:
@@ -466,7 +696,12 @@ def _rank_internal_pages(base_url: str, html: str, max_links: int) -> list[str]:
     return [u for _, _, u in scored[:max_links]]
 
 
-async def fetch_site(url: str, max_pages: int = 5, timeout: float = 15.0) -> dict[str, Any]:
+async def fetch_site(
+    url: str,
+    max_pages: int = 5,
+    timeout: float = 15.0,
+    company_name: str | None = None,
+) -> dict[str, Any]:
     """Fetch homepage + up to (max_pages-1) linked internal pages.
 
     Returns: {url, status, pages: [{url, text}], tech_keyword_hits: [str],
@@ -477,6 +712,10 @@ async def fetch_site(url: str, max_pages: int = 5, timeout: float = 15.0) -> dic
     source, rejets par motif, et adresses retenues avec leur page d'origine.
     Ces compteurs sont en écriture seule — aucun ne conditionne un fetch ou un
     filtre, le scrape est identique à ce qu'il était avant l'instrumentation.
+
+    `company_name` (optionnel) sert à reconnaître le domaine de marque de la boîte
+    quand son site vit ailleurs — voir `_marque_affine_nom`. Il n'est JAMAIS utilisé
+    pour composer une adresse, seulement pour juger une adresse lue sur la page.
     """
     diag = _diag_passe_neuve("unknown")
     out: dict[str, Any] = {
@@ -507,7 +746,9 @@ async def fetch_site(url: str, max_pages: int = 5, timeout: float = 15.0) -> dic
         out["pages"].append({"url": str(r.url), "text": home_text})
         diag_home = _diag_page_neuve(str(r.url), out["status"], _est_coquille_vide(r.text))
         diag["pages"].append(diag_home)
-        for em in _extract_emails_from_html(r.text, str(r.url), diag=diag_home):
+        for em in _extract_emails_from_html(
+            r.text, str(r.url), diag=diag_home, company_name=company_name
+        ):
             em["source_url"] = str(r.url)
             emails_by_addr.setdefault(em["email"], em)
 
@@ -522,7 +763,9 @@ async def fetch_site(url: str, max_pages: int = 5, timeout: float = 15.0) -> dic
                         str(rp.url), f"http_{rp.status_code}", _est_coquille_vide(rp.text)
                     )
                     diag["pages"].append(diag_page)
-                    for em in _extract_emails_from_html(rp.text, str(rp.url), diag=diag_page):
+                    for em in _extract_emails_from_html(
+                        rp.text, str(rp.url), diag=diag_page, company_name=company_name
+                    ):
                         em["source_url"] = str(rp.url)
                         emails_by_addr.setdefault(em["email"], em)
                 else:
@@ -800,6 +1043,9 @@ def _call_llm(
 class ResearchCompanyIn(BaseModel):
     google_place_id: str
     website: str | None = None
+    # nom en base (`companies.name`) : sert au scraper à reconnaître le domaine de
+    # marque de la boîte. Optionnel — à défaut, le displayName Google Places.
+    company_name: str | None = None
     model: str = _DEFAULT_MODEL
     track: str = "agence-ia"  # track live ; OPT retiré (legacy) — sélectionne les critères de scoring
 
@@ -822,8 +1068,9 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
 
     place = await fetch_place_details(payload.google_place_id)
     website = payload.website or place.get("websiteUri")
+    nom = payload.company_name or (place.get("displayName") or {}).get("text") or None
     if website:
-        site = await fetch_site(website)
+        site = await fetch_site(website, company_name=nom)
     else:
         site = {
             "status": "no_website", "pages": [], "tech_keyword_hits": [],

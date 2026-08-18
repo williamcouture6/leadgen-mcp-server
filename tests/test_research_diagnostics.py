@@ -253,7 +253,7 @@ async def test_research_company_pose_le_diagnostic_dans_research_json(
     async def _place(_pid: str) -> dict[str, Any]:
         return {"websiteUri": "https://maboite.com/"}
 
-    async def _site(_url: str) -> dict[str, Any]:
+    async def _site(_url: str, **_kw: Any) -> dict[str, Any]:
         return {
             "status": "http_200",
             "pages": [],

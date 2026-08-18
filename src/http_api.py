@@ -509,6 +509,7 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
             research_tools.ResearchCompanyIn(
                 google_place_id=co["google_place_id"],
                 website=co.get("website"),
+                company_name=co.get("name"),
                 model=payload.model,
                 track=payload.track,
             )
