@@ -611,7 +611,8 @@ async def list_contacts_to_personalize(
     On filtre côté Python plutôt que via une jointure PostgREST compliquée :
     1) On récupère les contacts avec email + status='new' ou 'ready'.
     2) On joint manuellement avec companies.research_json.
-    3) On exclut ceux qui ont déjà un message outbound (peu importe le status).
+    3) On exclut ceux qui ont déjà un message outbound NON abandonné (tout
+       status sauf 'failed' — voir le commentaire sur la requête messages).
     4) On garde les top-N contacts par company selon priorité.
     """
     contacts = await db.select(
@@ -645,12 +646,27 @@ async def list_contacts_to_personalize(
     # track est ignoré (company=None dans la boucle). Isolation OPT/REACTI.
     by_id = {c["id"]: c for c in companies if (c.get("track") or "OPT") == track}
 
+    # `status=not.in.(failed)` : un message ABANDONNÉ ne gèle plus son contact.
+    # 'failed' = « ne partira jamais » (garde d'envoi : blocklist domaine, opt-out,
+    # ou draft retiré à la main). Sans cette exclusion, un draft refusé par WF-5
+    # (compliance_check_passed=false, jamais re-jugé car WF-5 ne juge que le NULL)
+    # gelait son contact À VIE, et la seule sortie était de DELETE le message —
+    # ce qui détruit la trace du refus (sujet, corps, verdict, notes). Garder la
+    # ligne et la marquer 'failed' est la façon de retirer un draft SANS effacer
+    # cette histoire.
+    # Seul 'failed' est retiré du jeu bloquant. draft/queued/sent/delivered/replied
+    # = message vivant ou déjà remis (contact engagé, surtout pas de 2e courriel).
+    # 'bounced' bloque aussi : l'adresse est morte, re-drafter ne ferait que
+    # re-bouncer (jetons brûlés + réputation d'envoi) — ça se règle au niveau
+    # contact, pas en régénérant un draft.
+    # (messages.status est NOT NULL DEFAULT 'draft' → pas de piège NULL avec not.in.)
     existing_msgs = await db.select(
         "messages",
         params={
             "select": "contact_id",
             "contact_id": f"in.({','.join(c['id'] for c in contacts)})",
             "direction": "eq.outbound",
+            "status": "not.in.(failed)",
         },
     )
     already_drafted = {m["contact_id"] for m in existing_msgs}
