@@ -27,7 +27,6 @@ from pydantic import BaseModel
 from tenacity import (
     retry,
     retry_if_exception,
-    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
@@ -201,7 +200,127 @@ def _brand_affine(base_dom: str, email_dom: str) -> bool:
     return _lcs_len(_domain_main_label(base_dom), _domain_main_label(email_dom)) >= _BRAND_AFFINITY_MIN
 
 
-def _extract_emails_from_html(html: str, base_url: str) -> list[dict[str, str]]:
+# ----------------------------------------------------------------------
+# Diagnostic d'extraction des courriels — voir/compter, jamais décider
+# ----------------------------------------------------------------------
+#
+# Pourquoi : 145 companies sur 816 portaient « recherche faite, aucun courriel
+# trouvé ». Les 145 avaient un site, les 145 avaient été scrapées, le scraper
+# rendait zéro adresse à chaque fois. Une vérif manuelle sur 12 en a trouvé 10
+# qui publient pourtant une adresse. Rien n'a sonné pendant deux mois parce
+# qu'aucun chiffre nulle part ne disait « on a vu 47 adresses et on les a
+# TOUTES jetées ». Ce bloc produit ce chiffre. Il ne filtre rien, ne réordonne
+# rien, ne décide rien : il ne fait qu'incrémenter des compteurs.
+
+# Clé unique posée dans `companies.research_json` (jsonb).
+DIAGNOSTIC_KEY = "diagnostic_courriels"
+_DIAG_VERSION = 1
+# Plafond des listes d'adresses (par page ET pour la passe) : le diagnostic
+# atterrit dans la row de CHAQUE company — on veut un ordre de grandeur, pas un
+# dump de page. Une page-annuaire pathologique ne doit pas faire enfler le jsonb.
+_DIAG_REJETS_MAX = 10
+
+_MOTIFS_REJET = ("local_bloque", "domaine_bloque", "hors_domaine")
+_SOURCES_CANDIDAT = ("texte", "mailto", "cloudflare")
+
+
+def _diag_page_neuve(url: str, statut: str, coquille_vide: bool = False) -> dict[str, Any]:
+    """Compteurs vierges pour UNE page scannée."""
+    return {
+        "url": url,
+        "statut": statut,
+        "coquille_vide": coquille_vide,
+        "candidats": {"texte": 0, "mailto": 0, "cloudflare": 0, "total": 0},
+        "rejets": {m: 0 for m in _MOTIFS_REJET},
+        # adresses effectivement jetées par la règle de domaine (suspect n°1)
+        "rejets_hors_domaine": [],
+        "acceptes": 0,
+    }
+
+
+def _diag_passe_neuve(statut_site: str) -> dict[str, Any]:
+    """Compteurs vierges pour UNE passe de research (site complet)."""
+    return {
+        "version": _DIAG_VERSION,
+        "statut_site": statut_site,
+        "pages": [],
+        "pages_en_echec": [],
+        "rejets_hors_domaine": [],
+        "adresses_retenues": [],
+        "totaux": {
+            "pages_visitees": 0,
+            "pages_en_echec": 0,
+            "coquilles_vides": 0,
+            "candidats": {"texte": 0, "mailto": 0, "cloudflare": 0, "total": 0},
+            "rejets": {m: 0 for m in _MOTIFS_REJET},
+            "acceptes": 0,
+        },
+    }
+
+
+def _diag_finalise(diag: dict[str, Any], emails_by_addr: dict[str, dict[str, str]]) -> None:
+    """Agrège les compteurs par page en totaux de passe. Purement additif."""
+    tot = diag["totaux"]
+    tot["pages_visitees"] = len(diag["pages"]) + len(diag["pages_en_echec"])
+    tot["pages_en_echec"] = len(diag["pages_en_echec"])
+    tot["coquilles_vides"] = sum(1 for p in diag["pages"] if p["coquille_vide"])
+    for page in diag["pages"]:
+        for src in _SOURCES_CANDIDAT:
+            tot["candidats"][src] += page["candidats"][src]
+        tot["candidats"]["total"] += page["candidats"]["total"]
+        for motif in _MOTIFS_REJET:
+            tot["rejets"][motif] += page["rejets"][motif]
+    # Union dédupliquée des adresses jetées par la règle de domaine, plafonnée :
+    # c'est la liste que l'humain lit pour trancher « filtre trop strict ou non ».
+    vus: set[str] = set()
+    for page in diag["pages"]:
+        for addr in page["rejets_hors_domaine"]:
+            if addr not in vus and len(diag["rejets_hors_domaine"]) < _DIAG_REJETS_MAX:
+                vus.add(addr)
+                diag["rejets_hors_domaine"].append(addr)
+    # Adresses retenues + LA page où on les a vues. Répond plus tard à « combien
+    # de boîtes n'avaient une adresse QUE sur leur page de politique de vie privée ».
+    # Nom distinct du compteur `acceptes` (int) pour qu'une même clé n'ait jamais
+    # deux types selon le niveau — on interroge ce jsonb en SQL.
+    diag["adresses_retenues"] = [
+        {"email": em["email"], "url": em.get("source_url")} for em in emails_by_addr.values()
+    ]
+    tot["acceptes"] = len(emails_by_addr)
+
+
+# Heuristique « coquille SPA » : le HTML brut ne contient AUCUN lien (`<a href>`)
+# ni AUCUN élément de navigation (`<nav>`, `[role=navigation]`). Un site statique
+# normal — même une page unique — publie au minimum un menu ou un lien. Une SPA
+# (React/Vue/Angular) sert un `<div id="root"></div>` + un bundle JS : zéro lien
+# dans le HTML brut, donc zéro page interne à suivre et zéro courriel visible.
+# Volontairement grossière : on veut l'ORDRE DE GRANDEUR du problème, pas un
+# verdict. Faux positifs possibles (landing 100% image), faux négatifs certains
+# (SPA qui rend son menu côté serveur). Aucun renderer headless n'est déployé
+# (RENDER_SERVICE_URL vide) — ce compteur est aujourd'hui la SEULE mesure du trou.
+def _est_coquille_vide(html: str) -> bool:
+    soup = BeautifulSoup(html, "html.parser")
+    if soup.find("a", href=True) is not None:
+        return False
+    if soup.find("nav") is not None:
+        return False
+    return soup.select_one("[role=navigation]") is None
+
+
+def sans_diagnostic(research_json: dict[str, Any] | None) -> dict[str, Any]:
+    """Copie de `research_json` privée de la clé de diagnostic.
+
+    Le diagnostic est de la télémétrie interne : il n'a rien à faire dans un
+    prompt LLM aval (personalize, juge compliance), où il ne ferait qu'ajouter
+    du bruit et des adresses tierces. Copie superficielle — l'original intact.
+    """
+    return {k: v for k, v in (research_json or {}).items() if k != DIAGNOSTIC_KEY}
+
+
+def _extract_emails_from_html(
+    html: str,
+    base_url: str,
+    diag: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     """Extrait les emails d'un HTML. Filtre blocklist + emails hors-domaine.
 
     Trois sources de candidats :
@@ -214,30 +333,56 @@ def _extract_emails_from_html(html: str, base_url: str) -> list[dict[str, str]]:
         de marque avec le site (domaine-frère, ex: famillelajoie.com →
         fermehorticolelajoie.com). Un domaine tiers sans radical commun reste exclu.
     Retourne [{email, local, domain, kind}] dédupliqué.
+
+    `diag` (optionnel) = dict de `_diag_page_neuve()` rempli au passage : compteurs
+    de candidats par source et de rejets par motif. **Écriture seule** — aucune
+    valeur de `diag` n'est relue pour décider quoi que ce soit, l'extraction est
+    strictement identique avec ou sans (verrouillé par
+    `test_extraction_identique_avec_ou_sans_diag`).
+    Les candidats sont comptés en OCCURRENCES (l'adresse du footer répétée 3 fois
+    compte 3 fois : c'est ce que le scanner voit), les rejets et les acceptés en
+    ADRESSES DISTINCTES (« on a vu 47 adresses et on les a jetées »).
     """
     base_dom = _domain_of(base_url)
     seen: dict[str, dict[str, str]] = {}
     soup = BeautifulSoup(html, "html.parser")
 
-    # (addr_brut, is_explicit) — explicit = mailto/cfemail (intentionnel, owner-placed)
-    candidates: list[tuple[str, bool]] = [(m, False) for m in EMAIL_REGEX.findall(html)]
+    # (addr_brut, source) — source ∈ texte | mailto | cloudflare.
+    # mailto/cfemail = *explicit* (intentionnel, owner-placed) ; texte = non.
+    candidates: list[tuple[str, str]] = [(m, "texte") for m in EMAIL_REGEX.findall(html)]
     for a in soup.find_all("a", href=True):
         href = a["href"]
         low = href.lower()
         if low.startswith("mailto:"):
             addr = href[7:].split("?")[0].strip()
             if addr:
-                candidates.append((addr, True))
+                candidates.append((addr, "mailto"))
         elif "/cdn-cgi/l/email-protection#" in low:
             dec = _decode_cfemail(href.split("#", 1)[1])
             if dec:
-                candidates.append((dec, True))
+                candidates.append((dec, "cloudflare"))
     for el in soup.select("[data-cfemail]"):
         dec = _decode_cfemail(el.get("data-cfemail", ""))
         if dec:
-            candidates.append((dec, True))
+            candidates.append((dec, "cloudflare"))
 
-    for raw, is_explicit in candidates:
+    if diag is not None:
+        for _, src in candidates:
+            diag["candidats"][src] += 1
+        diag["candidats"]["total"] = len(candidates)
+
+    rejets_vus: set[str] = set()  # une adresse rejetée n'est comptée qu'une fois
+
+    def _compte_rejet(addr: str, motif: str) -> None:
+        if diag is None or addr in rejets_vus:
+            return
+        rejets_vus.add(addr)
+        diag["rejets"][motif] += 1
+        if motif == "hors_domaine" and len(diag["rejets_hors_domaine"]) < _DIAG_REJETS_MAX:
+            diag["rejets_hors_domaine"].append(addr)
+
+    for raw, source in candidates:
+        is_explicit = source != "texte"
         addr = raw.strip().strip(".,;:<>()[]\"'").lower()
         if "@" not in addr:
             continue
@@ -245,8 +390,10 @@ def _extract_emails_from_html(html: str, base_url: str) -> list[dict[str, str]]:
         if not local or not dom:
             continue
         if local in EMAIL_BLOCKLIST_LOCAL:
+            _compte_rejet(addr, "local_bloque")
             continue
         if dom in EMAIL_BLOCKLIST_DOMAINS:
+            _compte_rejet(addr, "domaine_bloque")
             continue
         kind = _classify_email(local)
         is_same_domain = bool(base_dom) and (dom == base_dom or dom.endswith("." + base_dom))
@@ -254,6 +401,7 @@ def _extract_emails_from_html(html: str, base_url: str) -> list[dict[str, str]]:
         # owner-placed cross-domain : accepté seulement si domaine-frère (radical commun).
         is_owner_sibling = is_explicit and bool(base_dom) and _brand_affine(base_dom, dom)
         if not (is_same_domain or is_personal_nominative or is_owner_sibling):
+            _compte_rejet(addr, "hors_domaine")
             continue
         if addr in seen:
             continue
@@ -263,6 +411,8 @@ def _extract_emails_from_html(html: str, base_url: str) -> list[dict[str, str]]:
             "domain": dom,
             "kind": kind,
         }
+    if diag is not None:
+        diag["acceptes"] = len(seen)
     return list(seen.values())
 
 
@@ -319,11 +469,19 @@ def _rank_internal_pages(base_url: str, html: str, max_links: int) -> list[str]:
 async def fetch_site(url: str, max_pages: int = 5, timeout: float = 15.0) -> dict[str, Any]:
     """Fetch homepage + up to (max_pages-1) linked internal pages.
 
-    Returns: {url, status, pages: [{url, text}], tech_keyword_hits: [str]}
+    Returns: {url, status, pages: [{url, text}], tech_keyword_hits: [str],
+              emails_found: [...], diagnostic_courriels: {...}}
+
+    `diagnostic_courriels` (voir `_diag_passe_neuve`) trace ce que la passe a VU :
+    pages scannées + statut HTTP, pages en échec, coquilles SPA, candidats par
+    source, rejets par motif, et adresses retenues avec leur page d'origine.
+    Ces compteurs sont en écriture seule — aucun ne conditionne un fetch ou un
+    filtre, le scrape est identique à ce qu'il était avant l'instrumentation.
     """
+    diag = _diag_passe_neuve("unknown")
     out: dict[str, Any] = {
         "url": url, "status": "unknown", "pages": [],
-        "tech_keyword_hits": [], "emails_found": [],
+        "tech_keyword_hits": [], "emails_found": [], DIAGNOSTIC_KEY: diag,
     }
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "fr-CA,fr;q=0.9,en;q=0.5"}
     emails_by_addr: dict[str, dict[str, str]] = {}
@@ -333,15 +491,23 @@ async def fetch_site(url: str, max_pages: int = 5, timeout: float = 15.0) -> dic
             r = await client.get(url)
         except httpx.HTTPError as e:
             out["status"] = f"error: {type(e).__name__}"
+            diag["statut_site"] = out["status"]
+            diag["pages_en_echec"].append({"url": url, "statut": out["status"]})
+            _diag_finalise(diag, emails_by_addr)
             return out
 
         out["status"] = f"http_{r.status_code}"
+        diag["statut_site"] = out["status"]
         if r.status_code >= 400:
+            diag["pages_en_echec"].append({"url": str(r.url), "statut": out["status"]})
+            _diag_finalise(diag, emails_by_addr)
             return out
 
         home_text = _clean_text(r.text)
         out["pages"].append({"url": str(r.url), "text": home_text})
-        for em in _extract_emails_from_html(r.text, str(r.url)):
+        diag_home = _diag_page_neuve(str(r.url), out["status"], _est_coquille_vide(r.text))
+        diag["pages"].append(diag_home)
+        for em in _extract_emails_from_html(r.text, str(r.url), diag=diag_home):
             em["source_url"] = str(r.url)
             emails_by_addr.setdefault(em["email"], em)
 
@@ -352,15 +518,27 @@ async def fetch_site(url: str, max_pages: int = 5, timeout: float = 15.0) -> dic
                 rp = await client.get(href)
                 if rp.status_code < 400:
                     out["pages"].append({"url": str(rp.url), "text": _clean_text(rp.text)})
-                    for em in _extract_emails_from_html(rp.text, str(rp.url)):
+                    diag_page = _diag_page_neuve(
+                        str(rp.url), f"http_{rp.status_code}", _est_coquille_vide(rp.text)
+                    )
+                    diag["pages"].append(diag_page)
+                    for em in _extract_emails_from_html(rp.text, str(rp.url), diag=diag_page):
                         em["source_url"] = str(rp.url)
                         emails_by_addr.setdefault(em["email"], em)
-            except httpx.HTTPError:
+                else:
+                    diag["pages_en_echec"].append(
+                        {"url": str(rp.url), "statut": f"http_{rp.status_code}"}
+                    )
+            except httpx.HTTPError as e:
+                diag["pages_en_echec"].append(
+                    {"url": href, "statut": f"error: {type(e).__name__}"}
+                )
                 continue
 
     haystack = " ".join(p["text"].lower() for p in out["pages"])
     out["tech_keyword_hits"] = [kw.strip() for kw in TECH_KEYWORDS if kw in haystack]
     out["emails_found"] = list(emails_by_addr.values())
+    _diag_finalise(diag, emails_by_addr)
     return out
 
 
@@ -647,7 +825,10 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
     if website:
         site = await fetch_site(website)
     else:
-        site = {"status": "no_website", "pages": [], "tech_keyword_hits": []}
+        site = {
+            "status": "no_website", "pages": [], "tech_keyword_hits": [],
+            DIAGNOSTIC_KEY: _diag_passe_neuve("no_website"),
+        }
 
     place_block = _format_place_for_llm(place)
     site_block = _format_site_for_llm(site)
@@ -656,8 +837,15 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
         _call_llm, place_block, site_block, payload.model, 2000, payload.track
     )
 
+    # Le diagnostic voyage DANS research_json : c'est le seul champ persisté tel
+    # quel dans `companies.research_json`, donc le seul endroit interrogeable en
+    # SQL pour repérer une passe qui a tout jeté. Copie superficielle pour ne pas
+    # muter le dict rendu par le LLM.
+    research_json = dict(llm_result.research_json or {})
+    research_json[DIAGNOSTIC_KEY] = site.get(DIAGNOSTIC_KEY) or _diag_passe_neuve("unknown")
+
     return ResearchCompanyOut(
-        research_json=llm_result.research_json,
+        research_json=research_json,
         model=llm_result.model,
         duration_ms=int((time.monotonic() - started) * 1000),
         usage=llm_result.usage,

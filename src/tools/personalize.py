@@ -21,6 +21,8 @@ from typing import Any
 from anthropic import Anthropic
 from pydantic import BaseModel
 
+from . import research as research_tools
+
 # ----------------------------------------------------------------------
 # Prompt + modèle
 # ----------------------------------------------------------------------
@@ -57,6 +59,11 @@ def _format_input_for_llm(
     """Reprend exactement le format du proto CLI (`agents/personalize_agent.py`)."""
     place_name = company.get("name", "")
     website = company.get("website", "") or ""
+    # `research_json` porte aussi la télémétrie du scraper d'emails
+    # (`diagnostic_courriels`) : compteurs de rejets + adresses tierces jetées.
+    # C'est de l'outillage interne — hors du prompt, sinon on changerait l'input
+    # du LLM pour chaque company et on lui tendrait des adresses à recopier.
+    research = research_tools.sans_diagnostic(research)
 
     parts = [
         f"## Template à utiliser\n{template_choice}",

@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ..lib.compliance_checks import CheckResult, run_all
+from .research import sans_diagnostic
 
 # ----------------------------------------------------------------------
 # Prompt + modèle
@@ -82,7 +83,10 @@ def _llm_judge(
         f"Ils sont ANCRÉS par cette fiche — ne les traite JAMAIS comme un fait inventé "
         f"ni un contact_mismatch même s'ils n'apparaissent pas dans le research_json.\n\n"
         f"## research_json (faits vérifiables sur l'ENTREPRISE — pas l'identité du contact)\n"
-        f"```json\n{json.dumps(research_json or {}, ensure_ascii=False, indent=2)}\n```\n\n"
+        # `sans_diagnostic` retire la télémétrie du scraper d'emails : le juge
+        # n'a pas à voir des compteurs de rejets ni des adresses tierces jetées
+        # (bruit + risque de faux contact_mismatch).
+        f"```json\n{json.dumps(sans_diagnostic(research_json), ensure_ascii=False, indent=2)}\n```\n\n"
         f"## social_proof disponible\n"
         f"```json\n{json.dumps(social_proof or [], ensure_ascii=False, indent=2)}\n```\n"
     )
