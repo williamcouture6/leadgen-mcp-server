@@ -29,7 +29,6 @@ from .tools import send_status as send_status_tools
 from .tools import reacti_discover as reacti_discover_tools
 from .tools import brand_kit as brand_kit_tools
 from .lib.owner_match import classify_scraped_contact
-from .lib.demo_generator import ensure_demo_site, inject_demo_link
 from .lib.sourcing_filters import sourcing_disqualify_reason
 
 
@@ -1210,17 +1209,10 @@ async def _personalize_one(
 
     message_id: str | None = None
     if persist and subject and body:
-        track = company_row.get("track") or "OPT"
-        demo_url: str | None = None
+        # Pivot tri (2026-08-20) : le courriel 1 ne porte AUCUN lien démo. La
+        # démo se produit sur réponse positive (session artisanale) et William
+        # répond lui-même avec le lien — plus de frappe au draft ni au send.
         notes = "; ".join(warnings) if warnings else None
-        if track == "agence-ia":
-            try:
-                demo_url = await ensure_demo_site(company_row.get("id"), contact_id)
-                body = inject_demo_link(body, demo_url)
-            except Exception as e:  # noqa: BLE001 — soft-fail : draft sauvé, garde au send retentera
-                warn = f"demo_generation_failed: {e!r} — lien injecté au send"
-                notes = f"{notes}; {warn}" if notes else warn
-                demo_url = None
         try:
             ins = await db_tools.insert_message_draft(
                 db_tools.MessageDraftIn(
@@ -1231,7 +1223,6 @@ async def _personalize_one(
                     generated_by_agent_run=agent_run_id,
                     compliance_check_passed=None,  # WF-5 le valide
                     compliance_notes=notes,
-                    demo_url=demo_url,
                 )
             )
             message_id = ins.get("message_id")
