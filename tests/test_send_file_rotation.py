@@ -32,7 +32,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _msg(**over) -> dict:
     base = {
-        "id": "m-1", "subject": "S", "body_text": "Allo https://couture-ia.com/demo/T",
+        "id": "m-1", "subject": "S", "body_text": "Allo, votre site est déjà refait.",
         "to_email": "jean@plomberiex.ca", "status": "draft", "direction": "outbound",
         "compliance_check_passed": True, "contact_id": "ct-1",
         "track": "agence-ia",

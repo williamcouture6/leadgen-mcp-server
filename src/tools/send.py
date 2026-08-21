@@ -342,7 +342,7 @@ class RunWf6In(BaseModel):
     dry_run: bool = False
     # Override le daily cap (défaut: env INSTANTLY_DAILY_CAP ou 10).
     daily_cap: int | None = None
-    track: str = "OPT"  # OPT | REACTI — filtre les drafts + choisit la campagne Instantly
+    track: str = "OPT"  # OPT (legacy) | agence-ia — filtre les drafts + choisit la campagne Instantly
 
 
 def _campaign_for_track(track: str) -> str | None:
