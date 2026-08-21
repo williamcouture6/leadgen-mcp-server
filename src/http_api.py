@@ -160,14 +160,43 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             date_field="scheduled_at",
         )
         replies = await _cnt("messages", {**t, "direction": "eq.inbound"})
+
+        # Intéressés (pivot tri 2026-08-20) : ont répondu « oui » au courriel de
+        # tri (WF-7 → contacts.interested_at) et leur démo n'existe pas encore.
+        # Cycle de vie complet — leçon P4.10 : un compteur sans sortie dérive.
+        # ENTRÉE : interested_at posé par WF-7. SORTIE : la frappe du jeton
+        # (session artisanale, PT2) crée la ligne agence.demo_sites du contact.
+        # Sans filtre de date : un intéressé qui attend est celui qu'on veut voir.
+        interesses = await sb.select_all(
+            "contacts",
+            order="id",
+            params={
+                "select": "id",
+                "track": f"eq.{tk}",
+                "interested_at": "not.is.null",
+            },
+        )
+        interested_waiting_site = 0
+        for r in interesses:
+            demo = await sb.select(
+                "demo_sites",
+                params={"select": "id", "contact_id": f"eq.{r['id']}", "limit": "1"},
+                schema="agence",
+            )
+            if not demo:
+                interested_waiting_site += 1
+
         totals[tk] = {
             "sourced": sourced, "emails": emails, "drafts": drafts,
             "pushed": pushed, "sent": sent, "replies": replies,
+            "interested_waiting_site": interested_waiting_site,
         }
         ligne = (
             f"*{tk}* — sourcées {sourced} · emails {emails} · drafts {drafts} · "
             f"poussés {pushed} · envoyés {sent} · réponses {replies}"
         )
+        if interested_waiting_site:
+            ligne += f"\n  🔥 intéressés en attente de site {interested_waiting_site}"
         lines.append(ligne)
 
     bookings = await _cnt("booking_events", {})
