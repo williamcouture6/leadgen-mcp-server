@@ -885,10 +885,17 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             reply_preview=cleaned_reply or payload.reply_body_text,
             track=company_track,
         )
-        await slack_lib.notify(
-            text=fallback, blocks=blocks, context="wf7_review", category="leads",
+        # Le journal ne dit QUE ce qui a réussi : un `slack_review` inscrit sans
+        # lire le retour de `notify` ferait croire que la réponse est en file de
+        # review alors que le ping s'est perdu. Pas de repli sur #alertes ici —
+        # c'est du review manuel, pas un hot lead ; seule l'honnêteté compte.
+        actions.append(
+            "slack_review"
+            if await slack_lib.notify(
+                text=fallback, blocks=blocks, context="wf7_review", category="leads",
+            )
+            else "slack_review_failed"
         )
-        actions.append("slack_review")
 
     # 6) Audit
     await _record_agent_run(

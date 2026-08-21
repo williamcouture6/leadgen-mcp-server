@@ -77,14 +77,19 @@ async def test_supprime_est_marque_failed(monkeypatch) -> None:
     assert any(p.get("status") == "failed" for _, p in updates)
 
 
-def _send_one_wire(monkeypatch):
-    """Monte le VRAI `send_one_message` sur un draft envoyable (ni désabonné,
-    ni domaine plateforme, warmup passé). Retourne (updates, add_lead)."""
+def _send_one_wire(monkeypatch, *, to_email: str | None = None,
+                   suppressed: tuple[bool, str] = (False, "")):
+    """Monte le VRAI `send_one_message` sur un draft. Par défaut le draft est
+    envoyable (ni désabonné, ni domaine plateforme, warmup passé) ; `to_email`
+    et `suppressed` permettent de le faire tomber sur l'une des deux gardes
+    terminales. Retourne (updates, add_lead)."""
     from src.tools import send
+
+    over = {"to_email": to_email} if to_email else {}
 
     async def _select(table, *, params=None, schema=None):
         if table == "messages":
-            return [_msg()]
+            return [_msg(**over)]
         if table == "contacts":
             return [{"id": "ct-1", "first_name": "Jean", "last_name": "Roy",
                      "email": "jean@plomberiex.ca", "company_id": "co-1",
@@ -103,15 +108,18 @@ def _send_one_wire(monkeypatch):
     monkeypatch.setattr(send.db, "select", _select)
     monkeypatch.setattr(send.db, "update", _update)
     monkeypatch.setattr(send.instantly_lib, "add_lead_to_campaign", add_lead)
-    monkeypatch.setattr(send, "_is_suppressed", AsyncMock(return_value=(False, "")))
+    monkeypatch.setattr(send, "_is_suppressed", AsyncMock(return_value=suppressed))
     return updates, add_lead
 
 
-async def test_dry_run_n_ecrit_rien(monkeypatch) -> None:
+async def test_dry_run_chemin_propre_n_ecrit_rien(monkeypatch) -> None:
     """Un dry-run doit être une SIMULATION : l'appel Instantly était déjà
     court-circuité, mais les écritures qui suivaient (messages → 'queued',
     contacts → 'contacted') passaient quand même. Un dry-run mutait donc la
-    base et sortait le draft de la file sans qu'aucun courriel ne parte."""
+    base et sortait le draft de la file sans qu'aucun courriel ne parte.
+
+    Ne couvre QUE le draft envoyable — les deux gardes terminales sont
+    épinglées plus bas (section « les gardes terminales »)."""
     from src.tools import send
 
     updates, add_lead = _send_one_wire(monkeypatch)
@@ -143,6 +151,61 @@ async def test_un_envoi_reel_pousse_le_corps_verbatim(monkeypatch) -> None:
     assert kwargs["subject"] == _msg()["subject"]
     tables = [t for t, _ in updates]
     assert "messages" in tables and "contacts" in tables
+
+
+# =====================================================================
+# « un dry-run ne modifie RIEN » — les gardes terminales aussi
+#
+# Le retour anticipé en dry_run est posé APRÈS les deux gardes qui marquent
+# 'failed' (domaine de plateforme, liste de suppression) : une simulation
+# tuait donc le draft pour de vrai. Le verdict doit être RAPPORTÉ (statut +
+# skipped_reason inchangés) sans être gravé. Les paires ci-dessous épinglent
+# les deux gardes × (dry-run / réel) ; le pendant réel de la suppression est
+# `test_supprime_est_marque_failed` en tête de fichier.
+# =====================================================================
+
+async def test_dry_run_domaine_plateforme_rapporte_sans_graver(monkeypatch) -> None:
+    from src.tools import send
+
+    updates, add_lead = _send_one_wire(monkeypatch, to_email="ssingh@meta.com")
+
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1", dry_run=True))
+
+    # le verdict est rapporté tel quel...
+    assert out.status == "skipped_platform_domain"
+    assert "meta.com" in (out.skipped_reason or "")
+    add_lead.assert_not_awaited()
+    # ...mais rien n'est gravé : la simulation ne tue pas le draft.
+    assert updates == [], f"aucune écriture attendue en dry_run, vu : {updates}"
+
+
+async def test_hors_dry_run_le_domaine_plateforme_est_marque_failed(monkeypatch) -> None:
+    """Non-régression : en réel, le 'failed' DOIT être écrit — sinon le draft
+    reste 'draft' à vie et squatte la tête de la file FIFO."""
+    from src.tools import send
+
+    updates, add_lead = _send_one_wire(monkeypatch, to_email="ssingh@meta.com")
+
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+
+    assert out.status == "skipped_platform_domain"
+    add_lead.assert_not_awaited()
+    assert any(t == "messages" and p.get("status") == "failed" for t, p in updates)
+
+
+async def test_dry_run_supprime_rapporte_sans_graver(monkeypatch) -> None:
+    from src.tools import send
+
+    updates, add_lead = _send_one_wire(
+        monkeypatch, suppressed=(True, "email on suppression (optout)"),
+    )
+
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1", dry_run=True))
+
+    assert out.status == "skipped_suppressed"
+    assert out.skipped_reason == "email on suppression (optout)"
+    add_lead.assert_not_awaited()
+    assert updates == [], f"aucune écriture attendue en dry_run, vu : {updates}"
 
 
 def _wf6_wire(monkeypatch, drafts: list[dict], *, ok_ids: set[str],
@@ -308,6 +371,24 @@ async def test_une_exception_horodate_aussi_la_tentative(monkeypatch) -> None:
     assert out.pushed == 1
     # le levant est horodaté, le poussé ne l'est pas (il quitte 'draft')
     assert [f for _, p, f in updates if "last_send_attempt_at" in p] == [{"id": "eq.m-0"}]
+
+
+async def test_une_passe_dry_run_nhorodate_rien(monkeypatch) -> None:
+    """L'horodatage est une VRAIE écriture : posé pendant une simulation, il
+    réordonne la file FIFO réelle. Un lot mixte (poussé / sauté / levant) en
+    dry_run ne doit produire AUCUN `db.update` — ni horodatage, ni statut."""
+    from src.tools import send
+
+    _, updates, calls = _wf6_wire(monkeypatch, _drafts(4), ok_ids={"m-1"},
+                                  boom_ids={"m-2"})
+
+    out = await send.run_wf6(
+        send.RunWf6In(limit=4, track="agence-ia", dry_run=True)
+    )
+
+    assert calls == ["m-0", "m-1", "m-2", "m-3"]  # le lot est bien parcouru
+    assert out.pushed == 1 and out.errors == 1 and out.skipped_warmup == 2
+    assert updates == [], f"aucune écriture attendue en dry_run, vu : {updates}"
 
 
 async def test_un_horodatage_qui_echoue_ne_casse_pas_la_passe(monkeypatch) -> None:

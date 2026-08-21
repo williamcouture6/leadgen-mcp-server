@@ -1862,7 +1862,7 @@ async def wf7_webhook_healthcheck(secret: str | None = None) -> dict[str, Any]:
     # résolution que `notify(category="leads")` (SLACK_WEBHOOK_LEADS, sinon
     # fallback SLACK_WEBHOOK_URL). Tester SLACK_WEBHOOK_URL seul mentait dans
     # les deux sens : vert avec #leads absent, rouge avec #leads bien configuré.
-    slack_leads_configured = bool(slack_lib._webhook_url("leads"))
+    slack_leads_configured = slack_lib.is_configured("leads")
     sender = os.environ.get("INSTANTLY_SENDER_EMAIL", "").strip() or None
     return {
         "ok": True,
@@ -1963,10 +1963,14 @@ async def wf8_handle_booking(payload: HandleBookingReplayIn) -> booking_tools.Ha
 async def wf8_webhook_healthcheck() -> dict[str, Any]:
     """Vérifie config WF-8. Public (pas d'auth — pas de secret à divulguer)."""
     from .lib import slack as slack_lib
+    # Même correctif que WF-7 : WF-8 pingue `category="bookings"`, donc on
+    # interroge la MÊME résolution que `notify` (SLACK_WEBHOOK_BOOKINGS, sinon
+    # fallback SLACK_WEBHOOK_URL). Tester SLACK_WEBHOOK_URL seul mentait dans
+    # les deux sens : vert avec #bookings absent, rouge avec #bookings posé.
     return {
         "ok": True,
         "wf8_secret_configured": bool(_calcom_webhook_secret()),
-        "slack_configured": bool(os.environ.get(slack_lib.SLACK_WEBHOOK_ENV)),
+        "slack_bookings_configured": slack_lib.is_configured("bookings"),
     }
 
 

@@ -401,3 +401,41 @@ def test_no_config_at_all_is_silent_noop(monkeypatch: pytest.MonkeyPatch) -> Non
     from src.lib.slack import notify_sync
     assert notify_sync(text="x", category="bookings") is False
     assert calls == []
+
+
+# =====================================================================
+# is_configured — contrat public pour les healthchecks
+#
+# Les healthchecks WF-7/WF-8 doivent interroger le canal RÉELLEMENT utilisé
+# par le workflow (même résolution que `notify(category=…)`), pas
+# SLACK_WEBHOOK_URL en dur : celui-ci mentait dans les deux sens.
+# =====================================================================
+
+def test_is_configured_avec_la_var_dediee(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLACK_WEBHOOK_LEADS", "https://hooks.slack.com/l")
+    from src.lib.slack import is_configured
+    assert is_configured("leads") is True
+
+
+def test_is_configured_par_fallback_legacy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SLACK_WEBHOOK_URL seule : le ping partira quand même (fallback), donc
+    le healthcheck doit être vert."""
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/legacy")
+    from src.lib.slack import is_configured
+    assert is_configured("leads") is True
+    assert is_configured("bookings") is True
+
+
+def test_is_configured_faux_quand_rien_nest_pose() -> None:
+    from src.lib.slack import is_configured
+    assert is_configured("leads") is False
+    assert is_configured("bookings") is False
+    assert is_configured() is False
+
+
+def test_is_configured_ignore_les_autres_categories(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SLACK_WEBHOOK_LEADS seule ne rend PAS #bookings configuré — sans quoi le
+    healthcheck WF-8 redeviendrait vert sur le mauvais canal."""
+    monkeypatch.setenv("SLACK_WEBHOOK_LEADS", "https://hooks.slack.com/l")
+    from src.lib.slack import is_configured
+    assert is_configured("bookings") is False

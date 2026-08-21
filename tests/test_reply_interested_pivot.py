@@ -1,6 +1,10 @@
 """PT1 — la branche `interested` de WF-7 après le pivot tri :
 garde désabonnement AVANT toute écriture, marqueur interested_at idempotent,
-plus aucune chaîne auto-reply/composer."""
+plus aucune chaîne auto-reply/composer.
+
+Contient aussi le contrat « le journal ne dit QUE ce qui a réussi », épinglé
+sur les deux branches qui pinguent Slack : `interested` (hot lead) et `other`
+(review manuel)."""
 from __future__ import annotations
 
 import pytest
@@ -128,8 +132,10 @@ _RESEARCH = {
 }
 
 
-def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_boom=False):
-    """Monte un `handle_reply` complet qui atterrit dans la branche `interested`.
+def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_boom=False,
+                     categorie="interested"):
+    """Monte un `handle_reply` complet qui atterrit dans la branche `categorie`
+    (défaut : `interested` ; `other` pour le review manuel).
 
     Retourne un dict d'observations : `notifies` (un dict par appel à notify),
     `updates` (table, patch). `notify_par_categorie` mappe la catégorie Slack
@@ -177,7 +183,8 @@ def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_
         return notify_par_categorie.get(category, True)
 
     def fake_classifier(reply_text, *, original_email_text, model):
-        return ({"category": "interested", "confidence": 0.93}, {"input_tokens": 1,
+        return ({"category": categorie, "confidence": 0.93,
+                 "reasoning_one_line": "réponse ambiguë"}, {"input_tokens": 1,
                 "output_tokens": 1, "cache_creation_input_tokens": 0,
                 "cache_read_input_tokens": 0})
 
@@ -291,6 +298,38 @@ async def test_verif_desabonnement_en_panne_est_dite_au_journal_et_au_ping(monke
 
 async def _none():
     return None
+
+
+# =====================================================================
+# La branche `other` (review manuel) — dernière poche du journal malhonnête
+# =====================================================================
+
+async def test_review_journalise_le_ping_seulement_sil_est_passe(monkeypatch):
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="other")
+    out = await reply.handle_reply(_payload())
+
+    assert out.category == "other"
+    assert "slack_review" in out.actions_taken
+    review = [n for n in vu["notifies"] if n["context"] == "wf7_review"]
+    assert len(review) == 1
+
+
+async def test_un_ping_de_review_rate_ne_sinscrit_pas_comme_envoye(monkeypatch):
+    """`slack_review` était inscrit sans lire le retour de `notify` : un ping
+    perdu laissait croire que la réponse avait été mise en file de review.
+    Pas de repli sur #alertes ici — c'est du review manuel, pas un hot lead ;
+    seule l'honnêteté du journal est en jeu."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="other",
+                          notify_par_categorie={"leads": False})
+    out = await reply.handle_reply(_payload())
+
+    assert "slack_review_failed" in out.actions_taken
+    assert "slack_review" not in out.actions_taken
+    assert not [n for n in vu["notifies"] if n["category"] == "alerts"]
 
 
 def test_hot_lead_blocks_nouvelle_signature():

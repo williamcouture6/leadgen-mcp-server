@@ -59,6 +59,15 @@ def _webhook_url(category: str | None = None) -> str | None:
     return url or None
 
 
+def is_configured(category: Category | None = None) -> bool:
+    """Un webhook est-il résolvable pour cette catégorie (var dédiée ou fallback) ?
+
+    Sert aux healthchecks : ils doivent tester le canal RÉELLEMENT utilisé par le
+    workflow, pas SLACK_WEBHOOK_URL en dur.
+    """
+    return bool(_webhook_url(category))
+
+
 async def notify(
     *,
     text: str,

@@ -210,17 +210,20 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     blocked, reason = is_email_on_blocked_domain(msg.get("to_email"))
     if blocked:
         # Marquer le message 'failed' pour qu'il ne soit pas re-tenté.
-        try:
-            await db.update(
-                "messages",
-                {"status": "failed", "compliance_notes": (
-                    (msg.get("compliance_notes") or "")
-                    + f" | send_blocked: platform_domain ({reason})"
-                ).strip(" |")},
-                filters={"id": f"eq.{payload.message_id}"},
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        # En dry_run on RAPPORTE le verdict sans le graver : la simulation ne
+        # doit pas tuer un draft (le statut retourné, lui, reste identique).
+        if not payload.dry_run:
+            try:
+                await db.update(
+                    "messages",
+                    {"status": "failed", "compliance_notes": (
+                        (msg.get("compliance_notes") or "")
+                        + f" | send_blocked: platform_domain ({reason})"
+                    ).strip(" |")},
+                    filters={"id": f"eq.{payload.message_id}"},
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return SendMessageOut(
             message_id=payload.message_id, status="skipped_platform_domain",
             skipped_reason=f"email domain dans blocklist: {reason}",
@@ -254,16 +257,19 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     suppressed, reason = await _is_suppressed(msg["to_email"], company.get("domain"))
     if suppressed:
         # On marque le message 'failed' pour que les futurs runs ne le re-tentent pas.
-        try:
-            await db.update(
-                "messages",
-                {"status": "failed", "compliance_notes": (
-                    (msg.get("compliance_notes") or "") + f" | send_blocked: {reason}"
-                ).strip(" |")},
-                filters={"id": f"eq.{payload.message_id}"},
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        # En dry_run on RAPPORTE le verdict sans le graver : la simulation ne
+        # doit pas tuer un draft (le statut retourné, lui, reste identique).
+        if not payload.dry_run:
+            try:
+                await db.update(
+                    "messages",
+                    {"status": "failed", "compliance_notes": (
+                        (msg.get("compliance_notes") or "") + f" | send_blocked: {reason}"
+                    ).strip(" |")},
+                    filters={"id": f"eq.{payload.message_id}"},
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return SendMessageOut(
             message_id=payload.message_id, status="skipped_suppressed",
             skipped_reason=reason,
@@ -463,7 +469,8 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             errors += 1
             # Le message reste 'draft' : il doit reculer comme un saut, sinon
             # une ligne qui lève à tous les coups garde la tête de file.
-            await _horodater_tentative(d["id"])
+            if not payload.dry_run:
+                await _horodater_tentative(d["id"])
             items.append(RunWf6Item(
                 message_id=d["id"], to_email=d.get("to_email"),
                 status="error", error_text=repr(e),
@@ -483,9 +490,12 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         else:
             errors += 1
 
-        if res.status != "ok":
+        if res.status != "ok" and not payload.dry_run:
             # Un message poussé quitte 'draft' et sort de la requête : inutile
             # de l'horodater. Un message sauté doit reculer dans la file.
+            # `payload.dry_run` est la source de vérité de la passe (c'est lui
+            # qu'on passe à chaque SendMessageIn) : une simulation ne doit pas
+            # réordonner la vraie file FIFO en écrivant last_send_attempt_at.
             await _horodater_tentative(d["id"])
 
         items.append(RunWf6Item(
