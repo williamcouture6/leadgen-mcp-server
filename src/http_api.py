@@ -113,8 +113,8 @@ class DailySummaryIn(BaseModel):
 @app.post("/summary/daily", dependencies=[Depends(_require_auth)])
 async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     """Résumé quotidien de l'activité pipeline par track (sourcées/emails/drafts/
-    poussés/envoyés/réponses) + RDV → Slack. Compté depuis minuit America/Toronto.
-    Appelé par un cron n8n en fin de journée.
+    poussés/envoyés/réponses/intéressés en attente de site) + RDV → Slack. Compté
+    depuis minuit America/Toronto. Appelé par un cron n8n en fin de journée.
 
     Distinction importante :
       - `poussés`  = leads ajoutés à la campagne Instantly (messages.status='queued').
@@ -122,6 +122,8 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
                      parti (ou la campagne est en pause). NE PAS lire ça comme « envoyé ».
       - `envoyés`  = courriel réellement parti, confirmé par le WF sync-status
                      (messages.status in sent/delivered/bounced/replied).
+      - `interested_waiting_site` = contacts.interested_at posé (WF-7) sans ligne
+                     agence.demo_sites encore créée (frappe du jeton, PT2).
     Avant ce correctif (2026-06-04), `envoyés` comptait status!='draft' et gonflait
     les `queued` comme des envois — d'où des « envoyés 10 » alors que rien n'était parti."""
     from datetime import datetime, timezone
@@ -167,6 +169,11 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         # ENTRÉE : interested_at posé par WF-7. SORTIE : la frappe du jeton
         # (session artisanale, PT2) crée la ligne agence.demo_sites du contact.
         # Sans filtre de date : un intéressé qui attend est celui qu'on veut voir.
+        # Un intéressé devenu opted_out/disqualified/bounced sort du compteur par
+        # son statut — interested_at reste, c'est un journal, pas un état courant.
+        # (booked reste compté : il attend peut-être encore sa démo pendant la vente.)
+        # N+1 assumé ci-dessous : quelques intéressés par semaine ; passer à une
+        # jointure/exclusion si ce volume grossit.
         interesses = await sb.select_all(
             "contacts",
             order="id",
@@ -174,6 +181,7 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
                 "select": "id",
                 "track": f"eq.{tk}",
                 "interested_at": "not.is.null",
+                "status": "not.in.(opted_out,disqualified,bounced)",
             },
         )
         interested_waiting_site = 0

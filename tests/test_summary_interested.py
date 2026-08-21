@@ -12,8 +12,10 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test")
 
 
-def _socle(monkeypatch, *, interesses, demo_par_contact):
+def _socle(monkeypatch, *, interesses, demo_par_contact, captured=None):
     """demo_par_contact : dict contact_id -> lignes demo_sites à retourner.
+    captured : liste optionnelle où empiler les `params` de chaque select_all
+    sur "contacts" — sert au test qui vérifie le filtre d'exclusion de statut.
 
     ⚠️ summary_daily importe `sb` et `slack_lib` LOCALEMENT dans la fonction
     (`from . import supabase_client as sb` / `from .lib import slack as
@@ -27,6 +29,8 @@ def _socle(monkeypatch, *, interesses, demo_par_contact):
 
     async def fake_select_all(table, order=None, params=None, **kw):
         if table == "contacts" and "interested_at" in (params or {}):
+            if captured is not None:
+                captured.append(params or {})
             return interesses
         return []  # dont la vue v_pourquoi_pas_de_courriel : vide suffit ici
 
@@ -65,3 +69,21 @@ async def test_zero_interesse_pas_de_ligne(monkeypatch):
     )
     assert out["totals"]["agence-ia"]["interested_waiting_site"] == 0
     assert "en attente de site" not in out["text"]
+
+
+async def test_les_impasses_sortent_du_compteur(monkeypatch):
+    """Un intéressé qui bascule opted_out/disqualified/bounced ne doit pas rester
+    compté « en attente de site » à vie — interested_at ne redescend jamais seul,
+    c'est le filtre de statut qui doit les exclure de la requête elle-même."""
+    captured: list[dict] = []
+    http_api = _socle(
+        monkeypatch,
+        interesses=[],
+        demo_par_contact={},
+        captured=captured,
+    )
+    await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert len(captured) == 1
+    assert captured[0]["status"] == "not.in.(opted_out,disqualified,bounced)"
