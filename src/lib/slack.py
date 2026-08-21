@@ -133,11 +133,21 @@ def build_hot_lead_blocks(
     confidence: float | None = None,
     track: str | None = None,
     website: str | None = None,
+    research_json: dict[str, Any] | None = None,
+    suppression_check_failed: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Format Slack pour un reply classé 'interested' (WF-7).
 
     Pivot tri (2026-08-20) : ce ping EST la file de travail — William lit la
     réponse, produit le site (session artisanale), et répond avec le lien.
+    C'est pourquoi le brief de recherche voyage AVEC le ping : `research_json`
+    (depuis `companies.research_json`, WF-3) ajoute la section 'Brief pré-RDV'
+    après l'extrait de réponse — le site se produit sans rouvrir la DB.
+    Absent/vide => aucun bloc ajouté, format historique intact.
+
+    `suppression_check_failed=True` = la garde de désabonnement n'a pas pu LIRE
+    (fail-open assumé côté reply.py) : on le dit dans 'Prochain geste' pour que
+    la vérif se fasse à la main avant d'écrire.
 
     Returns (fallback_text, blocks) — passer aux 2 args de `notify`.
     """
@@ -150,6 +160,11 @@ def build_hot_lead_blocks(
     ]
     if website:
         champs.append(_kv_field("Site actuel", website))
+    geste = f"*Prochain geste*: {status}"
+    if confidence is not None:
+        geste += f"\n*Confidence*: {confidence:.0%}"
+    if suppression_check_failed:
+        geste += "\n⚠️ vérif désabonnement en panne — vérifier avant d'écrire"
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
@@ -158,11 +173,7 @@ def build_hot_lead_blocks(
         {"type": "section", "fields": champs},
         {
             "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Prochain geste*: {status}"
-                + (f"\n*Confidence*: {confidence:.0%}" if confidence is not None else ""),
-            },
+            "text": {"type": "mrkdwn", "text": geste},
         },
         {
             "type": "section",
@@ -172,6 +183,7 @@ def build_hot_lead_blocks(
             },
         },
     ]
+    blocks.extend(_research_brief_blocks(research_json))
     return fallback, blocks
 
 

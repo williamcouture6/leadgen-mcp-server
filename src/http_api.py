@@ -1858,12 +1858,16 @@ async def wf7_webhook_healthcheck(secret: str | None = None) -> dict[str, Any]:
     """
     _require_wf7_webhook_secret(secret)
     from .lib import slack as slack_lib
-    slack_configured = bool(os.environ.get(slack_lib.SLACK_WEBHOOK_ENV))
+    # Le canal réellement utilisé par WF-7 est #leads : on interroge la MÊME
+    # résolution que `notify(category="leads")` (SLACK_WEBHOOK_LEADS, sinon
+    # fallback SLACK_WEBHOOK_URL). Tester SLACK_WEBHOOK_URL seul mentait dans
+    # les deux sens : vert avec #leads absent, rouge avec #leads bien configuré.
+    slack_leads_configured = bool(slack_lib._webhook_url("leads"))
     sender = os.environ.get("INSTANTLY_SENDER_EMAIL", "").strip() or None
     return {
         "ok": True,
         "wf7_secret_configured": True,
-        "slack_configured": slack_configured,
+        "slack_leads_configured": slack_leads_configured,
         "instantly_sender_configured": bool(sender),
         # pivot tri 2026-08-20 : plus d'auto-reply — le seuil de confidence et
         # l'URL Cal.com du composer n'existent plus (chaîne retirée de tools/reply.py).

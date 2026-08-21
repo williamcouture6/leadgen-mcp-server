@@ -291,6 +291,15 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
                 error_text=f"instantly: {e}",
             )
 
+    if payload.dry_run:
+        # dry_run : simulation complète, AUCUNE écriture. Le statut reste "ok"
+        # pour que run_wf6 compte le candidat comme poussable (un statut neuf
+        # tomberait dans la branche errors).
+        return SendMessageOut(
+            message_id=payload.message_id, status="ok",
+            provider_message_id=provider_message_id,
+        )
+
     # 5) Update messages : queued + provider + scheduled_at
     now_iso = datetime.now(timezone.utc).isoformat()
     patch: dict[str, Any] = {

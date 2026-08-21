@@ -20,11 +20,21 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test")
 
 
+# Le seul `select()` légitime du résumé : la sonde `agence.demo_sites` par
+# intéressé (limit=1, donc insensible au plafond). Tout le reste doit passer par
+# count() / select_all(). Interdire TOUT select mentirait le jour où un autre
+# select borné, tout aussi légitime, s'ajoute — voir tests/test_summary_interested.py.
+_SELECTS_LEGITIMES = {("demo_sites", "agence")}
+
+
 def _interdit_select(monkeypatch) -> None:
-    """`select()` est plafonné à 1000 : le résumé ne doit plus s'en servir."""
+    """`select()` est plafonné à 1000 : le résumé ne doit s'en servir que sur
+    les lectures bornées connues."""
     from src import supabase_client as sb
 
     async def _boom(table, *, params=None, schema=None):
+        if (table, schema) in _SELECTS_LEGITIMES:
+            return []
         raise AssertionError(
             f"select() plafonné à 1000 lignes utilisé sur {table!r} — "
             "utiliser count() ou select_all()"

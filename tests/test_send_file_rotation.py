@@ -77,6 +77,74 @@ async def test_supprime_est_marque_failed(monkeypatch) -> None:
     assert any(p.get("status") == "failed" for _, p in updates)
 
 
+def _send_one_wire(monkeypatch):
+    """Monte le VRAI `send_one_message` sur un draft envoyable (ni désabonné,
+    ni domaine plateforme, warmup passé). Retourne (updates, add_lead)."""
+    from src.tools import send
+
+    async def _select(table, *, params=None, schema=None):
+        if table == "messages":
+            return [_msg()]
+        if table == "contacts":
+            return [{"id": "ct-1", "first_name": "Jean", "last_name": "Roy",
+                     "email": "jean@plomberiex.ca", "company_id": "co-1",
+                     "status": "new"}]
+        if table == "companies":
+            return [{"name": "Plomberie X", "domain": "plomberiex.ca"}]
+        return []
+
+    updates: list[tuple[str, dict]] = []
+
+    async def _update(table, patch, **kw):
+        updates.append((table, patch))
+        return [{}]
+
+    add_lead = AsyncMock(return_value={"id": "lead-1"})
+    monkeypatch.setattr(send.db, "select", _select)
+    monkeypatch.setattr(send.db, "update", _update)
+    monkeypatch.setattr(send.instantly_lib, "add_lead_to_campaign", add_lead)
+    monkeypatch.setattr(send, "_is_suppressed", AsyncMock(return_value=(False, "")))
+    return updates, add_lead
+
+
+async def test_dry_run_n_ecrit_rien(monkeypatch) -> None:
+    """Un dry-run doit être une SIMULATION : l'appel Instantly était déjà
+    court-circuité, mais les écritures qui suivaient (messages → 'queued',
+    contacts → 'contacted') passaient quand même. Un dry-run mutait donc la
+    base et sortait le draft de la file sans qu'aucun courriel ne parte."""
+    from src.tools import send
+
+    updates, add_lead = _send_one_wire(monkeypatch)
+
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1", dry_run=True))
+
+    # statut 'ok' conservé : run_wf6 doit continuer à compter le candidat comme
+    # poussable, un statut neuf tomberait dans la branche errors.
+    assert out.status == "ok"
+    assert (out.provider_message_id or "").startswith("dry_run_")
+    add_lead.assert_not_awaited()
+    assert updates == [], f"aucune écriture attendue en dry_run, vu : {updates}"
+
+
+async def test_un_envoi_reel_pousse_le_corps_verbatim(monkeypatch) -> None:
+    """Le pendant du dry-run : un envoi réel écrit bien, ET pousse à Instantly
+    le `body_text` du draft TEL QUEL — rien n'est réécrit au moment du push
+    (ce corps a passé la revue conformité, le modifier ici la contournerait)."""
+    from src.tools import send
+
+    updates, add_lead = _send_one_wire(monkeypatch)
+
+    out = await send.send_one_message(send.SendMessageIn(message_id="m-1"))
+
+    assert out.status == "ok"
+    add_lead.assert_awaited_once()
+    kwargs = add_lead.await_args.kwargs
+    assert kwargs["body_text"] == _msg()["body_text"]
+    assert kwargs["subject"] == _msg()["subject"]
+    tables = [t for t, _ in updates]
+    assert "messages" in tables and "contacts" in tables
+
+
 def _wf6_wire(monkeypatch, drafts: list[dict], *, ok_ids: set[str],
               boom_ids: set[str] | None = None):
     """Stub run_wf6 : renvoie `drafts` à la requête, fait réussir les

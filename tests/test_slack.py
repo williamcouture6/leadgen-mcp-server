@@ -141,6 +141,70 @@ def test_build_hot_lead_blocks_truncates_long_preview() -> None:
     assert "…" in preview_text
 
 
+def test_build_hot_lead_blocks_includes_research_brief() -> None:
+    """PT1/C1 — le ping hot lead EST la file de travail : il doit porter le
+    brief de recherche, sinon William doit rouvrir la DB avant d'écrire."""
+    from src.lib.slack import build_hot_lead_blocks
+    research = {
+        "company_summary": "Plomberie familiale à Montréal, service 24/7.",
+        "pain_points_detected": [
+            {"pain": "Formulaire sans réponse automatique hors heures"},
+        ],
+        "personalization_hooks": ["Mentionner leur note 4.9★ avec 155 avis"],
+        "tech_savvy_score": {"score": "low"},
+        "decideur_candidats": [{"nom_complet": "Adam Verge", "titre": "Co-fondateur"}],
+    }
+    _, blocks = build_hot_lead_blocks(
+        contact_name="Adam Verge",
+        company_name="Plomberie A+",
+        contact_email="adam@x.com",
+        reply_preview="Oui, montrez-moi ça",
+        research_json=research,
+    )
+    body = " ".join(str(b) for b in blocks)
+    assert "Brief pré-RDV" in body
+    assert "Plomberie familiale" in body
+    assert "réponse automatique" in body
+    assert "4.9★" in body
+    assert "Adam Verge" in body
+    # le brief vient APRÈS l'extrait de réponse
+    assert body.index("Reply (extrait)") < body.index("Brief pré-RDV")
+
+
+def test_build_hot_lead_blocks_sans_research_json_garde_le_format() -> None:
+    """Absent (ou vide) → aucun bloc de plus que les 4 historiques."""
+    from src.lib.slack import build_hot_lead_blocks
+    _, sans = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui",
+    )
+    assert len(sans) == 4
+    _, vide = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui", research_json={},
+    )
+    assert len(vide) == 4
+    assert "Brief pré-RDV" not in str(vide)
+
+
+def test_build_hot_lead_blocks_avertit_si_verif_desabonnement_en_panne() -> None:
+    """PT1/C4d — la garde de suppression a échoué en LECTURE : le lead passe
+    (fail-open) mais le ping doit le dire, sinon William écrit à un désabonné."""
+    from src.lib.slack import build_hot_lead_blocks
+    _, avec = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui", suppression_check_failed=True,
+    )
+    geste = avec[2]["text"]["text"]
+    assert "désabonnement" in geste
+    assert "⚠️" in geste
+    _, sans = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui",
+    )
+    assert "désabonnement" not in sans[2]["text"]["text"]
+
+
 def test_build_review_blocks_includes_category_and_reasoning() -> None:
     from src.lib.slack import build_review_blocks
     fb, blocks = build_review_blocks(

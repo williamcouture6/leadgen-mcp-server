@@ -308,25 +308,37 @@ async def _add_to_suppression(
         print(f"[reply] suppression insert failed: {e!r}")
 
 
-async def _update_contact_status(contact_id: str, status: str) -> None:
+async def _update_contact_status(contact_id: str, status: str) -> bool:
+    """Retourne True si l'écriture est passée, False si l'exception a été
+    avalée. Les appelants qui inscrivent une action au journal DOIVENT lire ce
+    retour — une action journalisée sur une écriture ratée est un mensonge.
+    Les branches unsubscribe / not_interested l'ignorent volontairement
+    (comportement inchangé)."""
     try:
         await db.update(
             "contacts", {"status": status},
             filters={"id": f"eq.{contact_id}"},
         )
+        return True
     except Exception as e:  # noqa: BLE001
         print(f"[reply] contact status update failed: {e!r}")
+        return False
 
 
-async def _interested_lead_is_suppressed(contact_id: str | None, email: str | None) -> bool:
+async def _interested_lead_is_suppressed(
+    contact_id: str | None, email: str | None
+) -> bool | None:
     """True si le lead intéressé est en réalité désabonné : statut opted_out OU
     courriel sur suppression_list. Garde du pivot tri (PT1) — la livraison du
     lien démo étant MANUELLE (hors pipeline), la garde de suppression de
     send.py ne protège plus ce chemin ; le contrôle doit vivre ici, AVANT le
     marqueur et le ping de production.
 
-    Fail-open sur erreur de lecture : un ping de trop (William arbitre en
-    lisant la réponse) vaut mieux qu'un hot lead silencieusement perdu."""
+    Retourne None si la LECTURE a échoué — distinct de False (« vérifié, pas
+    désabonné »). None est falsy, donc le fail-open tient tel quel : un ping de
+    trop (William arbitre en lisant la réponse) vaut mieux qu'un hot lead
+    silencieusement perdu. L'appelant utilise le None pour AVERTIR dans le ping
+    que la vérif est en panne."""
     try:
         if contact_id:
             rows = await db.select(
@@ -344,24 +356,31 @@ async def _interested_lead_is_suppressed(contact_id: str | None, email: str | No
                 return True
     except Exception as e:  # noqa: BLE001
         print(f"[reply] suppression check failed (fail-open): {e!r}")
+        return None
     return False
 
 
-async def _mark_contact_interested(contact_id: str | None) -> None:
+async def _mark_contact_interested(contact_id: str | None) -> bool:
     """Pose contacts.interested_at UNE fois (filtre is.null = idempotent).
     C'est le marqueur du pivot tri : réponse positive → William produit le
     site. La SORTIE du compteur « en attente de site » n'est pas ici — c'est
-    la ligne agence.demo_sites créée à la frappe du jeton (PT2)."""
+    la ligne agence.demo_sites créée à la frappe du jeton (PT2).
+
+    Retourne True si l'écriture est passée, False sinon (pas de contact_id, ou
+    exception avalée) — l'appelant n'inscrit `contact_interested` au journal
+    que sur True."""
     if not contact_id:
-        return
+        return False
     try:
         await db.update(
             "contacts",
             {"interested_at": datetime.now(timezone.utc).isoformat()},
             filters={"id": f"eq.{contact_id}", "interested_at": "is.null"},
         )
+        return True
     except Exception as e:  # noqa: BLE001
         print(f"[reply] interested_at update failed: {e!r}")
+        return False
 
 
 async def _record_agent_run(
@@ -789,6 +808,11 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         suppressed_lead = await _interested_lead_is_suppressed(
             contact_id, payload.lead_email
         )
+        # None = la LECTURE a échoué. Falsy, donc le lead passe (fail-open),
+        # mais on le dit : au journal ET dans le ping.
+        suppression_check_failed = suppressed_lead is None
+        if suppression_check_failed:
+            actions.append("suppression_check_failed")
 
         if suppressed_lead:
             actions.append("skipped_interested_suppressed")
@@ -797,10 +821,19 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             if already_booked:
                 actions.append("skipped_marker_already_booked")
             else:
-                await _update_contact_status(contact_id, "replied")
-                actions.append("contact_replied")
-                await _mark_contact_interested(contact_id)
-                actions.append("contact_interested")
+                # Le journal ne dit QUE ce qui a réussi : une écriture ratée
+                # inscrite comme faite ferait disparaître un hot lead de la
+                # file sans alerte.
+                actions.append(
+                    "contact_replied"
+                    if await _update_contact_status(contact_id, "replied")
+                    else "contact_replied_failed"
+                )
+                actions.append(
+                    "contact_interested"
+                    if await _mark_contact_interested(contact_id)
+                    else "contact_interested_failed"
+                )
                 await _upsert_conversation(
                     contact_id=contact_id, campaign_id=campaign_id,
                     state="hot", last_direction="inbound",
@@ -814,11 +847,28 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
                 confidence=confidence,
                 track=company_track,
                 website=(company_row or {}).get("website"),
+                research_json=(company_row or {}).get("research_json"),
+                suppression_check_failed=suppression_check_failed,
             )
-            await slack_lib.notify(
+            ping_ok = await slack_lib.notify(
                 text=fallback, blocks=blocks, context="wf7_hot_lead", category="leads",
             )
-            actions.append("slack_hot_lead")
+            if ping_ok:
+                actions.append("slack_hot_lead")
+            else:
+                # Ce ping EST la file de travail : s'il n'est pas passé, le hot
+                # lead est invisible. Dernier recours = crier sur #alertes.
+                actions.append("slack_ping_failed")
+                alert_ok = await slack_lib.notify(
+                    text=(
+                        "🚨 Hot lead NON notifié sur #leads (ping en échec) — "
+                        f"contact_id={contact_id or '(inconnu)'} · {payload.lead_email}"
+                    ),
+                    context="wf7_hot_lead_ping_failed",
+                    category="alerts",
+                )
+                if alert_ok:
+                    actions.append("alert_ping_sent")
 
     else:  # 'other' ou catégorie inconnue
         await _upsert_conversation(

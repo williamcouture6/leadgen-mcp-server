@@ -57,9 +57,11 @@ async def test_fail_open_sur_erreur_de_lecture(monkeypatch):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(supabase_client, "select", boom)
-    # Fail-open assumé : un ping de trop (William arbitre) vaut mieux qu'un
-    # hot lead silencieusement perdu sur une panne de lecture.
-    assert await reply._interested_lead_is_suppressed("ct-1", "a@b.ca") is False
+    # None = « je n'ai pas pu vérifier », distinct de False = « vérifié, pas
+    # désabonné ». None est FALSY : le fail-open tient tel quel (un ping de trop,
+    # William arbitre, vaut mieux qu'un hot lead perdu sur une panne de lecture),
+    # mais l'appelant peut désormais avertir dans le ping que la vérif est morte.
+    assert await reply._interested_lead_is_suppressed("ct-1", "a@b.ca") is None
 
 
 async def test_marqueur_pose_avec_filtre_idempotent(monkeypatch):
@@ -114,6 +116,181 @@ def test_prompt_composer_supprime():
     prompts = Path(reply.__file__).resolve().parents[1] / "prompts"
     assert not (prompts / "reply_compose.md").exists()
     assert (prompts / "reply_classifier.md").exists()
+
+
+# =====================================================================
+# C4 — le journal d'actions ne dit QUE ce qui a réussi (branche interested)
+# =====================================================================
+
+_RESEARCH = {
+    "company_summary": "Plomberie familiale à Montréal, service 24/7.",
+    "personalization_hooks": ["Leads du soir non confirmés"],
+}
+
+
+def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_boom=False):
+    """Monte un `handle_reply` complet qui atterrit dans la branche `interested`.
+
+    Retourne un dict d'observations : `notifies` (un dict par appel à notify),
+    `updates` (table, patch). `notify_par_categorie` mappe la catégorie Slack
+    vers le booléen que `notify` doit rendre (défaut : True partout)."""
+    from src import supabase_client
+    from src.lib import slack as slack_mod
+    from src.tools import reply
+
+    notify_par_categorie = notify_par_categorie or {}
+    vu: dict = {"notifies": [], "updates": []}
+
+    async def fake_select(table, *, params=None, schema=None):
+        p = params or {}
+        if table == "messages":
+            if p.get("direction") == "eq.inbound":
+                return []  # pas de doublon
+            return [{"id": "m-parent", "contact_id": "ct-1", "campaign_id": "camp-1",
+                     "body_text": "Notre courriel d'origine."}]
+        if table == "contacts":
+            if "email" in p:  # _find_contact_by_email
+                return [{"id": "ct-1", "company_id": "co-1", "first_name": "Jean",
+                         "last_name": "Roy", "email": "jean@x.ca", "status": "contacted"}]
+            return [{"status": "contacted"}]  # garde désabonnement
+        if table == "suppression_list":
+            return []
+        if table == "companies":
+            return [{"id": "co-1", "name": "Plomberie X", "website": "https://x.ca",
+                     "track": "agence-ia", "research_json": _RESEARCH}]
+        if table == "conversations":
+            return []  # pas de RDV déjà booké
+        raise AssertionError(f"select inattendu sur {table!r}")
+
+    async def fake_insert(table, row, **kw):
+        return [{"id": {"messages": "in-1", "agent_runs": "ar-1"}.get(table, "x-1")}]
+
+    async def fake_update(table, patch, *, filters=None, schema=None):
+        vu["updates"].append((table, patch))
+        if contacts_update_boom and table == "contacts":
+            raise RuntimeError("db down")
+        return [{}]
+
+    async def fake_notify(*, text, blocks=None, context=None, category=None):
+        vu["notifies"].append({"text": text, "blocks": blocks,
+                               "context": context, "category": category})
+        return notify_par_categorie.get(category, True)
+
+    def fake_classifier(reply_text, *, original_email_text, model):
+        return ({"category": "interested", "confidence": 0.93}, {"input_tokens": 1,
+                "output_tokens": 1, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0})
+
+    monkeypatch.setattr(supabase_client, "select", fake_select)
+    monkeypatch.setattr(supabase_client, "insert", fake_insert)
+    monkeypatch.setattr(supabase_client, "update", fake_update)
+    monkeypatch.setattr(slack_mod, "notify", fake_notify)
+    monkeypatch.setattr(reply, "_call_classifier", fake_classifier)
+    return vu
+
+
+def _payload():
+    from src.tools import reply
+
+    return reply.HandleReplyIn(
+        lead_email="jean@x.ca",
+        reply_subject="Re: votre site",
+        reply_body_text="Oui, montrez-moi ça.",
+        provider_message_id_inbound="inb-1",
+        provider_message_id_parent="out-1",
+    )
+
+
+async def test_le_chemin_heureux_journalise_les_trois_actions(monkeypatch):
+    from src.tools import reply
+
+    _wire_interested(monkeypatch)
+    out = await reply.handle_reply(_payload())
+
+    assert out.category == "interested"
+    assert "contact_replied" in out.actions_taken
+    assert "contact_interested" in out.actions_taken
+    assert "slack_hot_lead" in out.actions_taken
+    assert not [a for a in out.actions_taken if a.endswith("_failed")]
+
+
+async def test_un_ping_rate_ne_sinscrit_pas_comme_envoye(monkeypatch):
+    """Le ping EST la file de travail : s'il ne passe pas, le journal doit le
+    dire et une alerte doit partir — sinon le hot lead disparaît en silence."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, notify_par_categorie={"leads": False})
+    out = await reply.handle_reply(_payload())
+
+    assert "slack_ping_failed" in out.actions_taken
+    assert "slack_hot_lead" not in out.actions_taken
+    assert "alert_ping_sent" in out.actions_taken
+    alerte = [n for n in vu["notifies"] if n["category"] == "alerts"]
+    assert len(alerte) == 1
+    assert "ct-1" in alerte[0]["text"]
+    assert "jean@x.ca" in alerte[0]["text"]
+
+
+async def test_une_alerte_de_repli_ratee_ne_sinscrit_pas(monkeypatch):
+    """Slack entièrement mort : `slack_ping_failed` reste, `alert_ping_sent` non."""
+    from src.tools import reply
+
+    _wire_interested(monkeypatch, notify_par_categorie={"leads": False, "alerts": False})
+    out = await reply.handle_reply(_payload())
+
+    assert "slack_ping_failed" in out.actions_taken
+    assert "alert_ping_sent" not in out.actions_taken
+
+
+async def test_une_ecriture_ratee_est_journalisee_comme_ratee(monkeypatch):
+    """Sans ça, `contact_interested` mentait : le marqueur n'existe pas en base,
+    donc le lead n'entre jamais dans le compteur « en attente de site »."""
+    from src.tools import reply
+
+    _wire_interested(monkeypatch, contacts_update_boom=True)
+    out = await reply.handle_reply(_payload())
+
+    assert "contact_interested_failed" in out.actions_taken
+    assert "contact_interested" not in out.actions_taken
+    assert "contact_replied_failed" in out.actions_taken
+    assert "contact_replied" not in out.actions_taken
+    # le ping part quand même — c'est le seul moyen que William le voie
+    assert "slack_hot_lead" in out.actions_taken
+
+
+async def test_le_ping_porte_le_brief_de_recherche(monkeypatch):
+    """C1 — le brief voyage AVEC le ping (`companies.research_json` n'était
+    qu'une colonne morte du select)."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch)
+    await reply.handle_reply(_payload())
+
+    leads = [n for n in vu["notifies"] if n["category"] == "leads"]
+    assert len(leads) == 1
+    corps = str(leads[0]["blocks"])
+    assert "Brief pré-RDV" in corps
+    assert "Plomberie familiale" in corps
+
+
+async def test_verif_desabonnement_en_panne_est_dite_au_journal_et_au_ping(monkeypatch):
+    """C4d — fail-open conservé (le lead passe) mais jamais en silence."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch)
+    monkeypatch.setattr(reply, "_interested_lead_is_suppressed",
+                        lambda *a, **kw: _none())
+    out = await reply.handle_reply(_payload())
+
+    assert "suppression_check_failed" in out.actions_taken
+    assert "skipped_interested_suppressed" not in out.actions_taken  # fail-open
+    assert "slack_hot_lead" in out.actions_taken
+    corps = str([n for n in vu["notifies"] if n["category"] == "leads"][0]["blocks"])
+    assert "vérif désabonnement en panne" in corps
+
+
+async def _none():
+    return None
 
 
 def test_hot_lead_blocks_nouvelle_signature():
