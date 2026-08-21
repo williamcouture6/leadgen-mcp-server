@@ -1,8 +1,11 @@
-"""Demo-generator (P3) — frappe un lien de démo unique par prospect, le persiste
-dans agence.demo_sites, et l'injecte dans le corps du cold email.
+"""Demo-generator — frappe un lien de démo unique par prospect et le persiste
+dans agence.demo_sites.
 
-Le lien ne résout vers rien jusqu'à P4 (site Next.js servi). Ici = couche donnée
-+ wiring uniquement. Voir docs/superpowers/specs/2026-06-07-agence-ia-p3-demo-generator-design.md.
+Depuis le pivot tri (2026-08-20), la frappe n'a plus lieu dans le pipeline
+d'envoi : `ensure_demo_site` est appelé par le geste CLI de la session
+artisanale (PT2), et William colle lui-même le lien dans sa réponse au
+prospect. La ligne demo_sites créée fait aussi sortir le lead du compteur
+« intéressés en attente de site » du résumé quotidien.
 """
 from __future__ import annotations
 
@@ -11,24 +14,11 @@ import secrets
 
 from .. import supabase_client as db
 
-DEMO_URL_PLACEHOLDER = "{{DEMO_URL}}"
 _AGENCE_SCHEMA = "agence"
 
 
 def _demo_base_url() -> str:
     return os.environ.get("DEMO_BASE_URL", "https://couture-ia.com").rstrip("/")
-
-
-def inject_demo_link(body: str, demo_url: str) -> str:
-    """Garantit que demo_url est présent dans body.
-
-    Placeholder présent => remplace toutes les occurrences.
-    Absent => append une ligne CTA fallback (le lien doit TOUJOURS finir dans le body).
-    """
-    if DEMO_URL_PLACEHOLDER in body:
-        return body.replace(DEMO_URL_PLACEHOLDER, demo_url)
-    suffix = f"\n\nVoici un aperçu personnalisé pour vous : {demo_url}"
-    return f"{body}{suffix}"
 
 
 async def ensure_demo_site(company_id: str | None, contact_id: str) -> str:

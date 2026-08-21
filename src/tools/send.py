@@ -12,8 +12,6 @@ Logique :
        marqué 'failed').
      - Suppression list — check email + domaine du contact contre
        suppression_list (opt-outs, hard bounces, DNCL).
-     - Garde démo (P3) — track agence-ia : pas de lien démo unique dans le
-       corps, pas de courriel (frappe retentée ici avant de sauter).
      - Daily cap — limite N pushs/jour, fenêtre America/Toronto.
   3. Fetch contact + company pour enrichir le lead Instantly (first_name,
      last_name, company_name).
@@ -45,14 +43,11 @@ from .. import supabase_client as db
 from ..lib import instantly as instantly_lib
 from ..lib import slack
 from ..lib.compliance_checks import check_warmup_window
-from ..lib.demo_generator import DEMO_URL_PLACEHOLDER, ensure_demo_site, inject_demo_link
 from ..lib.platform_domains import is_email_on_blocked_domain
 
 DAILY_CAP_DEFAULT = 10
 DAILY_CAP_ENV = "INSTANTLY_DAILY_CAP"
 SEND_TIMEZONE = "America/Toronto"
-# Anti-spam de l'alerte demo (P3) : 1 ping #alertes par message coincé, pas par run.
-DEMO_ALERT_MARKER = "demo_alert_sent"
 # Sur-récolte : un draft sauté (warmup, skip transitoire) reste 'draft' et la
 # requête FIFO le re-sélectionne ; on lit plus large que limit pour que la file
 # tourne. On s'arrête dès que `limit` messages sont partis. Le plafond borne le
@@ -76,7 +71,7 @@ class SendMessageIn(BaseModel):
 
 class SendMessageOut(BaseModel):
     message_id: str
-    status: str  # ok | skipped_warmup | skipped_not_eligible | skipped_suppressed | skipped_platform_domain | skipped_no_demo | error
+    status: str  # ok | skipped_warmup | skipped_not_eligible | skipped_suppressed | skipped_platform_domain | error
     provider_message_id: str | None = None
     skipped_reason: str | None = None
     error_text: str | None = None
@@ -165,7 +160,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     msgs = await db.select(
         "messages",
         params={
-            "select": "id,subject,body_text,to_email,status,direction,compliance_check_passed,contact_id,demo_url,track,compliance_notes",
+            "select": "id,subject,body_text,to_email,status,direction,compliance_check_passed,contact_id,track,compliance_notes",
             "id": f"eq.{payload.message_id}",
             "limit": "1",
         },
@@ -274,47 +269,6 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
             message_id=payload.message_id, status="skipped_suppressed",
             skipped_reason=reason,
         )
-
-    # 3d) Garde demo (P3) — aucun email agence-ia ne part sans lien démo unique.
-    # Si manquant, on retente la frappe ici ; échec persistant => skip sans push.
-    if (msg.get("track") or "OPT") == "agence-ia":
-        needs_demo = (not msg.get("demo_url")) or (DEMO_URL_PLACEHOLDER in (msg.get("body_text") or ""))
-        if needs_demo:
-            try:
-                demo_url = await ensure_demo_site(contact.get("company_id"), msg["contact_id"])
-                new_body = inject_demo_link(msg.get("body_text") or "", demo_url)
-                await db.update(
-                    "messages",
-                    {"demo_url": demo_url, "body_text": new_body},
-                    filters={"id": f"eq.{payload.message_id}"},
-                )
-                msg["demo_url"] = demo_url
-                msg["body_text"] = new_body
-            except Exception as e:  # noqa: BLE001 — pas de push sans lien
-                existing_notes = msg.get("compliance_notes") or ""
-                if DEMO_ALERT_MARKER not in existing_notes:
-                    await slack.notify(
-                        text=(
-                            f":rotating_light: Demo non générée — email bloqué.\n"
-                            f"message_id={payload.message_id} contact_id={msg['contact_id']} "
-                            f"company_id={contact.get('company_id')}\nerreur: {e!r}\n"
-                            f"(Vérifier que le schéma `agence` est exposé à l'API REST.)"
-                        ),
-                        category="alerts",
-                        context="p3_demo_guard",
-                    )
-                    new_notes = f"{existing_notes} | {DEMO_ALERT_MARKER}".strip(" |")
-                    try:
-                        await db.update(
-                            "messages", {"compliance_notes": new_notes},
-                            filters={"id": f"eq.{payload.message_id}"},
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
-                return SendMessageOut(
-                    message_id=payload.message_id, status="skipped_no_demo",
-                    skipped_reason=f"demo_generation_failed: {e!r}",
-                )
 
     # 5) Push à Instantly (ou simule si dry_run)
     provider_message_id: str | None = None
