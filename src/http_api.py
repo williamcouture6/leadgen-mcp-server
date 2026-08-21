@@ -1830,7 +1830,8 @@ async def wf7_webhook_healthcheck(secret: str | None = None) -> dict[str, Any]:
         "slack_configured": slack_configured,
         "instantly_sender_configured": bool(sender),
         "calcom_booking_url_configured": bool(booking),
-        "auto_reply_confidence_threshold": reply_tools.AUTO_REPLY_CONFIDENCE_THRESHOLD,
+        # pivot tri 2026-08-20 : plus d'auto-reply — le seuil de confidence
+        # n'existe plus (chaîne composer retirée de tools/reply.py).
     }
 
 

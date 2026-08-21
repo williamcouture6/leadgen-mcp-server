@@ -378,20 +378,5 @@ def test_juge_compliance_ne_voit_pas_le_diagnostic(monkeypatch: pytest.MonkeyPat
     assert "fuite@tiers-a-ne-pas-voir.net" not in user
 
 
-def test_composeur_de_reponse_ne_voit_pas_le_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.tools import reply
-
-    msgs = _patch_anthropic(monkeypatch, reply, '{"body_text": "ok"}')
-    monkeypatch.setattr(reply, "estimated_cost_usd", lambda *a, **k: 0.0)
-    reply._call_composer(
-        original_email_text="cold",
-        lead_reply_text="intéressé",
-        research_json=_RJ_AVEC_DIAG,
-        available_slots=[],
-        booking_url="https://cal.com/x",
-        model="m",
-    )
-    user = msgs.kwargs["messages"][0]["content"]
-    assert "Plomberie Dupont, 6 camions" in user
-    assert research.DIAGNOSTIC_KEY not in user
-    assert "fuite@tiers-a-ne-pas-voir.net" not in user
+# (test du composeur de réponse retiré — la chaîne composer n'existe plus
+# depuis le pivot tri 2026-08-20, voir test_reply_interested_pivot.py.)

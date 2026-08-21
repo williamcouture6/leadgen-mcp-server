@@ -1,7 +1,9 @@
-"""Tests des gardes auto-reply WF-7 (audit) :
-  - _conversation_is_booked : ne pas auto-répondre à un lead déjà en RDV.
-  - _count_prior_auto_replies : plafond anti-boucle.
-Les deux lisent la DB → on mocke src.supabase_client.select.
+"""Tests de la garde WF-7 `_conversation_is_booked` : ne pas régresser une
+conversation déjà en RDV (pose le marqueur/statut seulement si pas booked).
+Lit la DB → on mocke src.supabase_client.select.
+
+(Les tests du plafond anti-boucle auto-reply sont partis avec la chaîne
+composer — pivot tri 2026-08-20, voir test_reply_interested_pivot.py.)
 """
 from __future__ import annotations
 
@@ -63,34 +65,3 @@ async def test_conversation_is_booked_failopen_on_error(monkeypatch: pytest.Monk
     monkeypatch.setattr(supabase_client, "select", boom)
     # fail-open : erreur lecture → False (ne bloque pas le flux normal)
     assert await reply._conversation_is_booked("c1") is False
-
-
-@pytest.mark.asyncio
-async def test_count_prior_auto_replies(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src import supabase_client
-    from src.tools import reply
-
-    captured: dict = {}
-
-    async def fake_select(table, params=None):
-        captured["params"] = params
-        return [{"id": "1"}, {"id": "2"}, {"id": "3"}]
-
-    monkeypatch.setattr(supabase_client, "select", fake_select)
-    n = await reply._count_prior_auto_replies("c1")
-    assert n == 3
-    assert captured["params"]["direction"] == "eq.outbound"
-    assert captured["params"]["compliance_notes"].startswith("like.auto_reply_to_interested")
-
-
-@pytest.mark.asyncio
-async def test_count_prior_auto_replies_none_contact() -> None:
-    from src.tools import reply
-    assert await reply._count_prior_auto_replies(None) == 0
-
-
-def test_cap_constant_is_high_safety_net() -> None:
-    """Le plafond est un filet de sécurité, pas un limiteur de conversation
-    normale — donc volontairement >= 5."""
-    from src.tools import reply
-    assert reply.MAX_AUTO_REPLIES_PER_CONVERSATION >= 5

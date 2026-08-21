@@ -130,34 +130,37 @@ def build_hot_lead_blocks(
     company_name: str,
     contact_email: str,
     reply_preview: str,
-    auto_reply_sent: bool,
     confidence: float | None = None,
     track: str | None = None,
+    website: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Format Slack pour un reply classé 'interested' (WF-7).
+
+    Pivot tri (2026-08-20) : ce ping EST la file de travail — William lit la
+    réponse, produit le site (session artisanale), et répond avec le lien.
 
     Returns (fallback_text, blocks) — passer aux 2 args de `notify`.
     """
     tp = _track_prefix(track)
-    status = "Auto-reply envoyé (Cal.com link)" if auto_reply_sent else "À répondre manuellement"
-    fallback = f"{tp}🔥 Hot lead — {contact_name} @ {company_name} ({status})"
+    status = "À toi : produire le site (session artisanale) puis répondre avec le lien démo"
+    fallback = f"{tp}🔥 Hot lead — {contact_name} @ {company_name}"
+    champs = [
+        _kv_field("Contact", f"{contact_name}\n{contact_email}"),
+        _kv_field("Entreprise", company_name),
+    ]
+    if website:
+        champs.append(_kv_field("Site actuel", website))
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
             "text": {"type": "plain_text", "text": f"{tp}🔥 Hot lead"},
         },
-        {
-            "type": "section",
-            "fields": [
-                _kv_field("Contact", f"{contact_name}\n{contact_email}"),
-                _kv_field("Entreprise", company_name),
-            ],
-        },
+        {"type": "section", "fields": champs},
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Statut*: {status}"
+                "text": f"*Prochain geste*: {status}"
                 + (f"\n*Confidence*: {confidence:.0%}" if confidence is not None else ""),
             },
         },

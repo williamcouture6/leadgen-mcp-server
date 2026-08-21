@@ -102,15 +102,29 @@ def test_build_hot_lead_blocks_returns_fallback_and_blocks() -> None:
         company_name="Clinique X",
         contact_email="anne@x.com",
         reply_preview="Oui dispo mercredi",
-        auto_reply_sent=True,
         confidence=0.92,
     )
     assert isinstance(fb, str) and len(fb) > 0
     assert "Anne T." in fb
     assert "Clinique X" in fb
-    # 4 blocks expected: header, fields, status section, preview
+    # 4 blocks expected: header, fields, next-step section, preview
     assert len(blocks) == 4
     assert blocks[0]["type"] == "header"
+
+
+def test_build_hot_lead_blocks_website_field_optional() -> None:
+    """`website` fourni → field 'Site actuel' présent ; absent → pas de field."""
+    from src.lib.slack import build_hot_lead_blocks
+    _, avec = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui", website="https://b.ca",
+    )
+    assert "https://b.ca" in str(avec)
+    _, sans = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui",
+    )
+    assert "Site actuel" not in str(sans)
 
 
 def test_build_hot_lead_blocks_truncates_long_preview() -> None:
@@ -119,7 +133,7 @@ def test_build_hot_lead_blocks_truncates_long_preview() -> None:
     long_text = "x" * 1000
     fb, blocks = build_hot_lead_blocks(
         contact_name="A", company_name="B", contact_email="a@b.com",
-        reply_preview=long_text, auto_reply_sent=False, confidence=None,
+        reply_preview=long_text, confidence=None,
     )
     preview_block = blocks[-1]
     preview_text = preview_block["text"]["text"]
