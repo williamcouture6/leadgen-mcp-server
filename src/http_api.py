@@ -160,54 +160,14 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             date_field="scheduled_at",
         )
         replies = await _cnt("messages", {**t, "direction": "eq.inbound"})
-        # Drafts que la garde P4.10 refuse de pousser, comptés SANS filtre de
-        # date : un draft coincé depuis deux semaines est justement celui qu'on
-        # veut voir. Deux nombres, parce qu'ils appellent des gestes différents
-        # — « en attente » se règle au prochain lot nocturne, « à relire »
-        # attend une décision de William.
-        #
-        # Le tri se fait en Python plutôt qu'en filtres PostgREST : la règle
-        # « porte attente ET PAS bloque » demanderait deux conditions sur la
-        # même colonne, donc un `and=(...)` imbriqué qu'aucun test sur mock ne
-        # peut valider — une syntaxe fausse compterait faux en silence. Le
-        # volume rend le débat théorique : quelques dizaines de drafts.
-        #
-        # select_all : on a besoin du CONTENU (compliance_notes) de chaque
-        # draft, pas d'un nombre, et sans filtre de date le lot peut dépasser
-        # le plafond de 1000 lignes de PostgREST.
-        bloques = await sb.select_all(
-            "messages",
-            order="id",
-            params={
-                "select": "id,compliance_notes",
-                "track": f"eq.{tk}",
-                "direction": "eq.outbound",
-                "status": "eq.draft",
-            },
-        )
-        waiting_config = to_review = 0
-        for row in bloques:
-            notes = row.get("compliance_notes") or ""
-            if send_tools.SITE_CONFIG_NOTE_MARKER in notes:
-                # Un lead qui a attendu PUIS reçu un verdict qui refuse porte
-                # les deux marqueurs : c'est son histoire. Il compte dans l'état
-                # le plus actionnable, pas dans les deux.
-                to_review += 1
-            elif send_tools.SITE_CONFIG_WAIT_MARKER in notes:
-                waiting_config += 1
         totals[tk] = {
             "sourced": sourced, "emails": emails, "drafts": drafts,
             "pushed": pushed, "sent": sent, "replies": replies,
-            "waiting_config": waiting_config, "to_review": to_review,
         }
         ligne = (
             f"*{tk}* — sourcées {sourced} · emails {emails} · drafts {drafts} · "
             f"poussés {pushed} · envoyés {sent} · réponses {replies}"
         )
-        if waiting_config:
-            ligne += f"\n  ⏸ en attente de config {waiting_config}"
-        if to_review:
-            ligne += f"\n  🔎 à relire {to_review}"
         lines.append(ligne)
 
     bookings = await _cnt("booking_events", {})
@@ -220,8 +180,7 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     )
 
     # État du PARC, sans filtre de date : c'est l'entreprise coincée depuis six
-    # semaines qu'on veut voir, pas l'activité du jour. Même patron que la ligne
-    # « ⏸ en attente de config » de P4.10.
+    # semaines qu'on veut voir, pas l'activité du jour.
     #
     # `track` est figé sur 'agence-ia' à dessein, il ne suit PAS payload.tracks :
     # le projet a pivoté sur une offre unique le 2026-06-07 et 'OPT' est du legacy
