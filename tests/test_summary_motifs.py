@@ -1,7 +1,8 @@
 """Le résumé quotidien montre l'état du parc, pas seulement la journée.
 
-Sans filtre de date, comme la ligne « ⏸ en attente de config » de P4.10 : c'est
-un draft coincé depuis deux semaines qu'on veut voir, pas l'activité du jour.
+Sans filtre de date, comme la ligne « 🔥 intéressés en attente de site » du
+pivot tri : c'est un lead coincé depuis deux semaines qu'on veut voir, pas
+l'activité du jour.
 
 Tous les tests d'ici piègent `sb.select` pour qu'il LÈVE : le résumé compte des
 relations qui dépassent 1000 lignes, et `select()` est plafonné par PostgREST.
