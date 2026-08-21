@@ -1823,15 +1823,13 @@ async def wf7_webhook_healthcheck(secret: str | None = None) -> dict[str, Any]:
     from .lib import slack as slack_lib
     slack_configured = bool(os.environ.get(slack_lib.SLACK_WEBHOOK_ENV))
     sender = os.environ.get("INSTANTLY_SENDER_EMAIL", "").strip() or None
-    booking = os.environ.get("CALCOM_BOOKING_URL", "").strip() or None
     return {
         "ok": True,
         "wf7_secret_configured": True,
         "slack_configured": slack_configured,
         "instantly_sender_configured": bool(sender),
-        "calcom_booking_url_configured": bool(booking),
-        # pivot tri 2026-08-20 : plus d'auto-reply — le seuil de confidence
-        # n'existe plus (chaîne composer retirée de tools/reply.py).
+        # pivot tri 2026-08-20 : plus d'auto-reply — le seuil de confidence et
+        # l'URL Cal.com du composer n'existent plus (chaîne retirée de tools/reply.py).
     }
 
 

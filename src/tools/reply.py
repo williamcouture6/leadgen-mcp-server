@@ -259,11 +259,13 @@ async def _upsert_conversation(
 
 async def _conversation_is_booked(contact_id: str | None) -> bool:
     """True si une conversation du contact est déjà à l'état 'booked' (posé par
-    WF-8 quand un RDV est créé). Sert à NE PAS auto-répondre à un lead qui a déjà
-    pris rendez-vous (éviter de le ré-inviter à booker).
+    WF-8 quand un RDV est créé). Garde anti-régression : sans elle, un reply
+    'interested' poserait statut 'replied' + marqueur interested_at + state
+    'hot' PAR-DESSUS un RDV existant.
 
     Fail-open sur la lecture : en cas d'erreur DB on retourne False pour ne pas
-    bloquer le flux normal (le pire cas = une auto-réponse de trop, déjà capée)."""
+    bloquer le flux normal (pire cas = un marqueur/ping de trop, William
+    arbitre en lisant la réponse)."""
     if not contact_id:
         return False
     try:
@@ -717,8 +719,8 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             duration_ms=classifier_dur,
             usage=None,
         )
-        # Sans classification on bloque l'auto-reply mais on ne crash pas — Slack
-        # ping pour review humain.
+        # Sans classification, pas d'action de routage — on ne crash pas, Slack
+        # ping pour review manuel humain.
         await slack_lib.notify(
             text=f"⚠️ Classifier LLM failed for {payload.lead_email} — review manuel requis",
             context="wf7_classifier_error",
@@ -787,11 +789,11 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         suppressed_lead = await _interested_lead_is_suppressed(
             contact_id, payload.lead_email
         )
-        already_booked = await _conversation_is_booked(contact_id)
 
         if suppressed_lead:
             actions.append("skipped_interested_suppressed")
         else:
+            already_booked = await _conversation_is_booked(contact_id)
             if already_booked:
                 actions.append("skipped_marker_already_booked")
             else:

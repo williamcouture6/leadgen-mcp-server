@@ -9,8 +9,8 @@ Fallback : si la var spécifique à la catégorie n'est pas set, on retombe
 sur SLACK_WEBHOOK_URL (legacy single-channel). Si rien n'est configuré,
 les notifs sont silencieusement no-op — utile pour dev/test sans Slack.
 
-Failure-mode : Slack DOWN ne DOIT JAMAIS casser la pipeline (auto-reply,
-booking, etc.). Les exceptions sont avalées + loggées en stderr. Le caller
+Failure-mode : Slack DOWN ne DOIT JAMAIS casser la pipeline (classification
+des replies, booking, etc.). Les exceptions sont avalées + loggées en stderr. Le caller
 peut inspecter `notify(...)` return = True/False pour savoir si le ping est
 passé, mais ne doit pas crasher si False.
 
