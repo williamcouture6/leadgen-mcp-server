@@ -41,7 +41,6 @@ from pydantic import BaseModel
 
 from .. import supabase_client as db
 from ..lib import instantly as instantly_lib
-from ..lib import slack
 from ..lib.compliance_checks import check_warmup_window
 from ..lib.platform_domains import is_email_on_blocked_domain
 
@@ -270,7 +269,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
             skipped_reason=reason,
         )
 
-    # 5) Push à Instantly (ou simule si dry_run)
+    # 4) Push à Instantly (ou simule si dry_run)
     provider_message_id: str | None = None
     if payload.dry_run:
         provider_message_id = f"dry_run_{payload.message_id[:8]}"
@@ -292,7 +291,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
                 error_text=f"instantly: {e}",
             )
 
-    # 6) Update messages : queued + provider + scheduled_at
+    # 5) Update messages : queued + provider + scheduled_at
     now_iso = datetime.now(timezone.utc).isoformat()
     patch: dict[str, Any] = {
         "status": "queued",
@@ -371,8 +370,6 @@ class RunWf6Out(BaseModel):
     skipped_warmup: int
     skipped_suppressed: int
     skipped_platform_domain: int = 0
-    skipped_no_site_config: int = 0
-    skipped_no_demo: int = 0
     skipped_other: int
     errors: int
     daily_cap: int
@@ -413,7 +410,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         )
 
     items: list[RunWf6Item] = []
-    pushed = sk_cap = sk_warm = sk_supp = sk_plat = sk_nocfg = sk_nodemo = sk_other = errors = 0
+    pushed = sk_cap = sk_warm = sk_supp = sk_plat = sk_other = errors = 0
 
     if effective_limit <= 0:
         return RunWf6Out(
@@ -432,10 +429,9 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             "status": "eq.draft",
             "compliance_check_passed": "is.true",
             "track": f"eq.{track}",
-            # Jamais tenté d'abord, puis le moins récemment tenté. Un draft que
-            # la garde refuse recule ainsi derrière les frais au lieu d'occuper
-            # la tête de file pour toujours — et repasse quand même à son tour,
-            # donc il partira le jour où son config arrivera.
+            # Jamais tenté d'abord, puis le moins récemment tenté. Un draft
+            # sauté recule derrière les frais au lieu d'occuper la tête de
+            # file — et repasse à son tour.
             "order": "last_send_attempt_at.asc.nullsfirst,created_at.asc",
             "limit": str(min(effective_limit * DRAFT_OVERFETCH_FACTOR, DRAFT_OVERFETCH_MAX)),
         },
@@ -473,10 +469,6 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             sk_supp += 1
         elif res.status == "skipped_platform_domain":
             sk_plat += 1
-        elif res.status == "skipped_no_site_config":
-            sk_nocfg += 1
-        elif res.status == "skipped_no_demo":
-            sk_nodemo += 1
         elif res.status == "skipped_not_eligible":
             sk_other += 1
         else:
@@ -506,8 +498,6 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         skipped_warmup=sk_warm,
         skipped_suppressed=sk_supp,
         skipped_platform_domain=sk_plat,
-        skipped_no_site_config=sk_nocfg,
-        skipped_no_demo=sk_nodemo,
         skipped_other=sk_other,
         errors=errors,
         daily_cap=daily_cap,

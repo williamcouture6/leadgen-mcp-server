@@ -27,7 +27,7 @@ async def ensure_demo_site(company_id: str | None, contact_id: str) -> str:
     Si une ligne existe déjà pour ce contact, on la réutilise (pas de re-frappe,
     pas de doublon). Sinon on frappe token+url et on insère dans agence.demo_sites.
     Lève (httpx.HTTPStatusError) si l'accès au schéma agence échoue — l'appelant
-    décide quoi faire (soft-fail au draft, garde au send).
+    (geste CLI de la session artisanale, PT2) décide quoi faire.
     """
     existing = await db.select(
         "demo_sites",

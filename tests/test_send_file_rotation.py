@@ -35,7 +35,7 @@ def _msg(**over) -> dict:
         "id": "m-1", "subject": "S", "body_text": "Allo https://couture-ia.com/demo/T",
         "to_email": "jean@plomberiex.ca", "status": "draft", "direction": "outbound",
         "compliance_check_passed": True, "contact_id": "ct-1",
-        "demo_url": "https://couture-ia.com/demo/T", "track": "agence-ia",
+        "track": "agence-ia",
         "compliance_notes": None,
     }
     base.update(over)
@@ -67,7 +67,6 @@ async def test_supprime_est_marque_failed(monkeypatch) -> None:
     monkeypatch.setattr(send.db, "select", _select)
     monkeypatch.setattr(send.db, "update", _update)
     monkeypatch.setattr(send.instantly_lib, "add_lead_to_campaign", add_lead)
-    monkeypatch.setattr(send.slack, "notify", AsyncMock(return_value=True))
     monkeypatch.setattr(send, "_is_suppressed",
                         AsyncMock(return_value=(True, "email on suppression (optout)")))
 
