@@ -15,11 +15,14 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
 def _socle(monkeypatch, *, interesses, demo_par_contact, captured=None, supprimes=()):
     """demo_par_contact : dict contact_id -> lignes demo_sites à retourner.
     captured : liste optionnelle où empiler les `params` de chaque select_all
-    sur "contacts" — sert au test qui vérifie le filtre d'exclusion de statut.
+    sur "contacts" — sert au test qui pin l'ABSENCE de filtre de statut dans la
+    requête PostgREST (le tri se fait en Python, cf. plus bas : le remettre en
+    SQL viderait le compteur des désabonnés en silence).
     supprimes : courriels présents dans `suppression_list` (chemin du clic sur
     le lien du footer, qui ne garantit PAS que contacts.status ait basculé).
     Ensemble = motif `opt_out` implicite ; dict courriel -> motif pour tester
-    les motifs qui ne sont PAS un retrait de consentement (`hard_bounce`).
+    les motifs qui ne sont PAS un retrait de consentement (`hard_bounce`,
+    `manual`, `competitor`, `dncl`).
 
     ⚠️ summary_daily importe `sb` et `slack_lib` LOCALEMENT dans la fonction
     (`from . import supabase_client as sb` / `from .lib import slack as
@@ -41,9 +44,11 @@ def _socle(monkeypatch, *, interesses, demo_par_contact, captured=None, supprime
     async def fake_select(table, params=None, schema=None, **kw):
         if table == "suppression_list":
             courriel = (params or {}).get("email", "").removeprefix("eq.")
-            # Le filtre de motif est la moitié du contrat : `hard_bounce` vit
-            # dans la même table sans être un retrait de consentement. On le
-            # simule ici, faute de quoi le test ne prouverait rien.
+            # Le MOTIF est la moitié du contrat : `hard_bounce` (adresse morte),
+            # `manual`/`competitor`/`dncl` (nos décisions) vivent dans la même
+            # table que les vrais retraits de consentement. Le fake rend donc
+            # toujours le motif, et c'est l'appelant qui trie — comme en prod
+            # depuis qu'on interroge la table SANS filtre de motif.
             motifs = (params or {}).get("reason", "")
             garde = supprimes.get(courriel) if isinstance(supprimes, dict) else (
                 "opt_out" if courriel in supprimes else None
@@ -112,6 +117,11 @@ async def test_les_impasses_sortent_du_compteur(monkeypatch):
         http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
     )
     assert len(captured) == 1
+    # Garde de non-régression : le filtre de statut ne doit JAMAIS revenir dans
+    # la requête PostgREST. Le geste est tentant (le N+1 est juste en dessous),
+    # mais il rendrait les opted_out invisibles à la lecture — le chemin
+    # majoritaire du compteur des désabonnés tomberait à zéro, suite verte.
+    assert "status" not in captured[0]
     assert out["totals"]["agence-ia"]["interested_waiting_site"] == 1
 
 
@@ -196,3 +206,149 @@ async def test_zero_desabonne_pas_de_ligne(monkeypatch):
     )
     assert out["totals"]["agence-ia"]["interested_then_unsubscribed"] == 0
     assert "désabonnés" not in out["text"]
+
+
+# =====================================================================
+# La ligne doit être ACTIONNABLE (2026-08-23) — un nombre nu ne décide rien
+# =====================================================================
+
+def _desabonne(n, *, prenom, nom, courriel, oui):
+    return {"id": f"ct-{n}", "email": courriel, "first_name": prenom,
+            "last_name": nom, "interested_at": oui, "status": "opted_out"}
+
+
+async def test_la_ligne_nomme_les_leads_et_porte_linterdit_lcap(monkeypatch):
+    """Le rendu EXACT. Un « ⚠️ intéressés désabonnés 3 » nu n'aide pas William à
+    décider : il lui faut QUI, QUAND il avait dit oui, et l'interdit — le
+    réflexe naturel devant un chiffre inexpliqué étant justement d'aller
+    relancer par courriel, ce que la LCAP interdit."""
+    from src.lib import slack
+
+    http_api = _socle(
+        monkeypatch,
+        interesses=[
+            _desabonne(1, prenom="Jean", nom="Roy", courriel="jean@plomberiex.ca",
+                       oui="2026-08-12T09:00:00+00:00"),
+            _desabonne(2, prenom="Marie", nom="Tremblay", courriel="info@toiturey.ca",
+                       oui="2026-08-09T14:30:00+00:00"),
+        ],
+        demo_par_contact={},
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert (
+        "  ⚠️ intéressés désabonnés 2 (cumul) — "
+        "Jean Roy <jean@plomberiex.ca> oui le 2026-08-12 · "
+        "Marie Tremblay <info@toiturey.ca> oui le 2026-08-09\n"
+        f"    {slack.GARDE_LCAP_APRES_DESABONNEMENT}"
+    ) in out["text"]
+
+
+async def test_le_mot_cumul_est_dans_le_libelle(monkeypatch):
+    """Ce compteur ne redescend JAMAIS (interested_at est un journal, opted_out
+    ne revient pas en arrière) et aucun horodatage fiable du désabonnement
+    n'existe pour lui donner une fenêtre. On ne peut pas lui donner une sortie
+    honnête — alors on le NOMME, plutôt que de laisser croire à une file de
+    travail qui ne se vide pas."""
+    http_api = _socle(
+        monkeypatch,
+        interesses=[_desabonne(1, prenom="Jean", nom="Roy", courriel="j@x.ca",
+                               oui="2026-08-12T09:00:00+00:00")],
+        demo_par_contact={},
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "intéressés désabonnés 1 (cumul)" in out["text"]
+    # la file de travail, elle, garde son libellé sans « cumul » : elle a une sortie
+    assert "en attente de site" not in out["text"]
+
+
+async def test_les_ouis_les_plus_recents_passent_en_tete(monkeypatch):
+    """Faute de fenêtre temporelle, le tri par date du oui décroissante est ce
+    qui remonte les cas encore actionnables."""
+    http_api = _socle(
+        monkeypatch,
+        interesses=[
+            _desabonne(1, prenom="Vieux", nom="Oui", courriel="v@x.ca",
+                       oui="2026-05-01T09:00:00+00:00"),
+            _desabonne(2, prenom="Frais", nom="Oui", courriel="f@x.ca",
+                       oui="2026-08-19T09:00:00+00:00"),
+            _desabonne(3, prenom="Moyen", nom="Oui", courriel="m@x.ca",
+                       oui="2026-07-04T09:00:00+00:00"),
+        ],
+        demo_par_contact={},
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert ("Frais Oui <f@x.ca> oui le 2026-08-19 · "
+            "Moyen Oui <m@x.ca> oui le 2026-07-04 · "
+            "Vieux Oui <v@x.ca> oui le 2026-05-01") in out["text"]
+
+
+async def test_au_dela_de_cinq_noms_le_reste_est_replie(monkeypatch):
+    """Le total reste affiché ; seule la liste est plafonnée — sinon la ligne
+    devient un mur illisible dans Slack."""
+    http_api = _socle(
+        monkeypatch,
+        interesses=[
+            _desabonne(i, prenom="Lead", nom=f"N{i}", courriel=f"l{i}@x.ca",
+                       oui=f"2026-08-{20 - i:02d}T09:00:00+00:00")
+            for i in range(1, 8)
+        ],
+        demo_par_contact={},
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert out["totals"]["agence-ia"]["interested_then_unsubscribed"] == 7
+    assert "intéressés désabonnés 7 (cumul)" in out["text"]
+    assert "Lead N5 <l5@x.ca> oui le 2026-08-15 · … +2" in out["text"]
+    assert "Lead N6" not in out["text"] and "Lead N7" not in out["text"]
+
+
+async def test_un_contact_sans_nom_retombe_sur_le_courriel(monkeypatch):
+    """Un « <vide> <info@x.ca> » ferait douter de la donnée elle-même."""
+    http_api = _socle(
+        monkeypatch,
+        interesses=[{"id": "ct-1", "email": "info@toiturey.ca", "first_name": None,
+                     "last_name": "", "interested_at": "2026-08-12T09:00:00+00:00",
+                     "status": "opted_out"}],
+        demo_par_contact={},
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "— info@toiturey.ca oui le 2026-08-12" in out["text"]
+    assert "<" not in out["text"].split("désabonnés 1 (cumul)")[1].split("\n")[0]
+
+
+# =====================================================================
+# Le troisième état : supprimé pour une AUTRE raison (2026-08-23)
+# =====================================================================
+
+@pytest.mark.parametrize("motif", ["manual", "competitor", "dncl", "hard_bounce"])
+async def test_un_supprime_pour_autre_motif_sort_de_la_file_en_silence(
+    monkeypatch, motif
+):
+    """Le tableau de bord ne doit pas envoyer William produire un site pour un
+    prospect que NOUS avons écarté (ou dont l'adresse est morte). Il sort de
+    « en attente de site » sans pour autant devenir un désabonné : personne n'a
+    retiré de consentement, donc pas d'annonce et surtout pas de garde-fou LCAP
+    appliqué à tort."""
+    http_api = _socle(
+        monkeypatch,
+        interesses=[{"id": "ct-1", "email": "a@x.ca", "status": "replied",
+                     "interested_at": "2026-08-12T09:00:00+00:00"}],
+        demo_par_contact={},
+        supprimes={"a@x.ca": motif},
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert out["totals"]["agence-ia"]["interested_waiting_site"] == 0
+    assert out["totals"]["agence-ia"]["interested_then_unsubscribed"] == 0
+    assert "désabonnés" not in out["text"]
+    assert "en attente de site" not in out["text"]

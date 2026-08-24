@@ -413,7 +413,10 @@ async def test_un_ping_de_desabonnement_rate_ne_sinscrit_pas_comme_envoye(monkey
 
 async def test_lecture_du_marqueur_en_panne_ne_casse_pas_le_desabonnement(monkeypatch):
     """La lecture est un confort ; le désabonnement, non. Une panne de lecture
-    avale l'exception et le flux de conformité continue."""
+    avale l'exception et le flux de conformité continue — mais elle se DIT au
+    journal (`interested_at_read_failed`), sinon elle est indiscernable d'un
+    désabonné qui n'avait jamais dit oui, et le ping manquant part sans trace.
+    Même patron que `suppression_check_failed` sur la branche `interested`."""
     from src.tools import reply
 
     from src import supabase_client
@@ -433,7 +436,20 @@ async def test_lecture_du_marqueur_en_panne_ne_casse_pas_le_desabonnement(monkey
 
     assert out.status == "ok"
     assert "contact_opted_out" in out.actions_taken
+    assert "interested_at_read_failed" in out.actions_taken
     assert not [a for a in out.actions_taken if a.startswith("interested_lead_unsubscribed")]
+
+
+async def test_un_desabonne_sans_oui_ne_crie_pas_a_la_panne(monkeypatch):
+    """Le contrepoids du test précédent : « il n'a jamais dit oui » est une
+    lecture RÉUSSIE. Marquer `interested_at_read_failed` sur le cas de loin le
+    plus courant noierait les vraies pannes."""
+    from src.tools import reply
+
+    _wire_interested(monkeypatch, categorie="unsubscribe", interested_at=None)
+    out = await reply.handle_reply(_payload(_DESABO))
+
+    assert "interested_at_read_failed" not in out.actions_taken
 
 
 def test_hot_lead_blocks_nouvelle_signature():

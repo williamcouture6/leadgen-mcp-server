@@ -207,11 +207,15 @@ GARDE_LCAP_APRES_DESABONNEMENT = (
 )
 
 
-def _jour(horodatage: str) -> str:
+def jour(horodatage: str) -> str:
     """« 2026-08-21T14:03:00+00:00 » → « 2026-08-21 ».
 
     Rend la valeur telle quelle si elle ne ressemble pas à de l'ISO : mieux vaut
     un horodatage brut à l'écran qu'une date inventée par un découpage aveugle.
+
+    Public (et non `_jour`) parce qu'il traverse la frontière du module : le
+    résumé quotidien (`http_api.summary_daily`) affiche les mêmes dates de
+    « oui » que ce ping, et les deux doivent les rendre pareil.
     """
     s = (horodatage or "").strip()
     if len(s) >= 10 and s[4] == "-" and s[7] == "-":
@@ -253,7 +257,7 @@ def build_interested_unsubscribed_blocks(
             "fields": [
                 _kv_field("Contact", f"{contact_name}\n{contact_email}"),
                 _kv_field("Entreprise", company_name),
-                _kv_field("Avait dit oui le", _jour(interested_at)),
+                _kv_field("Avait dit oui le", jour(interested_at)),
             ],
         },
         {

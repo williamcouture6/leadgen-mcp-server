@@ -104,6 +104,31 @@ async def post_alert(payload: AlertIn) -> dict[str, Any]:
     return {"ok": ok, "category": payload.category}
 
 
+# Les motifs de `suppression_list` qui SONT un retrait de consentement, par
+# opposition aux autres lignes de la même table : `hard_bounce` (adresse morte,
+# posée par WF-6b), `manual` / `competitor` / `dncl` (nos décisions à nous). Ces
+# derniers sortent le contact de la file de travail — mais silencieusement : leur
+# annoncer le garde-fou LCAP mentirait, personne n'a rien retiré.
+_MOTIFS_RETRAIT_CONSENTEMENT = {"opt_out", "spam_complaint"}
+
+# Nombre de désabonnés nommés sur la ligne du résumé avant repli en « … +N ».
+_PLAFOND_NOMS_DESABONNES = 5
+
+
+def _identite_lead(row: dict[str, Any]) -> str:
+    """« Jean Roy <jean@plomberiex.ca> » — de quoi reconnaître la boîte d'un coup
+    d'œil sans une requête de plus (le domaine du courriel suffit à l'identifier).
+
+    Un contact sans prénom ni nom retombe sur le courriel seul : un
+    « <vide> <info@x.ca> » ferait douter de la donnée elle-même.
+    """
+    nom = f"{row.get('first_name') or ''} {row.get('last_name') or ''}".strip()
+    courriel = (row.get("email") or "").strip()
+    if nom and courriel:
+        return f"{nom} <{courriel}>"
+    return nom or courriel or "(contact sans courriel)"
+
+
 class DailySummaryIn(BaseModel):
     category: str = "summary"          # canal Slack du résumé (SLACK_WEBHOOK_SUMMARY)
     tracks: list[str] = ["OPT", "agence-ia"]
@@ -123,13 +148,20 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
       - `envoyés`  = courriel réellement parti, confirmé par le WF sync-status
                      (messages.status in sent/delivered/bounced/replied).
       - `interested_waiting_site` = contacts.interested_at posé (WF-7) sans ligne
-                     agence.demo_sites encore créée (frappe du jeton, PT2).
+                     agence.demo_sites encore créée (frappe du jeton, PT2). File
+                     de travail : elle se vide. Un contact présent dans
+                     suppression_list en sort quel que soit le motif — on
+                     n'envoie pas William bâtir un site pour quelqu'un qu'on a
+                     soi-même écarté.
       - `interested_then_unsubscribed` = avait dit oui PUIS a retiré son
                      consentement : statut opted_out, OU courriel sur
                      suppression_list avec un motif de retrait (opt_out /
                      spam_complaint — un hard_bounce n'en est pas un).
-                     Visibilité seulement : aucune relance par courriel n'est
-                     permise après un retrait (LCAP).
+                     CUMUL, et affiché comme tel : sans horodatage fiable du
+                     désabonnement il n'a pas de sortie honnête. La ligne nomme
+                     les leads (oui le plus récent en tête, 5 max) et porte
+                     l'interdit LCAP : visibilité seulement, aucune relance par
+                     courriel n'est permise après un retrait.
     Avant ce correctif (2026-06-04), `envoyés` comptait status!='draft' et gonflait
     les `queued` comme des envois — d'où des « envoyés 10 » alors que rien n'était parti."""
     from datetime import datetime, timezone
@@ -171,20 +203,29 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
 
         # Intéressés (pivot tri 2026-08-20) : ont répondu « oui » au courriel de
         # tri (WF-7 → contacts.interested_at). Une seule lecture alimente DEUX
-        # compteurs complémentaires, jamais redondants — un lead qui se désabonne
-        # sort du premier pour entrer dans le second :
-        #   🔥 en attente de site  = il attend, produis-lui sa démo
-        #   ⚠️ désabonnés          = il a retiré son consentement, à toi de juger
+        # compteurs — qui ne se lisent PAS de la même façon, et le résumé le dit :
         #
-        # Cycle de vie complet — leçon P4.10 : un compteur sans sortie dérive.
-        # ENTRÉE : interested_at posé par WF-7. SORTIE : la frappe du jeton
-        # (session artisanale, PT2) crée la ligne agence.demo_sites du contact.
+        #   🔥 en attente de site = une FILE DE TRAVAIL, avec un cycle de vie
+        #      complet (leçon P4.10 : un compteur sans sortie dérive).
+        #      ENTRÉE : interested_at posé par WF-7. SORTIE : la frappe du jeton
+        #      (session artisanale, PT2) crée la ligne agence.demo_sites du
+        #      contact, et le lead quitte la file sans écriture dédiée.
+        #
+        #   ⚠️ désabonnés = un CUMUL, écrit « (cumul) » à l'écran pour cette
+        #      raison précise. Il n'a PAS de sortie et n'en aura pas : interested_at
+        #      est un journal, opted_out ne revient jamais en arrière, et aucun
+        #      horodatage fiable du désabonnement n'existe pour lui tailler une
+        #      fenêtre (le statut n'en laisse pas, et suppression_list.created_at
+        #      ne couvre qu'un des deux chemins). Plutôt que d'inventer une
+        #      fenêtre, on assume le cumul et on le NOMME — laisser croire à une
+        #      file de travail qui ne se vide jamais serait le mode d'échec P4.10.
+        #      Le tri par date du oui, décroissant, remonte à la place les cas
+        #      encore actionnables.
+        #
         # Sans filtre de date, dans les deux cas : c'est un ÉTAT, pas l'activité
         # du jour — un intéressé coincé depuis six semaines est celui qu'on veut
-        # voir. Un intéressé devenu opted_out/disqualified/bounced sort de « en
-        # attente de site » (interested_at reste, c'est un journal, pas un état
-        # courant). (booked reste compté : il attend peut-être encore sa démo
-        # pendant la vente.)
+        # voir. (booked reste compté en attente : il attend peut-être encore sa
+        # démo pendant la vente.)
         #
         # ⚠️ L'exclusion de statut se fait en Python, PAS dans le filtre SQL : le
         # compteur des désabonnés a besoin de VOIR les opted_out. Le comportement
@@ -205,39 +246,55 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             "contacts",
             order="id",
             params={
-                "select": "id,email,status",
+                # L'identité voyage avec le compteur : la ligne du résumé NOMME
+                # les leads (un nombre nu ne permet aucune décision). Le domaine
+                # du courriel identifie la boîte — pas de requête `companies` de
+                # plus juste pour afficher un nom d'entreprise.
+                "select": "id,email,first_name,last_name,interested_at,status",
                 "track": f"eq.{tk}",
                 "interested_at": "not.is.null",
             },
         )
         impasses = {"opted_out", "disqualified", "bounced"}
         interested_waiting_site = 0
-        interested_then_unsubscribed = 0
+        desabonnes: list[dict[str, Any]] = []
         for r in interesses:
             statut = r.get("status")
             desabonne = statut == "opted_out"
+            supprime = desabonne
             if not desabonne and r.get("email"):
-                # ⚠️ Le filtre de motif n'est PAS cosmétique : `hard_bounce`
-                # (posé par WF-6b sur une adresse morte) vit dans la même table.
-                # Sans lui, une adresse morte serait annoncée comme un
-                # désabonnement et se verrait appliquer le garde-fou LCAP,
-                # alors que personne n'a retiré quoi que ce soit.
-                # dncl (téléphone), manual et competitor sont nos décisions à
-                # nous, pas celles du prospect : hors compteur également.
+                # On interroge la table SANS filtre de motif, puis on trie ici.
+                # Deux questions distinctes se posent sur la même ligne :
+                #   « est-il supprimé ? »  → oui quel que soit le motif, donc il
+                #     sort de la file de travail. Un contact écarté par NOUS
+                #     (manual / competitor / dncl) ou dont l'adresse est morte
+                #     (hard_bounce) restait sinon compté « en attente de site » :
+                #     le tableau de bord demandait à William de bâtir un site
+                #     pour un prospect qu'on avait soi-même retiré.
+                #   « a-t-il retiré son consentement ? » → seulement opt_out /
+                #     spam_complaint, et là seulement on l'ANNONCE avec le
+                #     garde-fou LCAP. L'appliquer à une adresse morte mentirait.
+                # Trois états, donc, et non deux : en attente · désabonné
+                # (annoncé) · supprimé pour une autre raison (silencieux).
+                # Interroger sans filtre aligne aussi ce côté du système sur
+                # `_interested_lead_is_suppressed` (src/tools/reply.py), qui lit
+                # déjà suppression_list sans regarder le motif : une seule
+                # définition de « supprimé » des deux bords.
                 sup = await sb.select(
                     "suppression_list",
                     params={
-                        "select": "email",
+                        "select": "reason",
                         "email": f"eq.{r['email']}",
-                        "reason": "in.(opt_out,spam_complaint)",
                         "limit": "1",
                     },
                 )
-                desabonne = bool(sup)
+                if sup:
+                    supprime = True
+                    desabonne = sup[0].get("reason") in _MOTIFS_RETRAIT_CONSENTEMENT
             if desabonne:
-                interested_then_unsubscribed += 1
+                desabonnes.append(r)
                 continue  # on ne lui doit plus de site : jamais dans l'autre file
-            if statut in impasses:
+            if supprime or statut in impasses:
                 continue
             demo = await sb.select(
                 "demo_sites",
@@ -247,6 +304,7 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             if not demo:
                 interested_waiting_site += 1
 
+        interested_then_unsubscribed = len(desabonnes)
         totals[tk] = {
             "sourced": sourced, "emails": emails, "drafts": drafts,
             "pushed": pushed, "sent": sent, "replies": replies,
@@ -259,8 +317,25 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         )
         if interested_waiting_site:
             ligne += f"\n  🔥 intéressés en attente de site {interested_waiting_site}"
-        if interested_then_unsubscribed:
-            ligne += f"\n  ⚠️ intéressés désabonnés {interested_then_unsubscribed}"
+        if desabonnes:
+            # Le oui le plus récent en tête : c'est le cas encore actionnable.
+            desabonnes.sort(key=lambda x: x.get("interested_at") or "", reverse=True)
+            noms = []
+            for d in desabonnes[:_PLAFOND_NOMS_DESABONNES]:
+                ident = _identite_lead(d)
+                j = slack_lib.jour(d.get("interested_at") or "")
+                noms.append(f"{ident} oui le {j}" if j else ident)
+            apercu = " · ".join(noms)
+            reste = interested_then_unsubscribed - len(noms)
+            if reste > 0:
+                apercu += f" · … +{reste}"
+            ligne += f"\n  ⚠️ intéressés désabonnés {interested_then_unsubscribed} (cumul)"
+            if apercu:
+                ligne += f" — {apercu}"
+            # L'interdit voyage AVEC le chiffre : un compteur inexpliqué invite au
+            # réflexe « je le relance pour comprendre », qui est l'infraction.
+            # Même constante que le ping WF-7 — un seul interdit, une seule source.
+            ligne += f"\n    {slack_lib.GARDE_LCAP_APRES_DESABONNEMENT}"
         lines.append(ligne)
 
     bookings = await _cnt("booking_events", {})

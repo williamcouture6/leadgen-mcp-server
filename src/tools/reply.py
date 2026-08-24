@@ -385,8 +385,8 @@ async def _mark_contact_interested(contact_id: str | None) -> bool:
         return False
 
 
-async def _contact_interested_at(contact_id: str | None) -> str | None:
-    """Horodatage du OUI de ce contact, ou None s'il n'a jamais dit oui.
+async def _contact_interested_at(contact_id: str | None) -> tuple[str | None, bool]:
+    """(horodatage du OUI de ce contact, la lecture a-t-elle abouti).
 
     Sert à la branche `unsubscribe` : un désabonnement quelconque n'intéresse
     personne, mais un désabonnement de quelqu'un qui avait dit oui, si — il
@@ -394,9 +394,15 @@ async def _contact_interested_at(contact_id: str | None) -> str | None:
 
     Lecture pure, exception avalée (comme les autres helpers du fichier) : une
     panne de lecture ne doit jamais empêcher un désabonnement de s'enregistrer.
-    Le prix d'un échec est une notification manquée, pas une infraction."""
+    Le prix d'un échec est une notification manquée, pas une infraction.
+
+    Mais cet échec se DIT, second membre du tuple à False — même patron que son
+    voisin `_interested_lead_is_suppressed`, qui rend None sur panne de lecture
+    et le fait inscrire au journal. Rendre un simple None ici rendait la panne
+    indiscernable d'un « il n'avait jamais dit oui » : le ping manquant, et sa
+    cause, sortaient sans trace."""
     if not contact_id:
-        return None
+        return None, True  # rien à lire n'est pas un échec de lecture
     try:
         rows = await db.select(
             "contacts",
@@ -408,8 +414,8 @@ async def _contact_interested_at(contact_id: str | None) -> str | None:
         )
     except Exception as e:  # noqa: BLE001
         print(f"[reply] interested_at read failed: {e!r}")
-        return None
-    return (rows[0].get("interested_at") if rows else None) or None
+        return None, False
+    return ((rows[0].get("interested_at") if rows else None) or None), True
 
 
 async def _record_agent_run(
@@ -815,7 +821,12 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         # suppression et le passage à opted_out ci-dessus sont inchangés, et ce
         # bloc n'écrit rien. Le ping PORTE l'interdit LCAP : on informe, on
         # n'ouvre aucune porte d'envoi.
-        interested_at = await _contact_interested_at(contact_id)
+        interested_at, lecture_ok = await _contact_interested_at(contact_id)
+        if not lecture_ok:
+            # Fail-soft assumé (le désabonnement, lui, est déjà enregistré),
+            # mais tracé : sans ça, une panne de DB ressemble dans le journal à
+            # un désabonné banal qui n'avait jamais dit oui.
+            actions.append("interested_at_read_failed")
         if interested_at:
             fallback, blocks = slack_lib.build_interested_unsubscribed_blocks(
                 contact_name=contact_name,
