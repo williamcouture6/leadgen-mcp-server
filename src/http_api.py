@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
@@ -114,6 +115,71 @@ _MOTIFS_RETRAIT_CONSENTEMENT = {"opt_out", "spam_complaint"}
 # Nombre de désabonnés nommés sur la ligne du résumé avant repli en « … +N ».
 _PLAFOND_NOMS_DESABONNES = 5
 
+# Fenêtre du « dont N depuis 7 jours » : aujourd'hui plus les 6 jours
+# précédents, bornée sur minuit America/Toronto comme tout le reste du résumé.
+_JOURS_DESABONNEMENT_RECENT = 7
+
+
+def _cle_courriel(valeur: Any) -> str:
+    """Clé d'appariement d'une adresse : espaces retirés, casse repliée.
+
+    `Jean@PlomberieX.ca` et `jean@plomberiex.ca` sont la MÊME boîte. Le
+    croisement se faisait avant en SQL (`email=eq.…`), qui est SENSIBLE à la
+    casse : un désabonné enregistré sous une autre casse restait « en attente
+    de site » et le tableau de bord envoyait William lui bâtir un site.
+
+    `ilike` a l'air d'être la réponse — c'en est un piège : `_` et `%` y sont
+    des jokers, et `_` est fréquent dans une adresse (`jean_roy@x.ca` y
+    apparierait `jeanXroy@x.ca`). D'où l'appariement en Python.
+    """
+    return str(valeur or "").strip().lower()
+
+
+def _rang_ligne_suppression(row: dict[str, Any]) -> tuple[int, str]:
+    """Ordre de préférence entre deux lignes qui normalisent vers la même clé.
+
+    L'unicité de `suppression_list.email` est celle de Postgres, sensible à la
+    casse : `Jean@x.ca` et `jean@x.ca` peuvent coexister. On garde alors le
+    RETRAIT DE CONSENTEMENT s'il y en a un (le fait le plus lourd de
+    conséquences), et parmi les retraits le PLUS ANCIEN — c'est le moment où le
+    consentement est réellement tombé."""
+    retrait = row.get("reason") in _MOTIFS_RETRAIT_CONSENTEMENT
+    return (0 if retrait else 1, str(row.get("created_at") or "9999"))
+
+
+def _index_suppression(lignes: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Toute la liste de suppression indexée par courriel normalisé."""
+    index: dict[str, dict[str, Any]] = {}
+    for row in lignes:
+        cle = _cle_courriel(row.get("email"))
+        if not cle:
+            continue
+        garde = index.get(cle)
+        if garde is None or _rang_ligne_suppression(row) < _rang_ligne_suppression(garde):
+            index[cle] = row
+    return index
+
+
+def _instant(horodatage: Any) -> datetime | None:
+    """ISO → datetime aware, ou None si l'horodatage est absent/illisible.
+
+    None n'est pas un détail d'implémentation : c'est l'état « date de
+    désabonnement inconnue », que le résumé AFFICHE tel quel plutôt que
+    d'inventer un moment."""
+    s = str(horodatage or "").strip()
+    if not s:
+        return None
+    try:
+        d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+# Sentinelle de tri pour « date de désabonnement inconnue » : plus petite que
+# toute date réelle, donc reléguée en fin de liste (le tri est décroissant).
+_JAMAIS = datetime.min.replace(tzinfo=timezone.utc)
+
 
 def _identite_lead(row: dict[str, Any]) -> str:
     """« Jean Roy <jean@plomberiex.ca> » — de quoi reconnaître la boîte d'un coup
@@ -157,14 +223,16 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
                      consentement : statut opted_out, OU courriel sur
                      suppression_list avec un motif de retrait (opt_out /
                      spam_complaint — un hard_bounce n'en est pas un).
-                     CUMUL, et affiché comme tel : sans horodatage fiable du
-                     désabonnement il n'a pas de sortie honnête. La ligne nomme
-                     les leads (oui le plus récent en tête, 5 max) et porte
-                     l'interdit LCAP : visibilité seulement, aucune relance par
-                     courriel n'est permise après un retrait.
+                     CUMUL, et affiché comme tel : rien ne l'en fait
+                     redescendre. La ligne nomme les leads (désabonnement le
+                     plus RÉCENT en tête, 5 max), donne les deux dates (« oui
+                     le … , désabonné le … ») et porte l'interdit LCAP :
+                     visibilité seulement, aucune relance par courriel n'est
+                     permise après un retrait. Le libellé annonce en plus
+                     « dont N depuis 7 jours » quand il y en a : le cumul reste
+                     honnête et le nouveau saute aux yeux.
     Avant ce correctif (2026-06-04), `envoyés` comptait status!='draft' et gonflait
     les `queued` comme des envois — d'où des « envoyés 10 » alors que rien n'était parti."""
-    from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
 
     from . import supabase_client as sb
@@ -180,6 +248,36 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         # plafonnait en silence à 1000 (max-rows PostgREST) — une bonne journée
         # de sourcing aurait affiché « sourcées 1000 » pour toujours.
         return await sb.count(table, params={date_field: f"gte.{cutoff}", **extra})
+
+    # Borne du « dont N depuis 7 jours » : minuit America/Toronto il y a 6
+    # jours, donc aujourd'hui + les 6 jours précédents. Même repère de journée
+    # que les compteurs du jour ci-dessus — deux fuseaux dans un seul résumé
+    # donneraient deux vérités.
+    seuil_recent = start_local - timedelta(days=_JOURS_DESABONNEMENT_RECENT - 1)
+
+    # `suppression_list` lue d'UN BLOC, une seule fois pour tout le résumé
+    # (tous les tracks confondus), puis appariée en Python. Ce qu'on gagne par
+    # rapport au `select()` par intéressé qu'il y avait avant :
+    #   - une requête au lieu de N (le N+1 grossissait avec la file) ;
+    #   - l'insensibilité à la casse (cf. `_cle_courriel`) — sans elle un
+    #     désabonné restait « en attente de site » et William lui bâtissait
+    #     un site ;
+    #   - `created_at`, c'est-à-dire la DATE RÉELLE du désabonnement pour les
+    #     motifs de retrait. Les deux écrivains l'alimentent (Edge Function
+    #     `unsubscribe` du repo parent et WF-7), ce qui permet enfin de trier
+    #     par récence et d'annoncer les désabonnements des 7 derniers jours.
+    # `select_all` et non `select` : la table dépassera un jour 1000 lignes, et
+    # PostgREST couperait là sans rien signaler. Si elle devenait assez grosse
+    # pour que la ramener coûte, la suite est une jointure côté serveur
+    # (`contacts?select=…,suppression_list(reason,created_at)`), pas un retour
+    # au N+1.
+    suppression = _index_suppression(
+        await sb.select_all(
+            "suppression_list",
+            order="email",
+            params={"select": "email,reason,created_at"},
+        )
+    )
 
     lines: list[str] = []
     totals: dict[str, Any] = {}
@@ -212,15 +310,14 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         #      contact, et le lead quitte la file sans écriture dédiée.
         #
         #   ⚠️ désabonnés = un CUMUL, écrit « (cumul) » à l'écran pour cette
-        #      raison précise. Il n'a PAS de sortie et n'en aura pas : interested_at
-        #      est un journal, opted_out ne revient jamais en arrière, et aucun
-        #      horodatage fiable du désabonnement n'existe pour lui tailler une
-        #      fenêtre (le statut n'en laisse pas, et suppression_list.created_at
-        #      ne couvre qu'un des deux chemins). Plutôt que d'inventer une
-        #      fenêtre, on assume le cumul et on le NOMME — laisser croire à une
-        #      file de travail qui ne se vide jamais serait le mode d'échec P4.10.
-        #      Le tri par date du oui, décroissant, remonte à la place les cas
-        #      encore actionnables.
+        #      raison précise. Il n'a PAS de sortie et n'en aura pas :
+        #      interested_at est un journal et opted_out ne revient jamais en
+        #      arrière. On assume donc le cumul et on le NOMME — laisser croire
+        #      à une file de travail qui ne se vide jamais serait le mode
+        #      d'échec P4.10. Ce qui rend la ligne actionnable malgré le cumul :
+        #      le tri par date de DÉSABONNEMENT décroissante et la mention
+        #      « dont N depuis 7 jours », qui font ressortir le nouveau sans
+        #      falsifier le total.
         #
         # Sans filtre de date, dans les deux cas : c'est un ÉTAT, pas l'activité
         # du jour — un intéressé coincé depuis six semaines est celui qu'on veut
@@ -239,9 +336,7 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         # d'écriture journalisée puis ignorée, la ligne de suppression restant la
         # source de vérité). Sans le croisement par courriel, ces cas dégradés
         # resteraient invisibles ici ET coincés dans la file « en attente de site ».
-        #
-        # N+1 assumé ci-dessous : quelques intéressés par semaine ; passer à une
-        # jointure si ce volume grossit.
+        # Le croisement se fait contre `suppression`, lu d'un bloc plus haut.
         interesses = await sb.select_all(
             "contacts",
             order="id",
@@ -260,39 +355,36 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         desabonnes: list[dict[str, Any]] = []
         for r in interesses:
             statut = r.get("status")
-            desabonne = statut == "opted_out"
-            supprime = desabonne
-            if not desabonne and r.get("email"):
-                # On interroge la table SANS filtre de motif, puis on trie ici.
-                # Deux questions distinctes se posent sur la même ligne :
-                #   « est-il supprimé ? »  → oui quel que soit le motif, donc il
-                #     sort de la file de travail. Un contact écarté par NOUS
-                #     (manual / competitor / dncl) ou dont l'adresse est morte
-                #     (hard_bounce) restait sinon compté « en attente de site » :
-                #     le tableau de bord demandait à William de bâtir un site
-                #     pour un prospect qu'on avait soi-même retiré.
-                #   « a-t-il retiré son consentement ? » → seulement opt_out /
-                #     spam_complaint, et là seulement on l'ANNONCE avec le
-                #     garde-fou LCAP. L'appliquer à une adresse morte mentirait.
-                # Trois états, donc, et non deux : en attente · désabonné
-                # (annoncé) · supprimé pour une autre raison (silencieux).
-                # Interroger sans filtre aligne aussi ce côté du système sur
-                # `_interested_lead_is_suppressed` (src/tools/reply.py), qui lit
-                # déjà suppression_list sans regarder le motif : une seule
-                # définition de « supprimé » des deux bords.
-                sup = await sb.select(
-                    "suppression_list",
-                    params={
-                        "select": "reason",
-                        "email": f"eq.{r['email']}",
-                        "limit": "1",
-                    },
-                )
-                if sup:
-                    supprime = True
-                    desabonne = sup[0].get("reason") in _MOTIFS_RETRAIT_CONSENTEMENT
+            # L'index est consulté SANS filtre de motif, et le tri se fait ici.
+            # Deux questions distinctes se posent sur la même ligne :
+            #   « est-il supprimé ? »  → oui quel que soit le motif, donc il
+            #     sort de la file de travail. Un contact écarté par NOUS
+            #     (manual / competitor / dncl) ou dont l'adresse est morte
+            #     (hard_bounce) restait sinon compté « en attente de site » :
+            #     le tableau de bord demandait à William de bâtir un site
+            #     pour un prospect qu'on avait soi-même retiré.
+            #   « a-t-il retiré son consentement ? » → seulement opt_out /
+            #     spam_complaint, et là seulement on l'ANNONCE avec le
+            #     garde-fou LCAP. L'appliquer à une adresse morte mentirait.
+            # Trois états, donc, et non deux : en attente · désabonné
+            # (annoncé) · supprimé pour une autre raison (silencieux).
+            # Ignorer le motif ici aligne aussi ce côté du système sur
+            # `_interested_lead_is_suppressed` (src/tools/reply.py), qui lit
+            # déjà suppression_list sans regarder le motif : une seule
+            # définition de « supprimé » des deux bords.
+            sup = suppression.get(_cle_courriel(r.get("email")))
+            retrait = bool(sup) and sup.get("reason") in _MOTIFS_RETRAIT_CONSENTEMENT
+            desabonne = statut == "opted_out" or retrait
+            supprime = desabonne or sup is not None
             if desabonne:
-                desabonnes.append(r)
+                # La date ne vient QUE d'un motif de retrait : le created_at
+                # d'un hard_bounce n'est pas un désabonnement, et un
+                # status='opted_out' seul (cas dégradé) n'horodate rien du tout
+                # — il sera rendu « désabonné (date inconnue) » plutôt
+                # qu'affublé d'un moment inventé.
+                desabonnes.append(
+                    {**r, "_desabonne_le": sup.get("created_at") if retrait else None}
+                )
                 continue  # on ne lui doit plus de site : jamais dans l'autre file
             if supprime or statut in impasses:
                 continue
@@ -305,11 +397,32 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
                 interested_waiting_site += 1
 
         interested_then_unsubscribed = len(desabonnes)
+        # Tri par date de DÉSABONNEMENT décroissante — la question posée est
+        # « quand un lead se désabonne-t-il APRÈS avoir dit oui ? ». Un oui de
+        # mai retiré hier est le cas actionnable du jour ; trié par date du oui
+        # (ce qu'on faisait avant), il finissait enterré derrière « … +N »,
+        # donc invisible au moment précis où il fallait le voir. Date inconnue
+        # → sentinelle `_JAMAIS`, donc fin de liste ; la date du oui départage
+        # les ex æquo.
+        desabonnes.sort(
+            key=lambda d: (
+                _instant(d.get("_desabonne_le")) or _JAMAIS,
+                str(d.get("interested_at") or ""),
+            ),
+            reverse=True,
+        )
+        recents = sum(
+            1
+            for d in desabonnes
+            if (moment := _instant(d.get("_desabonne_le"))) is not None
+            and moment >= seuil_recent
+        )
         totals[tk] = {
             "sourced": sourced, "emails": emails, "drafts": drafts,
             "pushed": pushed, "sent": sent, "replies": replies,
             "interested_waiting_site": interested_waiting_site,
             "interested_then_unsubscribed": interested_then_unsubscribed,
+            "interested_then_unsubscribed_recent": recents,
         }
         ligne = (
             f"*{tk}* — sourcées {sourced} · emails {emails} · drafts {drafts} · "
@@ -318,18 +431,29 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         if interested_waiting_site:
             ligne += f"\n  🔥 intéressés en attente de site {interested_waiting_site}"
         if desabonnes:
-            # Le oui le plus récent en tête : c'est le cas encore actionnable.
-            desabonnes.sort(key=lambda x: x.get("interested_at") or "", reverse=True)
             noms = []
             for d in desabonnes[:_PLAFOND_NOMS_DESABONNES]:
-                ident = _identite_lead(d)
-                j = slack_lib.jour(d.get("interested_at") or "")
-                noms.append(f"{ident} oui le {j}" if j else ident)
+                # Les deux dates : quand il a dit oui, quand il est reparti.
+                # `slack_lib.jour` des deux côtés — le même helper que le ping
+                # WF-7, pour que les mêmes moments s'écrivent partout pareil.
+                bout = _identite_lead(d)
+                oui = slack_lib.jour(d.get("interested_at") or "")
+                if oui:
+                    bout += f" oui le {oui}"
+                parti = slack_lib.jour(d.get("_desabonne_le") or "")
+                bout += f", désabonné le {parti}" if parti else ", désabonné (date inconnue)"
+                noms.append(bout)
             apercu = " · ".join(noms)
             reste = interested_then_unsubscribed - len(noms)
             if reste > 0:
                 apercu += f" · … +{reste}"
-            ligne += f"\n  ⚠️ intéressés désabonnés {interested_then_unsubscribed} (cumul)"
+            # « (cumul, dont N depuis 7 jours) » : le total ne ment pas sur sa
+            # nature et la nouvelle du jour se voit quand même. Sans récent, la
+            # mention disparaît — un « dont 0 » quotidien serait du bruit.
+            libelle = f"{interested_then_unsubscribed} (cumul"
+            if recents:
+                libelle += f", dont {recents} depuis {_JOURS_DESABONNEMENT_RECENT} jours"
+            ligne += f"\n  ⚠️ intéressés désabonnés {libelle})"
             if apercu:
                 ligne += f" — {apercu}"
             # L'interdit voyage AVEC le chiffre : un compteur inexpliqué invite au
