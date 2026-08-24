@@ -102,15 +102,29 @@ def test_build_hot_lead_blocks_returns_fallback_and_blocks() -> None:
         company_name="Clinique X",
         contact_email="anne@x.com",
         reply_preview="Oui dispo mercredi",
-        auto_reply_sent=True,
         confidence=0.92,
     )
     assert isinstance(fb, str) and len(fb) > 0
     assert "Anne T." in fb
     assert "Clinique X" in fb
-    # 4 blocks expected: header, fields, status section, preview
+    # 4 blocks expected: header, fields, next-step section, preview
     assert len(blocks) == 4
     assert blocks[0]["type"] == "header"
+
+
+def test_build_hot_lead_blocks_website_field_optional() -> None:
+    """`website` fourni → field 'Site actuel' présent ; absent → pas de field."""
+    from src.lib.slack import build_hot_lead_blocks
+    _, avec = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui", website="https://b.ca",
+    )
+    assert "https://b.ca" in str(avec)
+    _, sans = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui",
+    )
+    assert "Site actuel" not in str(sans)
 
 
 def test_build_hot_lead_blocks_truncates_long_preview() -> None:
@@ -119,12 +133,130 @@ def test_build_hot_lead_blocks_truncates_long_preview() -> None:
     long_text = "x" * 1000
     fb, blocks = build_hot_lead_blocks(
         contact_name="A", company_name="B", contact_email="a@b.com",
-        reply_preview=long_text, auto_reply_sent=False, confidence=None,
+        reply_preview=long_text, confidence=None,
     )
     preview_block = blocks[-1]
     preview_text = preview_block["text"]["text"]
     # Must contain ellipsis marker for truncation
     assert "…" in preview_text
+
+
+def test_build_hot_lead_blocks_includes_research_brief() -> None:
+    """PT1/C1 — le ping hot lead EST la file de travail : il doit porter le
+    brief de recherche, sinon William doit rouvrir la DB avant d'écrire."""
+    from src.lib.slack import build_hot_lead_blocks
+    research = {
+        "company_summary": "Plomberie familiale à Montréal, service 24/7.",
+        "pain_points_detected": [
+            {"pain": "Formulaire sans réponse automatique hors heures"},
+        ],
+        "personalization_hooks": ["Mentionner leur note 4.9★ avec 155 avis"],
+        "tech_savvy_score": {"score": "low"},
+        "decideur_candidats": [{"nom_complet": "Adam Verge", "titre": "Co-fondateur"}],
+    }
+    _, blocks = build_hot_lead_blocks(
+        contact_name="Adam Verge",
+        company_name="Plomberie A+",
+        contact_email="adam@x.com",
+        reply_preview="Oui, montrez-moi ça",
+        research_json=research,
+    )
+    body = " ".join(str(b) for b in blocks)
+    assert "Brief pré-RDV" in body
+    assert "Plomberie familiale" in body
+    assert "réponse automatique" in body
+    assert "4.9★" in body
+    assert "Adam Verge" in body
+    # le brief vient APRÈS l'extrait de réponse
+    assert body.index("Reply (extrait)") < body.index("Brief pré-RDV")
+
+
+def test_build_hot_lead_blocks_sans_research_json_garde_le_format() -> None:
+    """Absent (ou vide) → aucun bloc de plus que les 4 historiques."""
+    from src.lib.slack import build_hot_lead_blocks
+    _, sans = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui",
+    )
+    assert len(sans) == 4
+    _, vide = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui", research_json={},
+    )
+    assert len(vide) == 4
+    assert "Brief pré-RDV" not in str(vide)
+
+
+def test_build_hot_lead_blocks_avertit_si_verif_desabonnement_en_panne() -> None:
+    """PT1/C4d — la garde de suppression a échoué en LECTURE : le lead passe
+    (fail-open) mais le ping doit le dire, sinon William écrit à un désabonné."""
+    from src.lib.slack import build_hot_lead_blocks
+    _, avec = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui", suppression_check_failed=True,
+    )
+    geste = avec[2]["text"]["text"]
+    assert "désabonnement" in geste
+    assert "⚠️" in geste
+    _, sans = build_hot_lead_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.com",
+        reply_preview="oui",
+    )
+    assert "désabonnement" not in sans[2]["text"]["text"]
+
+
+# =====================================================================
+# « Un intéressé s'est désabonné » — visibilité 2026-08-23
+# =====================================================================
+
+def test_build_interested_unsubscribed_blocks_porte_le_garde_lcap() -> None:
+    """Le ping doit être auto-suffisant : qui, quand il avait dit oui, ce qu'il
+    vient d'écrire — et SURTOUT l'interdit LCAP en toutes lettres. Sans lui, le
+    réflexe naturel (« je le relance pour comprendre ») est une infraction."""
+    from src.lib.slack import build_interested_unsubscribed_blocks
+    fb, blocks = build_interested_unsubscribed_blocks(
+        contact_name="Jean Roy",
+        company_name="Plomberie X",
+        contact_email="jean@x.ca",
+        interested_at="2026-08-21T14:03:00+00:00",
+        reply_preview="Finalement retirez-moi de votre liste.",
+        track="agence-ia",
+    )
+    corps = " ".join(str(b) for b in blocks)
+    assert "désabonné" in fb
+    assert "Jean Roy" in fb and "Plomberie X" in fb
+    assert blocks[0]["type"] == "header"
+    assert "désabonné" in blocks[0]["text"]["text"]
+    # Le garde-fou, mot pour mot — c'est la raison d'être du bloc.
+    assert "Ne PAS relancer par courriel" in corps
+    assert "LCAP" in corps
+    assert "LNNTE" in corps
+    # La date du oui : sans elle, impossible de juger si le oui était récent.
+    assert "2026-08-21" in corps
+    assert "jean@x.ca" in corps
+    assert "retirez-moi de votre liste" in corps
+
+
+def test_build_interested_unsubscribed_blocks_tronque_lextrait() -> None:
+    from src.lib.slack import build_interested_unsubscribed_blocks
+    _, blocks = build_interested_unsubscribed_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.ca",
+        interested_at="2026-08-21T14:03:00+00:00",
+        reply_preview="x" * 1000,
+    )
+    assert "…" in blocks[-1]["text"]["text"]
+
+
+def test_build_interested_unsubscribed_blocks_horodatage_non_iso_reste_brut() -> None:
+    """On n'invente pas une date : une valeur qui ne ressemble pas à de l'ISO
+    est affichée telle quelle plutôt que découpée n'importe comment."""
+    from src.lib.slack import build_interested_unsubscribed_blocks
+    _, blocks = build_interested_unsubscribed_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.ca",
+        interested_at="hier",
+        reply_preview="stop",
+    )
+    assert "hier" in " ".join(str(b) for b in blocks)
 
 
 def test_build_review_blocks_includes_category_and_reasoning() -> None:
@@ -323,3 +455,74 @@ def test_no_config_at_all_is_silent_noop(monkeypatch: pytest.MonkeyPatch) -> Non
     from src.lib.slack import notify_sync
     assert notify_sync(text="x", category="bookings") is False
     assert calls == []
+
+
+# =====================================================================
+# is_configured — contrat public pour les healthchecks
+#
+# Les healthchecks WF-7/WF-8 doivent interroger le canal RÉELLEMENT utilisé
+# par le workflow (même résolution que `notify(category=…)`), pas
+# SLACK_WEBHOOK_URL en dur : celui-ci mentait dans les deux sens.
+# =====================================================================
+
+def test_is_configured_avec_la_var_dediee(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLACK_WEBHOOK_LEADS", "https://hooks.slack.com/l")
+    from src.lib.slack import is_configured
+    assert is_configured("leads") is True
+
+
+def test_is_configured_par_fallback_legacy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SLACK_WEBHOOK_URL seule : le ping partira quand même (fallback), donc
+    le healthcheck doit être vert."""
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/legacy")
+    from src.lib.slack import is_configured
+    assert is_configured("leads") is True
+    assert is_configured("bookings") is True
+
+
+def test_is_configured_faux_quand_rien_nest_pose() -> None:
+    from src.lib.slack import is_configured
+    assert is_configured("leads") is False
+    assert is_configured("bookings") is False
+    assert is_configured() is False
+
+
+def test_is_configured_ignore_les_autres_categories(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SLACK_WEBHOOK_LEADS seule ne rend PAS #bookings configuré — sans quoi le
+    healthcheck WF-8 redeviendrait vert sur le mauvais canal."""
+    monkeypatch.setenv("SLACK_WEBHOOK_LEADS", "https://hooks.slack.com/l")
+    from src.lib.slack import is_configured
+    assert is_configured("bookings") is False
+
+
+# --------------------------------------------------------------------------
+# jour() — les dates rendues à William sont dans SON heure, pas en UTC
+# --------------------------------------------------------------------------
+
+def test_jour_rend_la_date_vecue_a_toronto() -> None:
+    """Un désabonnement à 21 h le 23 août à Toronto est stocké « 2026-08-24T01:00Z ».
+    Un découpage brut de la chaîne afficherait le 24 : William lirait « demain »
+    pour un geste d'hier soir et ne reconnaîtrait pas le cas dont on lui parle."""
+    from src.lib.slack import jour
+
+    assert jour("2026-08-24T01:00:00+00:00") == "2026-08-23"
+    assert jour("2026-08-23T16:00:00+00:00") == "2026-08-23"
+
+
+def test_jour_traite_un_horodatage_naif_comme_de_l_utc() -> None:
+    """Postgres peut rendre un timestamptz sans offset explicite ; le reste du
+    projet suppose UTC partout, on ne fait pas d'exception ici."""
+    from src.lib.slack import jour
+
+    assert jour("2026-08-24T01:00:00") == "2026-08-23"
+
+
+def test_jour_ne_fabrique_jamais_une_date() -> None:
+    """Mieux vaut une valeur brute à l'écran qu'une date inventée."""
+    from src.lib.slack import jour
+
+    assert jour("bidon") == "bidon"
+    assert jour("") == ""
+    # ressemble à de l'ISO mais ne parse pas : on retombe sur les 10 premiers
+    # caractères plutôt que de lever au milieu d'un résumé quotidien.
+    assert jour("2026-13-45T99:99:99") == "2026-13-45"

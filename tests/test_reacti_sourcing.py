@@ -11,12 +11,18 @@ import src.tools.db as dbt
 REACTI_VERTICALS = {
     "entrepreneur en déneigement",
     "paysagiste",
+    # Les deux formulations de la tonte : Google Places ne rend pas les mêmes
+    # entreprises selon le mot employé (décision William 2026-08-21). Les
+    # doublons sont absorbés par la dédup google_place_id d'insert_company.
     "tonte de gazon",
     "tonte de pelouse",
     "exterminateur",
     # "piscines et spas" scindé 2026-06-12 (le mot "spa" ramenait des spas
-    # bien-être) → installation + entretien, ciblant le contracteur piscine.
-    "installation de piscine",
+    # bien-être) → on ne garde QUE l'entretien, qui cible le contracteur.
+    # ⚠️ `installation de piscine` est volontairement ABSENT : la décision d'ICP
+    # du 2026-08-05 arrête six secteurs « et eux seuls » et écarte cet
+    # élargissement. Ce test l'attendait encore — c'est ce qui le faisait
+    # échouer depuis lors (corrigé 2026-08-21).
     "entretien de piscine",
     "lavage de vitres",
 }

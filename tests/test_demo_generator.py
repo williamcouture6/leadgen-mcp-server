@@ -1,49 +1,17 @@
-"""Tests demo_generator : injection du lien + mint idempotent."""
+"""Tests demo_generator : mint idempotent (`ensure_demo_site`), le champ
+dormant `demo_url` de `MessageDraftIn`, et les drafts de tri agence-ia qui
+partent sans lien démo (pivot tri, 2026-08-20 — plus d'injection au send)."""
 from __future__ import annotations
 
 import pytest
+
+from unittest.mock import AsyncMock, patch
 
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test")
-
-
-class TestInjectDemoLink:
-    def test_replaces_single_placeholder(self) -> None:
-        from src.lib.demo_generator import inject_demo_link
-        body = "Bonjour,\n\nVoici votre aperçu : {{DEMO_URL}}\n\nMerci"
-        out = inject_demo_link(body, "https://couture-ia.com/demo/abc")
-        assert "{{DEMO_URL}}" not in out
-        assert "https://couture-ia.com/demo/abc" in out
-
-    def test_replaces_all_placeholders(self) -> None:
-        from src.lib.demo_generator import inject_demo_link
-        body = "{{DEMO_URL}} ... {{DEMO_URL}}"
-        out = inject_demo_link(body, "https://x/demo/t")
-        assert out.count("https://x/demo/t") == 2
-        assert "{{DEMO_URL}}" not in out
-
-    def test_appends_when_placeholder_absent(self) -> None:
-        from src.lib.demo_generator import inject_demo_link
-        body = "Bonjour, voici une offre."
-        out = inject_demo_link(body, "https://x/demo/t")
-        assert out.startswith(body)
-        assert "https://x/demo/t" in out
-        assert len(out) > len(body)
-
-    def test_appends_on_empty_body(self) -> None:
-        from src.lib.demo_generator import inject_demo_link
-        out = inject_demo_link("", "https://x/demo/t")
-        assert "https://x/demo/t" in out
-
-
-from unittest.mock import AsyncMock, patch
-
-
-def _amock(*, return_value=None):
-    return AsyncMock(return_value=return_value)
 
 
 class TestEnsureDemoSite:
@@ -99,124 +67,64 @@ class TestMessageDraftDemoUrl:
         assert "demo_url" not in m.model_dump(exclude_none=True)
 
 
-class TestPersonalizeWiring:
-    """Le wiring demo dans _personalize_one : gated agence-ia, soft-fail."""
+class TestPersonalizeTri:
+    """Pivot tri (PT1) : le draft agence-ia part SANS lien démo et SANS
+    pré-création de ligne agence.demo_sites. Un prompt sans {{DEMO_URL}} ne
+    suffisait pas : l'ancien wiring appendait le lien au corps."""
 
-    def _company(self, track: str) -> dict:
-        return {"id": "co-1", "name": "Plomberie X", "website": None,
-                "city": "Sherbrooke", "icp_segment": None, "industry": None,
-                "research_json": {"k": "v"}, "track": track}
+    @staticmethod
+    def _fake_personalize_out(body: str):
+        class _Usage:
+            input_tokens = 1
+            output_tokens = 1
+            cache_read_input_tokens = 0
+            cache_creation_input_tokens = 0
 
-    def _contact(self) -> dict:
-        return {"id": "ct-1", "first_name": "Jean", "last_name": "Roy",
-                "email": "jean@plomberiex.ca", "title": None, "company_id": "co-1"}
+        class _Out:
+            email = {"subject": "Sujet", "body_text": body, "warnings": []}
+            model = "test-model"
+            duration_ms = 5
+            template_used = "A"
+            usage = _Usage()
 
-    @pytest.mark.asyncio
-    async def test_agence_ia_sets_demo_url_and_link(self, monkeypatch) -> None:
+        return _Out()
+
+    async def test_agence_ia_draft_sans_lien_ni_demo_url(self, monkeypatch):
         from src import http_api
-        from src.tools import personalize as ptools
 
-        # personalize renvoie un body avec le placeholder
-        async def _fake_personalize(payload):
-            return ptools.PersonalizeOut(
-                email={"subject": "Sujet", "body_text": "Allo {{DEMO_URL}}", "warnings": []},
-                template_used="A", contact_used=True, social_proof_count=0,
-                available_slots_at_generation=[], duration_ms=10,
-                model="claude-sonnet-4-6", usage=ptools.LLMUsage(),
-            )
-        monkeypatch.setattr(http_api.personalize_tools, "personalize", _fake_personalize)
-        monkeypatch.setattr(http_api.db_tools, "record_agent_run",
-                            _amock(return_value={"agent_run_id": "ar-1"}))
-        monkeypatch.setattr(http_api, "ensure_demo_site",
-                            _amock(return_value="https://couture-ia.com/demo/TOK"))
+        out_obj = self._fake_personalize_out("Bonjour, votre site est déjà refait.")
 
-        captured = {}
-        async def _capture_insert(payload):
-            captured["body"] = payload.body_text
-            captured["demo_url"] = payload.demo_url
+        async def fake_personalize(_payload):
+            return out_obj
+
+        inserted: dict = {}
+
+        async def fake_insert(payload):
+            inserted.update(payload.model_dump(exclude_none=True))
             return {"message_id": "m-1"}
-        monkeypatch.setattr(http_api.db_tools, "insert_message_draft", _capture_insert)
 
-        out = await http_api._personalize_one(
-            self._contact(), self._company("agence-ia"),
-            template_choice="A", model="claude-sonnet-4-6", persist=True,
+        async def fake_record(_payload):
+            return {"agent_run_id": "ar-1"}
+
+        monkeypatch.setattr(http_api.personalize_tools, "personalize", fake_personalize)
+        monkeypatch.setattr(http_api.db_tools, "insert_message_draft", fake_insert)
+        monkeypatch.setattr(http_api.db_tools, "record_agent_run", fake_record)
+
+        res = await http_api._personalize_one(
+            {"id": "ct-1", "email": "jean@plomberiex.ca"},
+            {"id": "co-1", "track": "agence-ia", "research_json": {"ok": True}},
+            template_choice="auto", model="test-model", persist=True,
             available_slots=[], social_proof=[],
         )
-        assert out.status == "ok"
-        assert captured["demo_url"] == "https://couture-ia.com/demo/TOK"
-        assert "{{DEMO_URL}}" not in captured["body"]
-        assert "https://couture-ia.com/demo/TOK" in captured["body"]
 
-    @pytest.mark.asyncio
-    async def test_opt_track_skips_demo(self, monkeypatch) -> None:
+        assert res.status == "ok"
+        assert inserted["body_text"] == "Bonjour, votre site est déjà refait."
+        assert "aperçu personnalisé" not in inserted["body_text"]
+        assert "couture-ia.com/demo" not in inserted["body_text"]
+        assert "demo_url" not in inserted  # exclude_none : jamais posé
+
+    async def test_http_api_nimporte_plus_le_demo_generator(self):
         from src import http_api
-        from src.tools import personalize as ptools
 
-        async def _fake_personalize(payload):
-            return ptools.PersonalizeOut(
-                email={"subject": "S", "body_text": "Pas de placeholder ici", "warnings": []},
-                template_used="A", contact_used=True, social_proof_count=0,
-                available_slots_at_generation=[], duration_ms=10,
-                model="claude-sonnet-4-6", usage=ptools.LLMUsage(),
-            )
-        monkeypatch.setattr(http_api.personalize_tools, "personalize", _fake_personalize)
-        monkeypatch.setattr(http_api.db_tools, "record_agent_run",
-                            _amock(return_value={"agent_run_id": "ar-1"}))
-        ensure = _amock(return_value="https://x/demo/T")
-        monkeypatch.setattr(http_api, "ensure_demo_site", ensure)
-
-        captured = {}
-        async def _capture_insert(payload):
-            captured["demo_url"] = payload.demo_url
-            captured["body"] = payload.body_text
-            return {"message_id": "m-1"}
-        monkeypatch.setattr(http_api.db_tools, "insert_message_draft", _capture_insert)
-
-        out = await http_api._personalize_one(
-            self._contact(), self._company("OPT"),
-            template_choice="A", model="claude-sonnet-4-6", persist=True,
-            available_slots=[], social_proof=[],
-        )
-        assert out.status == "ok"
-        ensure.assert_not_called()
-        assert captured["demo_url"] is None
-        assert captured["body"] == "Pas de placeholder ici"
-
-    @pytest.mark.asyncio
-    async def test_demo_failure_soft_fails(self, monkeypatch) -> None:
-        from src import http_api
-        from src.tools import personalize as ptools
-
-        async def _fake_personalize(payload):
-            return ptools.PersonalizeOut(
-                email={"subject": "S", "body_text": "Allo {{DEMO_URL}}", "warnings": []},
-                template_used="A", contact_used=True, social_proof_count=0,
-                available_slots_at_generation=[], duration_ms=10,
-                model="claude-sonnet-4-6", usage=ptools.LLMUsage(),
-            )
-        monkeypatch.setattr(http_api.personalize_tools, "personalize", _fake_personalize)
-        monkeypatch.setattr(http_api.db_tools, "record_agent_run",
-                            _amock(return_value={"agent_run_id": "ar-1"}))
-
-        async def _boom(*a, **k):
-            raise RuntimeError("agence not exposed")
-        monkeypatch.setattr(http_api, "ensure_demo_site", _boom)
-
-        captured = {}
-        async def _capture_insert(payload):
-            captured["demo_url"] = payload.demo_url
-            captured["body"] = payload.body_text
-            captured["notes"] = payload.compliance_notes
-            return {"message_id": "m-1"}
-        monkeypatch.setattr(http_api.db_tools, "insert_message_draft", _capture_insert)
-
-        out = await http_api._personalize_one(
-            self._contact(), self._company("agence-ia"),
-            template_choice="A", model="claude-sonnet-4-6", persist=True,
-            available_slots=[], social_proof=[],
-        )
-        # draft inséré quand même, sans demo_url, placeholder laissé, warning posé
-        assert out.status == "ok"
-        assert captured["demo_url"] is None
-        assert "{{DEMO_URL}}" in captured["body"]
-        assert "demo" in (captured["notes"] or "").lower()
+        assert not hasattr(http_api, "ensure_demo_site")
+        assert not hasattr(http_api, "inject_demo_link")

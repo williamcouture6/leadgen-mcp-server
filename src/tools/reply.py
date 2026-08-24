@@ -1,12 +1,12 @@
 """Tool `reply` — Reply Handler (WF-7).
 
-Reçoit un reply Instantly (via webhook), le classe via LLM, et orchestre l'action
-appropriée :
-  - `interested` (confidence ≥ AUTO_REPLY_CONFIDENCE_THRESHOLD) → compose reply
-    avec Cal.com slots + envoie via Instantly /emails/reply + Slack ping
-  - `interested` (confidence < seuil) OU compose/send failure → flag hot lead,
-    pas d'auto-reply, Slack ping pour review manuel
-  - `unsubscribe` → suppression_list + contact.status='opted_out'
+Reçoit un reply Instantly, le classe via LLM, et route l'action :
+  - `interested` → garde désabonnement, puis marqueur contacts.interested_at
+    (pivot tri 2026-08-20 : William produit le site en session artisanale et
+    répond LUI-MÊME avec le lien — plus aucune auto-réponse) + Slack ping #leads
+  - `unsubscribe` → suppression_list + contact.status='opted_out' (+ Slack ping
+    #leads SI le contact avait `interested_at` posé — visibilité seulement, le
+    ping porte l'interdit LCAP de relance par courriel)
   - `not_interested` → contact.status='disqualified'
   - `out_of_office` → log only, contact reste 'contacted'
   - `other` → flag review manuel, Slack ping
@@ -14,9 +14,7 @@ appropriée :
 Idempotence : si on a déjà un row inbound dans `messages` avec le même
 `provider_message_id`, on skip — Instantly peut renvoyer le webhook plusieurs fois.
 
-Audit : chaque run écrit dans `agent_runs` (agent='qualification' — réutilisé du
-schema enum existant ; reply classification est l'output du Qualification Agent
-au sens large).
+Audit : chaque run écrit dans `agent_runs` (agent='qualification').
 """
 from __future__ import annotations
 
@@ -43,9 +41,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from .. import supabase_client as db
 from ..lib import instantly as instantly_lib
 from ..lib import slack as slack_lib
-from ..lib.calcom import CalcomError, format_slots_for_prompt, get_available_slots
 from ..lib.pricing import estimated_cost_usd
-from .research import sans_diagnostic
 
 # ----------------------------------------------------------------------
 # Config
@@ -54,43 +50,13 @@ from .research import sans_diagnostic
 _CLASSIFIER_PROMPT_PATH = (
     Path(__file__).resolve().parents[1] / "prompts" / "reply_classifier.md"
 )
-_COMPOSER_PROMPT_PATH = (
-    Path(__file__).resolve().parents[1] / "prompts" / "reply_compose.md"
-)
 _DEFAULT_CLASSIFIER_MODEL = "claude-haiku-4-5-20251001"
-_DEFAULT_COMPOSER_MODEL = "claude-sonnet-4-6"
-
-# Seuil minimum de confidence pour déclencher auto-reply sur 'interested'.
-# Sous ce seuil → flag hot lead + Slack ping pour review manuel.
-AUTO_REPLY_CONFIDENCE_THRESHOLD = 0.8
-
-# Plafond anti-boucle : nb max d'auto-réponses envoyées dans une même conversation.
-# Volontairement ÉLEVÉ — un lead légitime échange rarement autant avant de booker ;
-# c'est un filet de sécurité contre un ping-pong (ex. auto-répondeur côté lead),
-# PAS un limiteur de conversation normale. Au-delà → on ping pour review manuel.
-MAX_AUTO_REPLIES_PER_CONVERSATION = 5
-
-
-def _booking_url() -> str:
-    """URL Cal.com publique à inclure dans les replies auto.
-
-    Lit CALCOM_BOOKING_URL en priorité (var spécifique au composer), puis
-    BOOKING_URL (var partagée avec le reste de la config Cal.com). Fallback
-    sur l'URL prod connue pour ne jamais envoyer de lien mort.
-    """
-    return (
-        os.environ.get("CALCOM_BOOKING_URL", "").strip()
-        or os.environ.get("BOOKING_URL", "").strip()
-        or "https://cal.com/william-couture/20-min"
-    )
 
 
 def _sender_eaccount() -> str | None:
-    """Email du sending account Instantly utilisé pour /emails/reply.
-
-    DOIT être un sending account configuré dans le workspace Instantly. Sinon
-    Instantly retourne 4xx. None = pas configuré → on saute l'auto-reply.
-    """
+    """Email du sending account Instantly — sert de `to_email` par défaut sur
+    les rows inbound persistés (le webhook ne fournit pas toujours l'eaccount).
+    None = pas configuré."""
     return os.environ.get("INSTANTLY_SENDER_EMAIL", "").strip() or None
 
 
@@ -158,65 +124,6 @@ def _call_classifier(
             {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
         ],
         messages=[{"role": "user", "content": "\n\n".join(user_parts)}],
-    )
-    text = "".join(b.text for b in resp.content if b.type == "text")
-    usage = resp.usage
-    return (
-        _parse_llm_json(text),
-        {
-            "input_tokens": getattr(usage, "input_tokens", 0) or 0,
-            "output_tokens": getattr(usage, "output_tokens", 0) or 0,
-            "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
-            "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
-        },
-    )
-
-
-@retry(
-    retry=retry_if_exception(_is_transient_anthropic_error),
-    wait=wait_exponential(multiplier=2, min=4, max=60),
-    stop=stop_after_attempt(5),
-    reraise=True,
-)
-def _call_composer(
-    *,
-    original_email_text: str,
-    lead_reply_text: str,
-    research_json: dict[str, Any] | None,
-    available_slots: list[dict[str, Any]],
-    booking_url: str,
-    model: str,
-) -> tuple[dict[str, Any], dict[str, int]]:
-    """Compose la réponse auto pour les leads 'interested'."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY non défini")
-    client = Anthropic(api_key=api_key)
-    system_prompt = _COMPOSER_PROMPT_PATH.read_text(encoding="utf-8")
-
-    slots_block = format_slots_for_prompt(available_slots)
-
-    user = (
-        "## original_email (cold email envoyé)\n"
-        f"```\n{original_email_text}\n```\n\n"
-        "## lead_reply (réponse positive du prospect)\n"
-        f"```\n{lead_reply_text}\n```\n\n"
-        "## research_json (contexte entreprise)\n"
-        # `sans_diagnostic` retire la télémétrie du scraper d'emails : bruit pur
-        # pour le composeur, et des adresses tierces qu'il n'a pas à voir.
-        f"```json\n{json.dumps(sans_diagnostic(research_json), ensure_ascii=False, indent=2)}\n```\n\n"
-        f"## booking_url\n`{booking_url}`\n\n"
-        f"{slots_block}\n"
-    )
-
-    resp = client.messages.create(
-        model=model,
-        max_tokens=1200,
-        temperature=0.3,
-        system=[
-            {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
-        ],
-        messages=[{"role": "user", "content": user}],
     )
     text = "".join(b.text for b in resp.content if b.type == "text")
     usage = resp.usage
@@ -309,7 +216,7 @@ async def _get_company(company_id: str) -> dict[str, Any] | None:
     rows = await db.select(
         "companies",
         params={
-            "select": "id,name,domain,city,icp_segment,industry,research_json,track",
+            "select": "id,name,domain,website,city,icp_segment,industry,research_json,track",
             "id": f"eq.{company_id}",
             "limit": "1",
         },
@@ -354,11 +261,13 @@ async def _upsert_conversation(
 
 async def _conversation_is_booked(contact_id: str | None) -> bool:
     """True si une conversation du contact est déjà à l'état 'booked' (posé par
-    WF-8 quand un RDV est créé). Sert à NE PAS auto-répondre à un lead qui a déjà
-    pris rendez-vous (éviter de le ré-inviter à booker).
+    WF-8 quand un RDV est créé). Garde anti-régression : sans elle, un reply
+    'interested' poserait statut 'replied' + marqueur interested_at + state
+    'hot' PAR-DESSUS un RDV existant.
 
     Fail-open sur la lecture : en cas d'erreur DB on retourne False pour ne pas
-    bloquer le flux normal (le pire cas = une auto-réponse de trop, déjà capée)."""
+    bloquer le flux normal (pire cas = un marqueur/ping de trop, William
+    arbitre en lisant la réponse)."""
     if not contact_id:
         return False
     try:
@@ -374,27 +283,6 @@ async def _conversation_is_booked(contact_id: str | None) -> bool:
         return bool(rows)
     except Exception:  # noqa: BLE001
         return False
-
-
-async def _count_prior_auto_replies(contact_id: str | None) -> int:
-    """Nb d'auto-réponses déjà envoyées au contact (plafond anti-boucle).
-    Les auto-replies sont marqués `compliance_notes` commençant par
-    'auto_reply_to_interested'."""
-    if not contact_id:
-        return 0
-    try:
-        rows = await db.select(
-            "messages",
-            params={
-                "select": "id",
-                "contact_id": f"eq.{contact_id}",
-                "direction": "eq.outbound",
-                "compliance_notes": "like.auto_reply_to_interested*",
-            },
-        )
-        return len(rows)
-    except Exception:  # noqa: BLE001
-        return 0
 
 
 async def _add_to_suppression(
@@ -422,14 +310,112 @@ async def _add_to_suppression(
         print(f"[reply] suppression insert failed: {e!r}")
 
 
-async def _update_contact_status(contact_id: str, status: str) -> None:
+async def _update_contact_status(contact_id: str, status: str) -> bool:
+    """Retourne True si l'écriture est passée, False si l'exception a été
+    avalée. Les appelants qui inscrivent une action au journal DOIVENT lire ce
+    retour — une action journalisée sur une écriture ratée est un mensonge.
+    Les branches unsubscribe / not_interested l'ignorent volontairement
+    (comportement inchangé)."""
     try:
         await db.update(
             "contacts", {"status": status},
             filters={"id": f"eq.{contact_id}"},
         )
+        return True
     except Exception as e:  # noqa: BLE001
         print(f"[reply] contact status update failed: {e!r}")
+        return False
+
+
+async def _interested_lead_is_suppressed(
+    contact_id: str | None, email: str | None
+) -> bool | None:
+    """True si le lead intéressé est en réalité désabonné : statut opted_out OU
+    courriel sur suppression_list. Garde du pivot tri (PT1) — la livraison du
+    lien démo étant MANUELLE (hors pipeline), la garde de suppression de
+    send.py ne protège plus ce chemin ; le contrôle doit vivre ici, AVANT le
+    marqueur et le ping de production.
+
+    Retourne None si la LECTURE a échoué — distinct de False (« vérifié, pas
+    désabonné »). None est falsy, donc le fail-open tient tel quel : un ping de
+    trop (William arbitre en lisant la réponse) vaut mieux qu'un hot lead
+    silencieusement perdu. L'appelant utilise le None pour AVERTIR dans le ping
+    que la vérif est en panne."""
+    try:
+        if contact_id:
+            rows = await db.select(
+                "contacts",
+                params={"select": "status", "id": f"eq.{contact_id}", "limit": "1"},
+            )
+            if rows and rows[0].get("status") == "opted_out":
+                return True
+        if email:
+            sup = await db.select(
+                "suppression_list",
+                params={"select": "reason", "email": f"eq.{email}", "limit": "1"},
+            )
+            if sup:
+                return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[reply] suppression check failed (fail-open): {e!r}")
+        return None
+    return False
+
+
+async def _mark_contact_interested(contact_id: str | None) -> bool:
+    """Pose contacts.interested_at UNE fois (filtre is.null = idempotent).
+    C'est le marqueur du pivot tri : réponse positive → William produit le
+    site. La SORTIE du compteur « en attente de site » n'est pas ici — c'est
+    la ligne agence.demo_sites créée à la frappe du jeton (PT2).
+
+    Retourne True si l'écriture est passée, False sinon (pas de contact_id, ou
+    exception avalée) — l'appelant n'inscrit `contact_interested` au journal
+    que sur True."""
+    if not contact_id:
+        return False
+    try:
+        await db.update(
+            "contacts",
+            {"interested_at": datetime.now(timezone.utc).isoformat()},
+            filters={"id": f"eq.{contact_id}", "interested_at": "is.null"},
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[reply] interested_at update failed: {e!r}")
+        return False
+
+
+async def _contact_interested_at(contact_id: str | None) -> tuple[str | None, bool]:
+    """(horodatage du OUI de ce contact, la lecture a-t-elle abouti).
+
+    Sert à la branche `unsubscribe` : un désabonnement quelconque n'intéresse
+    personne, mais un désabonnement de quelqu'un qui avait dit oui, si — il
+    disparaît sinon en silence de la file de travail de William.
+
+    Lecture pure, exception avalée (comme les autres helpers du fichier) : une
+    panne de lecture ne doit jamais empêcher un désabonnement de s'enregistrer.
+    Le prix d'un échec est une notification manquée, pas une infraction.
+
+    Mais cet échec se DIT, second membre du tuple à False — même patron que son
+    voisin `_interested_lead_is_suppressed`, qui rend None sur panne de lecture
+    et le fait inscrire au journal. Rendre un simple None ici rendait la panne
+    indiscernable d'un « il n'avait jamais dit oui » : le ping manquant, et sa
+    cause, sortaient sans trace."""
+    if not contact_id:
+        return None, True  # rien à lire n'est pas un échec de lecture
+    try:
+        rows = await db.select(
+            "contacts",
+            params={
+                "select": "interested_at",
+                "id": f"eq.{contact_id}",
+                "limit": "1",
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[reply] interested_at read failed: {e!r}")
+        return None, False
+    return ((rows[0].get("interested_at") if rows else None) or None), True
 
 
 async def _record_agent_run(
@@ -616,10 +602,7 @@ class HandleReplyIn(BaseModel):
     # Override par défaut depuis env INSTANTLY_SENDER_EMAIL
     eaccount: str | None = None
     raw_payload: dict[str, Any] | None = None
-    # Bypass auto-reply (utile pour testing / re-classifier sans renvoyer)
-    skip_auto_reply: bool = False
     classifier_model: str = _DEFAULT_CLASSIFIER_MODEL
-    composer_model: str = _DEFAULT_COMPOSER_MODEL
 
 
 class HandleReplyOut(BaseModel):
@@ -627,6 +610,8 @@ class HandleReplyOut(BaseModel):
     inbound_message_id: str | None = None
     category: str | None = None
     confidence: float | None = None
+    # pivot tri : plus d'auto-reply — champs gardés pour le contrat API,
+    # toujours False/None depuis 2026-08-20.
     auto_reply_sent: bool = False
     auto_reply_provider_id: str | None = None
     auto_reply_message_id: str | None = None  # row id dans messages
@@ -700,8 +685,8 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
 
     campaign_id = parent.get("campaign_id") if parent else None
     parent_message_id = parent.get("id") if parent else None
+    # Encore lu par le classifier (contexte) — le composer, lui, est retiré.
     original_email_text = parent.get("body_text") if parent else None
-    original_subject = parent.get("subject") if parent else None
 
     # 3) Insert inbound message (avant le LLM — pour avoir l'audit même si LLM crash)
     cleaned_reply = strip_quote_and_signature(payload.reply_body_text)
@@ -788,8 +773,8 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             duration_ms=classifier_dur,
             usage=None,
         )
-        # Sans classification on bloque l'auto-reply mais on ne crash pas — Slack
-        # ping pour review humain.
+        # Sans classification, pas d'action de routage — on ne crash pas, Slack
+        # ping pour review manuel humain.
         await slack_lib.notify(
             text=f"⚠️ Classifier LLM failed for {payload.lead_email} — review manuel requis",
             context="wf7_classifier_error",
@@ -808,9 +793,6 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
     classifier_dur = int((time.monotonic() - classifier_started) * 1000)
 
     # 5) Branch par catégorie
-    auto_reply_sent = False
-    auto_reply_provider_id: str | None = None
-    auto_reply_message_id: str | None = None
     contact_name = (
         f"{(contact_row or {}).get('first_name') or ''} "
         f"{(contact_row or {}).get('last_name') or ''}"
@@ -833,6 +815,38 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             state="lost", last_direction="inbound",
         )
 
+        # Visibilité (2026-08-23) : un lead qui avait dit OUI puis se désabonne
+        # sort du compteur « en attente de site » sans un mot — William veut le
+        # savoir pour arbitrer lui-même. Ajout STRICTEMENT en aval : la ligne de
+        # suppression et le passage à opted_out ci-dessus sont inchangés, et ce
+        # bloc n'écrit rien. Le ping PORTE l'interdit LCAP : on informe, on
+        # n'ouvre aucune porte d'envoi.
+        interested_at, lecture_ok = await _contact_interested_at(contact_id)
+        if not lecture_ok:
+            # Fail-soft assumé (le désabonnement, lui, est déjà enregistré),
+            # mais tracé : sans ça, une panne de DB ressemble dans le journal à
+            # un désabonné banal qui n'avait jamais dit oui.
+            actions.append("interested_at_read_failed")
+        if interested_at:
+            fallback, blocks = slack_lib.build_interested_unsubscribed_blocks(
+                contact_name=contact_name,
+                company_name=company_name,
+                contact_email=payload.lead_email,
+                interested_at=interested_at,
+                reply_preview=cleaned_reply or payload.reply_body_text,
+                track=company_track,
+            )
+            # Même patron d'honnêteté que la branche `interested` : une action
+            # journalisée sur un ping perdu ferait croire William averti.
+            actions.append(
+                "interested_lead_unsubscribed"
+                if await slack_lib.notify(
+                    text=fallback, blocks=blocks,
+                    context="wf7_interested_unsubscribed", category="leads",
+                )
+                else "interested_lead_unsubscribed_ping_failed"
+            )
+
     elif category == "not_interested":
         await _update_contact_status(contact_id, "disqualified")
         actions.append("contact_disqualified")
@@ -853,158 +867,75 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         actions.append("ooo_logged")
 
     elif category == "interested":
-        # Gardes anti-boucle / anti-redondance (audit) :
-        #  - déjà 'booked' → ne pas régresser l'état ni auto-répondre (le lead a
-        #    déjà un RDV ; le ré-inviter à booker serait gênant).
-        #  - plafond d'auto-réponses atteint → on laisse la main à l'humain.
-        already_booked = await _conversation_is_booked(contact_id)
-        prior_auto_replies = await _count_prior_auto_replies(contact_id)
-        cap_reached = prior_auto_replies >= MAX_AUTO_REPLIES_PER_CONVERSATION
+        # Pivot tri (PT1) : plus d'auto-reply — le prospect attend LE lien
+        # démo, que William produit (session artisanale) et envoie lui-même.
+        # Ordre des gardes : désabonnement d'abord (aucune écriture, aucun
+        # ping de production pour un désabonné), puis booked (ne pas régresser
+        # une conversation déjà en RDV).
+        suppressed_lead = await _interested_lead_is_suppressed(
+            contact_id, payload.lead_email
+        )
+        # None = la LECTURE a échoué. Falsy, donc le lead passe (fail-open),
+        # mais on le dit : au journal ET dans le ping.
+        suppression_check_failed = suppressed_lead is None
+        if suppression_check_failed:
+            actions.append("suppression_check_failed")
 
-        if already_booked:
-            # Ne pas downgrader la conversation 'booked' → 'hot' ni le statut.
-            actions.append("skipped_auto_reply_already_booked")
+        if suppressed_lead:
+            actions.append("skipped_interested_suppressed")
         else:
-            await _update_contact_status(contact_id, "replied")
-            actions.append("contact_replied")
-            await _upsert_conversation(
-                contact_id=contact_id, campaign_id=campaign_id,
-                state="hot", last_direction="inbound",
-            )
-
-        # Décider auto-reply ou review manuel
-        eaccount = payload.eaccount or _sender_eaccount()
-        # Defense in depth : on n'auto-reply QUE si le parent outbound avait
-        # passé compliance. Si WF-5 avait flag le parent ou si on n'a pas de
-        # parent du tout (orphan, ne devrait pas arriver ici car contact_id
-        # check plus haut), on n'amplifie pas le risque.
-        parent_compliance_ok = bool(parent and parent.get("compliance_check_passed") is True)
-        can_auto_reply = (
-            not payload.skip_auto_reply
-            and confidence >= AUTO_REPLY_CONFIDENCE_THRESHOLD
-            and eaccount is not None
-            and payload.provider_message_id_inbound  # requis pour reply_to_uuid
-            and parent_compliance_ok
-            and not already_booked       # garde : lead déjà en RDV
-            and not cap_reached          # garde : plafond anti-boucle
-        )
-        if not parent_compliance_ok and parent is not None:
-            actions.append("skipped_auto_reply_parent_not_compliant")
-        if cap_reached:
-            actions.append(f"skipped_auto_reply_cap_reached:{prior_auto_replies}")
-
-        if can_auto_reply:
-            # Fetch Cal.com slots
-            try:
-                slots = await asyncio.to_thread(get_available_slots, 7)
-            except CalcomError as e:
-                slots = []
-                actions.append(f"calcom_failed:{type(e).__name__}")
-
-            if slots:
-                # Compose
-                composer_started = time.monotonic()
-                try:
-                    composed, comp_usage = await asyncio.to_thread(
-                        _call_composer,
-                        original_email_text=original_email_text or "",
-                        lead_reply_text=cleaned_reply or payload.reply_body_text,
-                        research_json=(company_row or {}).get("research_json"),
-                        available_slots=slots,
-                        booking_url=_booking_url(),
-                        model=payload.composer_model,
-                    )
-                except Exception as e:  # noqa: BLE001
-                    composed = None
-                    comp_usage = None
-                    actions.append(f"composer_failed:{type(e).__name__}")
-                composer_dur = int((time.monotonic() - composer_started) * 1000)
-
-                if composed and composed.get("body_text"):
-                    # Audit le composer (Sonnet — modèle plus cher que le
-                    # classifier Haiku). Sans ça, le coût composer est invisible
-                    # dans les rapports agent_runs.
-                    if comp_usage is not None:
-                        await _record_agent_run(
-                            contact_id=contact_id, company_id=company_id,
-                            campaign_id=campaign_id,
-                            agent="personalization",  # composer = sous-cas perso
-                            model=payload.composer_model,
-                            input_payload={
-                                "agent_subtype": "reply_composer",
-                                "lead_reply_excerpt": (cleaned_reply or "")[:300],
-                                "slots_count": sum(len(s.get("times", [])) for s in slots),
-                            },
-                            output_payload={
-                                "subject": composed.get("subject"),
-                                "body_text": composed.get("body_text"),
-                                "slots_used": composed.get("slots_used"),
-                                "warnings": composed.get("warnings"),
-                            },
-                            error_text=None,
-                            duration_ms=composer_dur,
-                            usage=comp_usage,
-                        )
-
-                    reply_subject = (
-                        composed.get("subject")
-                        or f"Re: {original_subject or 'votre message'}"
-                    )
-                    reply_body = composed["body_text"]
-                    try:
-                        instantly_resp = await instantly_lib.reply_to_email(
-                            reply_to_uuid=payload.provider_message_id_inbound,
-                            eaccount=eaccount,
-                            subject=reply_subject,
-                            body_text=reply_body,
-                        )
-                        auto_reply_provider_id = str(instantly_resp.get("id") or "")
-                        auto_reply_sent = True
-                        actions.append("auto_reply_sent")
-                    except instantly_lib.InstantlyError as e:
-                        actions.append(f"instantly_reply_failed:{e}")
-
-                    # Persist le message outbound auto-reply (même si Instantly failed,
-                    # on log un draft pour audit)
-                    out_row: dict[str, Any] = {
-                        "direction": "outbound",
-                        "status": "sent" if auto_reply_sent else "failed",
-                        "contact_id": contact_id,
-                        "campaign_id": campaign_id,
-                        "subject": reply_subject,
-                        "body_text": reply_body,
-                        "to_email": payload.lead_email,
-                        "from_email": eaccount,
-                        "provider": "instantly",
-                        "provider_message_id": auto_reply_provider_id or None,
-                        "in_reply_to": payload.provider_message_id_inbound,
-                        "compliance_check_passed": True,
-                        "compliance_notes": f"auto_reply_to_interested; conf={confidence:.2f}",
-                    }
-                    if auto_reply_sent:
-                        out_row["sent_at"] = datetime.now(timezone.utc).isoformat()
-                    try:
-                        ins_out = await db.insert("messages", out_row)
-                        auto_reply_message_id = ins_out[0]["id"] if ins_out else None
-                    except Exception as e:  # noqa: BLE001
-                        actions.append(f"insert_outbound_reply_failed:{e!r}")
+            already_booked = await _conversation_is_booked(contact_id)
+            if already_booked:
+                actions.append("skipped_marker_already_booked")
             else:
-                actions.append("no_slots_available_skipped_compose")
+                # Le journal ne dit QUE ce qui a réussi : une écriture ratée
+                # inscrite comme faite ferait disparaître un hot lead de la
+                # file sans alerte.
+                actions.append(
+                    "contact_replied"
+                    if await _update_contact_status(contact_id, "replied")
+                    else "contact_replied_failed"
+                )
+                actions.append(
+                    "contact_interested"
+                    if await _mark_contact_interested(contact_id)
+                    else "contact_interested_failed"
+                )
+                await _upsert_conversation(
+                    contact_id=contact_id, campaign_id=campaign_id,
+                    state="hot", last_direction="inbound",
+                )
 
-        # Slack ping pour hot lead (qu'on ait auto-reply ou pas)
-        fallback, blocks = slack_lib.build_hot_lead_blocks(
-            contact_name=contact_name,
-            company_name=company_name,
-            contact_email=payload.lead_email,
-            reply_preview=cleaned_reply or payload.reply_body_text,
-            auto_reply_sent=auto_reply_sent,
-            confidence=confidence,
-            track=company_track,
-        )
-        await slack_lib.notify(
-            text=fallback, blocks=blocks, context="wf7_hot_lead", category="leads",
-        )
-        actions.append("slack_hot_lead")
+            fallback, blocks = slack_lib.build_hot_lead_blocks(
+                contact_name=contact_name,
+                company_name=company_name,
+                contact_email=payload.lead_email,
+                reply_preview=cleaned_reply or payload.reply_body_text,
+                confidence=confidence,
+                track=company_track,
+                website=(company_row or {}).get("website"),
+                research_json=(company_row or {}).get("research_json"),
+                suppression_check_failed=suppression_check_failed,
+            )
+            ping_ok = await slack_lib.notify(
+                text=fallback, blocks=blocks, context="wf7_hot_lead", category="leads",
+            )
+            if ping_ok:
+                actions.append("slack_hot_lead")
+            else:
+                # Ce ping EST la file de travail : s'il n'est pas passé, le hot
+                # lead est invisible. Dernier recours = crier sur #alertes.
+                actions.append("slack_ping_failed")
+                alert_ok = await slack_lib.notify(
+                    text=(
+                        "🚨 Hot lead NON notifié sur #leads (ping en échec) — "
+                        f"contact_id={contact_id or '(inconnu)'} · {payload.lead_email}"
+                    ),
+                    context="wf7_hot_lead_ping_failed",
+                    category="alerts",
+                )
+                if alert_ok:
+                    actions.append("alert_ping_sent")
 
     else:  # 'other' ou catégorie inconnue
         await _upsert_conversation(
@@ -1021,10 +952,17 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             reply_preview=cleaned_reply or payload.reply_body_text,
             track=company_track,
         )
-        await slack_lib.notify(
-            text=fallback, blocks=blocks, context="wf7_review", category="leads",
+        # Le journal ne dit QUE ce qui a réussi : un `slack_review` inscrit sans
+        # lire le retour de `notify` ferait croire que la réponse est en file de
+        # review alors que le ping s'est perdu. Pas de repli sur #alertes ici —
+        # c'est du review manuel, pas un hot lead ; seule l'honnêteté compte.
+        actions.append(
+            "slack_review"
+            if await slack_lib.notify(
+                text=fallback, blocks=blocks, context="wf7_review", category="leads",
+            )
+            else "slack_review_failed"
         )
-        actions.append("slack_review")
 
     # 6) Audit
     await _record_agent_run(
@@ -1038,8 +976,6 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         output_payload={
             "classifier": classifier_out,
             "actions": actions,
-            "auto_reply_sent": auto_reply_sent,
-            "auto_reply_provider_id": auto_reply_provider_id,
         },
         error_text=None,
         duration_ms=classifier_dur,
@@ -1051,9 +987,8 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         inbound_message_id=inbound_message_id,
         category=category,
         confidence=confidence,
-        auto_reply_sent=auto_reply_sent,
-        auto_reply_provider_id=auto_reply_provider_id,
-        auto_reply_message_id=auto_reply_message_id,
+        # pivot tri : plus d'auto-reply — les champs auto_reply_* du contrat
+        # restent à leurs défauts (False/None).
         actions_taken=actions,
         duration_ms=int((time.monotonic() - started) * 1000),
     )
@@ -1160,9 +1095,7 @@ def extract_from_instantly_email_list_item(item: dict[str, Any]) -> HandleReplyI
 class PollRepliesIn(BaseModel):
     """Pass complet polling Instantly /emails (alternative au webhook)."""
     limit: int = 50  # max emails à fetch par run (Instantly cap ~100)
-    skip_auto_reply: bool = False
     classifier_model: str = _DEFAULT_CLASSIFIER_MODEL
-    composer_model: str = _DEFAULT_COMPOSER_MODEL
 
 
 class PollRepliesItem(BaseModel):
@@ -1225,10 +1158,8 @@ async def poll_and_process_replies(payload: PollRepliesIn) -> PollRepliesOut:
             ))
             continue
 
-        # Préserve les overrides de modèles passés au poll
-        extracted.skip_auto_reply = payload.skip_auto_reply
+        # Préserve l'override de modèle passé au poll
         extracted.classifier_model = payload.classifier_model
-        extracted.composer_model = payload.composer_model
 
         try:
             res = await handle_reply(extracted)

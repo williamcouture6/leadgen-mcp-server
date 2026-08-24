@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
@@ -29,7 +30,6 @@ from .tools import send_status as send_status_tools
 from .tools import reacti_discover as reacti_discover_tools
 from .tools import brand_kit as brand_kit_tools
 from .lib.owner_match import classify_scraped_contact
-from .lib.demo_generator import ensure_demo_site, inject_demo_link
 from .lib.sourcing_filters import sourcing_disqualify_reason
 
 
@@ -105,6 +105,96 @@ async def post_alert(payload: AlertIn) -> dict[str, Any]:
     return {"ok": ok, "category": payload.category}
 
 
+# Les motifs de `suppression_list` qui SONT un retrait de consentement, par
+# opposition aux autres lignes de la même table : `hard_bounce` (adresse morte,
+# posée par WF-6b), `manual` / `competitor` / `dncl` (nos décisions à nous). Ces
+# derniers sortent le contact de la file de travail — mais silencieusement : leur
+# annoncer le garde-fou LCAP mentirait, personne n'a rien retiré.
+_MOTIFS_RETRAIT_CONSENTEMENT = {"opt_out", "spam_complaint"}
+
+# Nombre de désabonnés nommés sur la ligne du résumé avant repli en « … +N ».
+_PLAFOND_NOMS_DESABONNES = 5
+
+# Fenêtre du « dont N depuis 7 jours » : aujourd'hui plus les 6 jours
+# précédents, bornée sur minuit America/Toronto comme tout le reste du résumé.
+_JOURS_DESABONNEMENT_RECENT = 7
+
+
+def _cle_courriel(valeur: Any) -> str:
+    """Clé d'appariement d'une adresse : espaces retirés, casse repliée.
+
+    `Jean@PlomberieX.ca` et `jean@plomberiex.ca` sont la MÊME boîte. Le
+    croisement se faisait avant en SQL (`email=eq.…`), qui est SENSIBLE à la
+    casse : un désabonné enregistré sous une autre casse restait « en attente
+    de site » et le tableau de bord envoyait William lui bâtir un site.
+
+    `ilike` a l'air d'être la réponse — c'en est un piège : `_` et `%` y sont
+    des jokers, et `_` est fréquent dans une adresse (`jean_roy@x.ca` y
+    apparierait `jeanXroy@x.ca`). D'où l'appariement en Python.
+    """
+    return str(valeur or "").strip().lower()
+
+
+def _rang_ligne_suppression(row: dict[str, Any]) -> tuple[int, str]:
+    """Ordre de préférence entre deux lignes qui normalisent vers la même clé.
+
+    L'unicité de `suppression_list.email` est celle de Postgres, sensible à la
+    casse : `Jean@x.ca` et `jean@x.ca` peuvent coexister. On garde alors le
+    RETRAIT DE CONSENTEMENT s'il y en a un (le fait le plus lourd de
+    conséquences), et parmi les retraits le PLUS ANCIEN — c'est le moment où le
+    consentement est réellement tombé."""
+    retrait = row.get("reason") in _MOTIFS_RETRAIT_CONSENTEMENT
+    return (0 if retrait else 1, str(row.get("created_at") or "9999"))
+
+
+def _index_suppression(lignes: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Toute la liste de suppression indexée par courriel normalisé."""
+    index: dict[str, dict[str, Any]] = {}
+    for row in lignes:
+        cle = _cle_courriel(row.get("email"))
+        if not cle:
+            continue
+        garde = index.get(cle)
+        if garde is None or _rang_ligne_suppression(row) < _rang_ligne_suppression(garde):
+            index[cle] = row
+    return index
+
+
+def _instant(horodatage: Any) -> datetime | None:
+    """ISO → datetime aware, ou None si l'horodatage est absent/illisible.
+
+    None n'est pas un détail d'implémentation : c'est l'état « date de
+    désabonnement inconnue », que le résumé AFFICHE tel quel plutôt que
+    d'inventer un moment."""
+    s = str(horodatage or "").strip()
+    if not s:
+        return None
+    try:
+        d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+# Sentinelle de tri pour « date de désabonnement inconnue » : plus petite que
+# toute date réelle, donc reléguée en fin de liste (le tri est décroissant).
+_JAMAIS = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _identite_lead(row: dict[str, Any]) -> str:
+    """« Jean Roy <jean@plomberiex.ca> » — de quoi reconnaître la boîte d'un coup
+    d'œil sans une requête de plus (le domaine du courriel suffit à l'identifier).
+
+    Un contact sans prénom ni nom retombe sur le courriel seul : un
+    « <vide> <info@x.ca> » ferait douter de la donnée elle-même.
+    """
+    nom = f"{row.get('first_name') or ''} {row.get('last_name') or ''}".strip()
+    courriel = (row.get("email") or "").strip()
+    if nom and courriel:
+        return f"{nom} <{courriel}>"
+    return nom or courriel or "(contact sans courriel)"
+
+
 class DailySummaryIn(BaseModel):
     category: str = "summary"          # canal Slack du résumé (SLACK_WEBHOOK_SUMMARY)
     tracks: list[str] = ["OPT", "agence-ia"]
@@ -114,8 +204,8 @@ class DailySummaryIn(BaseModel):
 @app.post("/summary/daily", dependencies=[Depends(_require_auth)])
 async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     """Résumé quotidien de l'activité pipeline par track (sourcées/emails/drafts/
-    poussés/envoyés/réponses) + RDV → Slack. Compté depuis minuit America/Toronto.
-    Appelé par un cron n8n en fin de journée.
+    poussés/envoyés/réponses/intéressés en attente de site) + RDV → Slack. Compté
+    depuis minuit America/Toronto. Appelé par un cron n8n en fin de journée.
 
     Distinction importante :
       - `poussés`  = leads ajoutés à la campagne Instantly (messages.status='queued').
@@ -123,9 +213,26 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
                      parti (ou la campagne est en pause). NE PAS lire ça comme « envoyé ».
       - `envoyés`  = courriel réellement parti, confirmé par le WF sync-status
                      (messages.status in sent/delivered/bounced/replied).
+      - `interested_waiting_site` = contacts.interested_at posé (WF-7) sans ligne
+                     agence.demo_sites encore créée (frappe du jeton, PT2). File
+                     de travail : elle se vide. Un contact présent dans
+                     suppression_list en sort quel que soit le motif — on
+                     n'envoie pas William bâtir un site pour quelqu'un qu'on a
+                     soi-même écarté.
+      - `interested_then_unsubscribed` = avait dit oui PUIS a retiré son
+                     consentement : statut opted_out, OU courriel sur
+                     suppression_list avec un motif de retrait (opt_out /
+                     spam_complaint — un hard_bounce n'en est pas un).
+                     CUMUL, et affiché comme tel : rien ne l'en fait
+                     redescendre. La ligne nomme les leads (désabonnement le
+                     plus RÉCENT en tête, 5 max), donne les deux dates (« oui
+                     le … , désabonné le … ») et porte l'interdit LCAP :
+                     visibilité seulement, aucune relance par courriel n'est
+                     permise après un retrait. Le libellé annonce en plus
+                     « dont N depuis 7 jours » quand il y en a : le cumul reste
+                     honnête et le nouveau saute aux yeux.
     Avant ce correctif (2026-06-04), `envoyés` comptait status!='draft' et gonflait
     les `queued` comme des envois — d'où des « envoyés 10 » alors que rien n'était parti."""
-    from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
 
     from . import supabase_client as sb
@@ -141,6 +248,36 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         # plafonnait en silence à 1000 (max-rows PostgREST) — une bonne journée
         # de sourcing aurait affiché « sourcées 1000 » pour toujours.
         return await sb.count(table, params={date_field: f"gte.{cutoff}", **extra})
+
+    # Borne du « dont N depuis 7 jours » : minuit America/Toronto il y a 6
+    # jours, donc aujourd'hui + les 6 jours précédents. Même repère de journée
+    # que les compteurs du jour ci-dessus — deux fuseaux dans un seul résumé
+    # donneraient deux vérités.
+    seuil_recent = start_local - timedelta(days=_JOURS_DESABONNEMENT_RECENT - 1)
+
+    # `suppression_list` lue d'UN BLOC, une seule fois pour tout le résumé
+    # (tous les tracks confondus), puis appariée en Python. Ce qu'on gagne par
+    # rapport au `select()` par intéressé qu'il y avait avant :
+    #   - une requête au lieu de N (le N+1 grossissait avec la file) ;
+    #   - l'insensibilité à la casse (cf. `_cle_courriel`) — sans elle un
+    #     désabonné restait « en attente de site » et William lui bâtissait
+    #     un site ;
+    #   - `created_at`, c'est-à-dire la DATE RÉELLE du désabonnement pour les
+    #     motifs de retrait. Les deux écrivains l'alimentent (Edge Function
+    #     `unsubscribe` du repo parent et WF-7), ce qui permet enfin de trier
+    #     par récence et d'annoncer les désabonnements des 7 derniers jours.
+    # `select_all` et non `select` : la table dépassera un jour 1000 lignes, et
+    # PostgREST couperait là sans rien signaler. Si elle devenait assez grosse
+    # pour que la ramener coûte, la suite est une jointure côté serveur
+    # (`contacts?select=…,suppression_list(reason,created_at)`), pas un retour
+    # au N+1.
+    suppression = _index_suppression(
+        await sb.select_all(
+            "suppression_list",
+            order="email",
+            params={"select": "email,reason,created_at"},
+        )
+    )
 
     lines: list[str] = []
     totals: dict[str, Any] = {}
@@ -161,54 +298,168 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             date_field="scheduled_at",
         )
         replies = await _cnt("messages", {**t, "direction": "eq.inbound"})
-        # Drafts que la garde P4.10 refuse de pousser, comptés SANS filtre de
-        # date : un draft coincé depuis deux semaines est justement celui qu'on
-        # veut voir. Deux nombres, parce qu'ils appellent des gestes différents
-        # — « en attente » se règle au prochain lot nocturne, « à relire »
-        # attend une décision de William.
+
+        # Intéressés (pivot tri 2026-08-20) : ont répondu « oui » au courriel de
+        # tri (WF-7 → contacts.interested_at). Une seule lecture alimente DEUX
+        # compteurs — qui ne se lisent PAS de la même façon, et le résumé le dit :
         #
-        # Le tri se fait en Python plutôt qu'en filtres PostgREST : la règle
-        # « porte attente ET PAS bloque » demanderait deux conditions sur la
-        # même colonne, donc un `and=(...)` imbriqué qu'aucun test sur mock ne
-        # peut valider — une syntaxe fausse compterait faux en silence. Le
-        # volume rend le débat théorique : quelques dizaines de drafts.
+        #   🔥 en attente de site = une FILE DE TRAVAIL, avec un cycle de vie
+        #      complet (leçon P4.10 : un compteur sans sortie dérive).
+        #      ENTRÉE : interested_at posé par WF-7. SORTIE : la frappe du jeton
+        #      (session artisanale, PT2) crée la ligne agence.demo_sites du
+        #      contact, et le lead quitte la file sans écriture dédiée.
         #
-        # select_all : on a besoin du CONTENU (compliance_notes) de chaque
-        # draft, pas d'un nombre, et sans filtre de date le lot peut dépasser
-        # le plafond de 1000 lignes de PostgREST.
-        bloques = await sb.select_all(
-            "messages",
+        #   ⚠️ désabonnés = un CUMUL, écrit « (cumul) » à l'écran pour cette
+        #      raison précise. Il n'a PAS de sortie et n'en aura pas :
+        #      interested_at est un journal et opted_out ne revient jamais en
+        #      arrière. On assume donc le cumul et on le NOMME — laisser croire
+        #      à une file de travail qui ne se vide jamais serait le mode
+        #      d'échec P4.10. Ce qui rend la ligne actionnable malgré le cumul :
+        #      le tri par date de DÉSABONNEMENT décroissante et la mention
+        #      « dont N depuis 7 jours », qui font ressortir le nouveau sans
+        #      falsifier le total.
+        #
+        # Sans filtre de date, dans les deux cas : c'est un ÉTAT, pas l'activité
+        # du jour — un intéressé coincé depuis six semaines est celui qu'on veut
+        # voir. (booked reste compté en attente : il attend peut-être encore sa
+        # démo pendant la vente.)
+        #
+        # ⚠️ L'exclusion de statut se fait en Python, PAS dans le filtre SQL : le
+        # compteur des désabonnés a besoin de VOIR les opted_out. Le comportement
+        # de « en attente de site » est identique à avant ce changement.
+        #
+        # Pourquoi croiser AUSSI suppression_list, et pas se fier au seul statut :
+        # il y a deux chemins de désabonnement. La réponse « désabonnez-moi »
+        # (WF-7) et le clic sur le lien du footer (Edge Function `unsubscribe`)
+        # posent tous deux status='opted_out'. Mais l'Edge Function écrit TOUJOURS
+        # suppression_list et ne pose le statut qu'au mieux (erreur de lecture ou
+        # d'écriture journalisée puis ignorée, la ligne de suppression restant la
+        # source de vérité). Sans le croisement par courriel, ces cas dégradés
+        # resteraient invisibles ici ET coincés dans la file « en attente de site ».
+        # Le croisement se fait contre `suppression`, lu d'un bloc plus haut.
+        interesses = await sb.select_all(
+            "contacts",
             order="id",
             params={
-                "select": "id,compliance_notes",
+                # L'identité voyage avec le compteur : la ligne du résumé NOMME
+                # les leads (un nombre nu ne permet aucune décision). Le domaine
+                # du courriel identifie la boîte — pas de requête `companies` de
+                # plus juste pour afficher un nom d'entreprise.
+                "select": "id,email,first_name,last_name,interested_at,status",
                 "track": f"eq.{tk}",
-                "direction": "eq.outbound",
-                "status": "eq.draft",
+                "interested_at": "not.is.null",
             },
         )
-        waiting_config = to_review = 0
-        for row in bloques:
-            notes = row.get("compliance_notes") or ""
-            if send_tools.SITE_CONFIG_NOTE_MARKER in notes:
-                # Un lead qui a attendu PUIS reçu un verdict qui refuse porte
-                # les deux marqueurs : c'est son histoire. Il compte dans l'état
-                # le plus actionnable, pas dans les deux.
-                to_review += 1
-            elif send_tools.SITE_CONFIG_WAIT_MARKER in notes:
-                waiting_config += 1
+        impasses = {"opted_out", "disqualified", "bounced"}
+        interested_waiting_site = 0
+        desabonnes: list[dict[str, Any]] = []
+        for r in interesses:
+            statut = r.get("status")
+            # L'index est consulté SANS filtre de motif, et le tri se fait ici.
+            # Deux questions distinctes se posent sur la même ligne :
+            #   « est-il supprimé ? »  → oui quel que soit le motif, donc il
+            #     sort de la file de travail. Un contact écarté par NOUS
+            #     (manual / competitor / dncl) ou dont l'adresse est morte
+            #     (hard_bounce) restait sinon compté « en attente de site » :
+            #     le tableau de bord demandait à William de bâtir un site
+            #     pour un prospect qu'on avait soi-même retiré.
+            #   « a-t-il retiré son consentement ? » → seulement opt_out /
+            #     spam_complaint, et là seulement on l'ANNONCE avec le
+            #     garde-fou LCAP. L'appliquer à une adresse morte mentirait.
+            # Trois états, donc, et non deux : en attente · désabonné
+            # (annoncé) · supprimé pour une autre raison (silencieux).
+            # Ignorer le motif ici aligne aussi ce côté du système sur
+            # `_interested_lead_is_suppressed` (src/tools/reply.py), qui lit
+            # déjà suppression_list sans regarder le motif : une seule
+            # définition de « supprimé » des deux bords.
+            sup = suppression.get(_cle_courriel(r.get("email")))
+            retrait = bool(sup) and sup.get("reason") in _MOTIFS_RETRAIT_CONSENTEMENT
+            desabonne = statut == "opted_out" or retrait
+            supprime = desabonne or sup is not None
+            if desabonne:
+                # La date ne vient QUE d'un motif de retrait : le created_at
+                # d'un hard_bounce n'est pas un désabonnement, et un
+                # status='opted_out' seul (cas dégradé) n'horodate rien du tout
+                # — il sera rendu « désabonné (date inconnue) » plutôt
+                # qu'affublé d'un moment inventé.
+                desabonnes.append(
+                    {**r, "_desabonne_le": sup.get("created_at") if retrait else None}
+                )
+                continue  # on ne lui doit plus de site : jamais dans l'autre file
+            if supprime or statut in impasses:
+                continue
+            demo = await sb.select(
+                "demo_sites",
+                params={"select": "id", "contact_id": f"eq.{r['id']}", "limit": "1"},
+                schema="agence",
+            )
+            if not demo:
+                interested_waiting_site += 1
+
+        interested_then_unsubscribed = len(desabonnes)
+        # Tri par date de DÉSABONNEMENT décroissante — la question posée est
+        # « quand un lead se désabonne-t-il APRÈS avoir dit oui ? ». Un oui de
+        # mai retiré hier est le cas actionnable du jour ; trié par date du oui
+        # (ce qu'on faisait avant), il finissait enterré derrière « … +N »,
+        # donc invisible au moment précis où il fallait le voir. Date inconnue
+        # → sentinelle `_JAMAIS`, donc fin de liste ; la date du oui départage
+        # les ex æquo.
+        desabonnes.sort(
+            key=lambda d: (
+                _instant(d.get("_desabonne_le")) or _JAMAIS,
+                str(d.get("interested_at") or ""),
+            ),
+            reverse=True,
+        )
+        recents = sum(
+            1
+            for d in desabonnes
+            if (moment := _instant(d.get("_desabonne_le"))) is not None
+            and moment >= seuil_recent
+        )
         totals[tk] = {
             "sourced": sourced, "emails": emails, "drafts": drafts,
             "pushed": pushed, "sent": sent, "replies": replies,
-            "waiting_config": waiting_config, "to_review": to_review,
+            "interested_waiting_site": interested_waiting_site,
+            "interested_then_unsubscribed": interested_then_unsubscribed,
+            "interested_then_unsubscribed_recent": recents,
         }
         ligne = (
             f"*{tk}* — sourcées {sourced} · emails {emails} · drafts {drafts} · "
             f"poussés {pushed} · envoyés {sent} · réponses {replies}"
         )
-        if waiting_config:
-            ligne += f"\n  ⏸ en attente de config {waiting_config}"
-        if to_review:
-            ligne += f"\n  🔎 à relire {to_review}"
+        if interested_waiting_site:
+            ligne += f"\n  🔥 intéressés en attente de site {interested_waiting_site}"
+        if desabonnes:
+            noms = []
+            for d in desabonnes[:_PLAFOND_NOMS_DESABONNES]:
+                # Les deux dates : quand il a dit oui, quand il est reparti.
+                # `slack_lib.jour` des deux côtés — le même helper que le ping
+                # WF-7, pour que les mêmes moments s'écrivent partout pareil.
+                bout = _identite_lead(d)
+                oui = slack_lib.jour(d.get("interested_at") or "")
+                if oui:
+                    bout += f" oui le {oui}"
+                parti = slack_lib.jour(d.get("_desabonne_le") or "")
+                bout += f", désabonné le {parti}" if parti else ", désabonné (date inconnue)"
+                noms.append(bout)
+            apercu = " · ".join(noms)
+            reste = interested_then_unsubscribed - len(noms)
+            if reste > 0:
+                apercu += f" · … +{reste}"
+            # « (cumul, dont N depuis 7 jours) » : le total ne ment pas sur sa
+            # nature et la nouvelle du jour se voit quand même. Sans récent, la
+            # mention disparaît — un « dont 0 » quotidien serait du bruit.
+            libelle = f"{interested_then_unsubscribed} (cumul"
+            if recents:
+                libelle += f", dont {recents} depuis {_JOURS_DESABONNEMENT_RECENT} jours"
+            ligne += f"\n  ⚠️ intéressés désabonnés {libelle})"
+            if apercu:
+                ligne += f" — {apercu}"
+            # L'interdit voyage AVEC le chiffre : un compteur inexpliqué invite au
+            # réflexe « je le relance pour comprendre », qui est l'infraction.
+            # Même constante que le ping WF-7 — un seul interdit, une seule source.
+            ligne += f"\n    {slack_lib.GARDE_LCAP_APRES_DESABONNEMENT}"
         lines.append(ligne)
 
     bookings = await _cnt("booking_events", {})
@@ -221,8 +472,7 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     )
 
     # État du PARC, sans filtre de date : c'est l'entreprise coincée depuis six
-    # semaines qu'on veut voir, pas l'activité du jour. Même patron que la ligne
-    # « ⏸ en attente de config » de P4.10.
+    # semaines qu'on veut voir, pas l'activité du jour.
     #
     # `track` est figé sur 'agence-ia' à dessein, il ne suit PAS payload.tracks :
     # le projet a pivoté sur une offre unique le 2026-06-07 et 'OPT' est du legacy
@@ -1210,17 +1460,10 @@ async def _personalize_one(
 
     message_id: str | None = None
     if persist and subject and body:
-        track = company_row.get("track") or "OPT"
-        demo_url: str | None = None
+        # Pivot tri (2026-08-20) : le courriel 1 ne porte AUCUN lien démo. La
+        # démo se produit sur réponse positive (session artisanale) et William
+        # répond lui-même avec le lien — plus de frappe au draft ni au send.
         notes = "; ".join(warnings) if warnings else None
-        if track == "agence-ia":
-            try:
-                demo_url = await ensure_demo_site(company_row.get("id"), contact_id)
-                body = inject_demo_link(body, demo_url)
-            except Exception as e:  # noqa: BLE001 — soft-fail : draft sauvé, garde au send retentera
-                warn = f"demo_generation_failed: {e!r} — lien injecté au send"
-                notes = f"{notes}; {warn}" if notes else warn
-                demo_url = None
         try:
             ins = await db_tools.insert_message_draft(
                 db_tools.MessageDraftIn(
@@ -1231,7 +1474,6 @@ async def _personalize_one(
                     generated_by_agent_run=agent_run_id,
                     compliance_check_passed=None,  # WF-5 le valide
                     compliance_notes=notes,
-                    demo_url=demo_url,
                 )
             )
             message_id = ins.get("message_id")
@@ -1871,16 +2113,19 @@ async def wf7_webhook_healthcheck(secret: str | None = None) -> dict[str, Any]:
     """
     _require_wf7_webhook_secret(secret)
     from .lib import slack as slack_lib
-    slack_configured = bool(os.environ.get(slack_lib.SLACK_WEBHOOK_ENV))
+    # Le canal réellement utilisé par WF-7 est #leads : on interroge la MÊME
+    # résolution que `notify(category="leads")` (SLACK_WEBHOOK_LEADS, sinon
+    # fallback SLACK_WEBHOOK_URL). Tester SLACK_WEBHOOK_URL seul mentait dans
+    # les deux sens : vert avec #leads absent, rouge avec #leads bien configuré.
+    slack_leads_configured = slack_lib.is_configured("leads")
     sender = os.environ.get("INSTANTLY_SENDER_EMAIL", "").strip() or None
-    booking = os.environ.get("CALCOM_BOOKING_URL", "").strip() or None
     return {
         "ok": True,
         "wf7_secret_configured": True,
-        "slack_configured": slack_configured,
+        "slack_leads_configured": slack_leads_configured,
         "instantly_sender_configured": bool(sender),
-        "calcom_booking_url_configured": bool(booking),
-        "auto_reply_confidence_threshold": reply_tools.AUTO_REPLY_CONFIDENCE_THRESHOLD,
+        # pivot tri 2026-08-20 : plus d'auto-reply — le seuil de confidence et
+        # l'URL Cal.com du composer n'existent plus (chaîne retirée de tools/reply.py).
     }
 
 
@@ -1973,10 +2218,14 @@ async def wf8_handle_booking(payload: HandleBookingReplayIn) -> booking_tools.Ha
 async def wf8_webhook_healthcheck() -> dict[str, Any]:
     """Vérifie config WF-8. Public (pas d'auth — pas de secret à divulguer)."""
     from .lib import slack as slack_lib
+    # Même correctif que WF-7 : WF-8 pingue `category="bookings"`, donc on
+    # interroge la MÊME résolution que `notify` (SLACK_WEBHOOK_BOOKINGS, sinon
+    # fallback SLACK_WEBHOOK_URL). Tester SLACK_WEBHOOK_URL seul mentait dans
+    # les deux sens : vert avec #bookings absent, rouge avec #bookings posé.
     return {
         "ok": True,
         "wf8_secret_configured": bool(_calcom_webhook_secret()),
-        "slack_configured": bool(os.environ.get(slack_lib.SLACK_WEBHOOK_ENV)),
+        "slack_bookings_configured": slack_lib.is_configured("bookings"),
     }
 
 

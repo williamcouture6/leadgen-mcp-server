@@ -17,7 +17,7 @@ La personne manifeste un intérêt POSITIF concret pour discuter / prendre un ap
 - Acceptation explicite d'un créneau proposé
 - Renvoi vers la bonne personne dans l'organisation ("écrivez à mon associé X, il s'occupe de ça") = **interested** (lead qualifié transféré)
 
-**Confidence ≥ 0.8 requise pour auto-reply**. Si ambigu, baisse la confidence.
+**Une classification `interested` déclenche un ping de production vers William (qui bâtit le site de démo du prospect) — la prudence sur la confidence reste cruciale.** Si ambigu, baisse la confidence.
 
 ### 2. `not_interested`
 Refus poli ou ferme, sans demande de désinscription formelle. Indicateurs :
@@ -59,7 +59,7 @@ Tout ce qui ne rentre pas dans les 4 catégories ci-dessus. Indicateurs :
 - Réponse en langue non-française et non-anglaise
 - Réponse vide ou avec seulement un quote du message original
 
-`other` déclenche review manuel — NE JAMAIS auto-reply sur `other`.
+`other` déclenche review manuel — JAMAIS de ping de production sur `other`.
 
 ## Format de sortie (JSON strict, rien d'autre)
 
@@ -92,7 +92,7 @@ Tout ce qui ne rentre pas dans les 4 catégories ci-dessus. Indicateurs :
 
 5. **Question piège** : "C'est quoi votre prix exactement ?" sans autre contexte → `interested` confidence 0.7 (intérêt commercial réel mais sans engagement encore).
 
-6. **Confidence sur `unsubscribe`** : sois généreux. Mieux vaut sur-classer en unsubscribe (perte = 1 lead) qu'auto-reply à quelqu'un qui veut être laissé tranquille (perte = relation + risque légal).
+6. **Confidence sur `unsubscribe`** : sois généreux. Mieux vaut sur-classer en unsubscribe (perte = 1 lead) que recontacter quelqu'un qui veut être laissé tranquille (perte = relation + risque légal).
 
 ## Exemples
 

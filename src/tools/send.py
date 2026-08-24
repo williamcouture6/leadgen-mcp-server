@@ -12,10 +12,6 @@ Logique :
        marqué 'failed').
      - Suppression list — check email + domaine du contact contre
        suppression_list (opt-outs, hard bounces, DNCL).
-     - Garde config produit (P4.10) — track agence-ia : pas de site refait par
-       le pipeline (`agence.site_configs` verdict 'ok'), pas de courriel.
-     - Garde démo (P3) — track agence-ia : pas de lien démo unique dans le
-       corps, pas de courriel (frappe retentée ici avant de sauter).
      - Daily cap — limite N pushs/jour, fenêtre America/Toronto.
   3. Fetch contact + company pour enrichir le lead Instantly (first_name,
      last_name, company_name).
@@ -45,33 +41,16 @@ from pydantic import BaseModel
 
 from .. import supabase_client as db
 from ..lib import instantly as instantly_lib
-from ..lib import slack
 from ..lib.compliance_checks import check_warmup_window
-from ..lib.demo_generator import DEMO_URL_PLACEHOLDER, ensure_demo_site, inject_demo_link
 from ..lib.platform_domains import is_email_on_blocked_domain
-from ..lib.site_config_gate import SiteConfigDecision, check_site_config
 
 DAILY_CAP_DEFAULT = 10
 DAILY_CAP_ENV = "INSTANTLY_DAILY_CAP"
 SEND_TIMEZONE = "America/Toronto"
-# Anti-spam de l'alerte demo (P3) : 1 ping #alertes par message coincé, pas par run.
-DEMO_ALERT_MARKER = "demo_alert_sent"
-# Traçage P4.10, marqueurs distincts : la note dit « ce message attend son
-# config », l'alerte dit « la lecture est cassée ». Un lead peut connaître les
-# deux, un marqueur unique masquerait le second.
-SITE_CONFIG_NOTE_MARKER = "site_config_bloque"
-SITE_CONFIG_ALERT_MARKER = "site_config_alert_sent"
-# Deux marqueurs de saut, pas un : « pas encore produit » se règle tout seul au
-# prochain lot nocturne, « verdict qui refuse » demande une décision de William.
-# Un marqueur unique les additionnerait et le compteur du résumé quotidien
-# dériverait vers le haut sans jamais redescendre.
-SITE_CONFIG_WAIT_MARKER = "site_config_attente"
-# Sur-récolte (P4.10) : un draft bloqué par la garde config reste 'draft', donc
-# la requête FIFO le re-sélectionne à chaque passe. Sans regarder plus loin que
-# `limit`, il suffit de `limit` leads sans config en tête de file pour que WF-6
-# ne pousse plus jamais rien — même une fois les configs suivants produits.
-# On lit donc plus de candidats que nécessaire, et on s'arrête dès que `limit`
-# messages sont partis. Le plafond borne le coût quand la file est longue.
+# Sur-récolte : un draft sauté (warmup, skip transitoire) reste 'draft' et la
+# requête FIFO le re-sélectionne ; on lit plus large que limit pour que la file
+# tourne. On s'arrête dès que `limit` messages sont partis. Le plafond borne le
+# coût quand la file est longue.
 DRAFT_OVERFETCH_FACTOR = 5
 DRAFT_OVERFETCH_MAX = 100
 
@@ -91,7 +70,7 @@ class SendMessageIn(BaseModel):
 
 class SendMessageOut(BaseModel):
     message_id: str
-    status: str  # ok | skipped_warmup | skipped_not_eligible | skipped_suppressed | skipped_platform_domain | skipped_no_site_config | skipped_no_demo | error
+    status: str  # ok | skipped_warmup | skipped_not_eligible | skipped_suppressed | skipped_platform_domain | error
     provider_message_id: str | None = None
     skipped_reason: str | None = None
     error_text: str | None = None
@@ -172,62 +151,6 @@ async def _is_suppressed(email: str | None, domain: str | None) -> tuple[bool, s
 # Core
 # ----------------------------------------------------------------------
 
-async def _trace_site_config_block(
-    *, message_id: str, msg: dict[str, Any], company_id: str | None,
-    decision: SiteConfigDecision,
-) -> None:
-    """Trace un saut P4.10 dans `compliance_notes`, et n'alerte que sur panne.
-
-    Trois marqueurs distincts, trois régimes :
-      - `site_config_attente` : posé UNE fois, silencieux. Un config pas encore
-        produit est un état d'attente normal tant que le lot nocturne n'a pas
-        tourné ; le cron repasse et ne doit pas faire grossir le champ.
-      - `site_config_bloque` : posé UNE fois, silencieux aussi, mais pour un
-        refus que le temps ne répare pas (verdict qui refuse, pas de
-        company_id, lecture cassée) — celui-là demande une décision humaine.
-        Un message peut finir par porter les DEUX : il a attendu, puis le lot
-        nocturne a produit un verdict qui refuse. On n'efface pas l'attente,
-        on ajoute le refus — sinon le lead resterait compté « en attente »
-        pour toujours. Qui lit ces marqueurs tranche par le plus actionnable :
-        `bloque` présent gagne sur `attente` présent.
-      - `site_config_alert_sent` : posé UNE fois, avec un ping #alertes, quand
-        c'est la LECTURE qui a échoué. Ce cas-là bloque tous les envois
-        agence-ia d'un coup — il ne peut pas rester silencieux.
-    """
-    notes = msg.get("compliance_notes") or ""
-    additions: list[str] = []
-
-    marqueur = SITE_CONFIG_WAIT_MARKER if decision.attente else SITE_CONFIG_NOTE_MARKER
-    if marqueur not in notes:
-        additions.append(f"{marqueur}: {decision.reason}")
-
-    if decision.read_failed and SITE_CONFIG_ALERT_MARKER not in notes:
-        await slack.notify(
-            text=(
-                f":rotating_light: Lecture de `agence.site_configs` impossible "
-                f"— envoi bloqué.\n"
-                f"message_id={message_id} contact_id={msg.get('contact_id')} "
-                f"company_id={company_id}\nraison: {decision.reason}\n"
-                f"(Vérifier que le schéma `agence` est exposé à l'API REST.)"
-            ),
-            category="alerts",
-            context="p4_10_site_config_guard",
-        )
-        additions.append(SITE_CONFIG_ALERT_MARKER)
-
-    if not additions:
-        return
-
-    new_notes = " | ".join([notes, *additions]).strip(" |")
-    try:
-        await db.update(
-            "messages", {"compliance_notes": new_notes},
-            filters={"id": f"eq.{message_id}"},
-        )
-    except Exception:  # noqa: BLE001 — une note perdue ne casse pas un skip
-        pass
-
-
 async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     """Push UN draft à Instantly. Idempotent par message_id : si la message
     n'est plus en status='draft', on skip (évite double-push si retry n8n).
@@ -236,7 +159,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     msgs = await db.select(
         "messages",
         params={
-            "select": "id,subject,body_text,to_email,status,direction,compliance_check_passed,contact_id,demo_url,track,compliance_notes",
+            "select": "id,subject,body_text,to_email,status,direction,compliance_check_passed,contact_id,track,compliance_notes",
             "id": f"eq.{payload.message_id}",
             "limit": "1",
         },
@@ -287,17 +210,20 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     blocked, reason = is_email_on_blocked_domain(msg.get("to_email"))
     if blocked:
         # Marquer le message 'failed' pour qu'il ne soit pas re-tenté.
-        try:
-            await db.update(
-                "messages",
-                {"status": "failed", "compliance_notes": (
-                    (msg.get("compliance_notes") or "")
-                    + f" | send_blocked: platform_domain ({reason})"
-                ).strip(" |")},
-                filters={"id": f"eq.{payload.message_id}"},
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        # En dry_run on RAPPORTE le verdict sans le graver : la simulation ne
+        # doit pas tuer un draft (le statut retourné, lui, reste identique).
+        if not payload.dry_run:
+            try:
+                await db.update(
+                    "messages",
+                    {"status": "failed", "compliance_notes": (
+                        (msg.get("compliance_notes") or "")
+                        + f" | send_blocked: platform_domain ({reason})"
+                    ).strip(" |")},
+                    filters={"id": f"eq.{payload.message_id}"},
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return SendMessageOut(
             message_id=payload.message_id, status="skipped_platform_domain",
             skipped_reason=f"email domain dans blocklist: {reason}",
@@ -327,85 +253,29 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     company = company_rows[0] if company_rows else {}
 
     # 3b) Defense — suppression list (post-draft, pre-push). Un opt-out reçu
-    # après la création du draft doit bloquer ici. Placée AVANT la garde config
-    # (P4.10) à dessein : c'est un rejet TERMINAL qui marque le message
-    # 'failed'. Derrière la garde, un désabonné sans config resterait 'draft'
-    # à vie et squatterait la tête de la file FIFO de run_wf6.
+    # après la création du draft doit bloquer ici.
     suppressed, reason = await _is_suppressed(msg["to_email"], company.get("domain"))
     if suppressed:
         # On marque le message 'failed' pour que les futurs runs ne le re-tentent pas.
-        try:
-            await db.update(
-                "messages",
-                {"status": "failed", "compliance_notes": (
-                    (msg.get("compliance_notes") or "") + f" | send_blocked: {reason}"
-                ).strip(" |")},
-                filters={"id": f"eq.{payload.message_id}"},
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        # En dry_run on RAPPORTE le verdict sans le graver : la simulation ne
+        # doit pas tuer un draft (le statut retourné, lui, reste identique).
+        if not payload.dry_run:
+            try:
+                await db.update(
+                    "messages",
+                    {"status": "failed", "compliance_notes": (
+                        (msg.get("compliance_notes") or "") + f" | send_blocked: {reason}"
+                    ).strip(" |")},
+                    filters={"id": f"eq.{payload.message_id}"},
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return SendMessageOut(
             message_id=payload.message_id, status="skipped_suppressed",
             skipped_reason=reason,
         )
 
-    # 3c) Garde config produit (P4.10) — pas de site refait par le pipeline de
-    # refonte, pas de courriel. Tourne AVANT la frappe démo : inutile de créer
-    # une ligne agence.demo_sites pour un lead qui ne partira pas.
-    if (msg.get("track") or "OPT") == "agence-ia":
-        decision = await check_site_config(contact.get("company_id"))
-        if not decision.allowed:
-            await _trace_site_config_block(
-                message_id=payload.message_id, msg=msg,
-                company_id=contact.get("company_id"), decision=decision,
-            )
-            return SendMessageOut(
-                message_id=payload.message_id, status="skipped_no_site_config",
-                skipped_reason=decision.reason,
-            )
-
-    # 3d) Garde demo (P3) — aucun email agence-ia ne part sans lien démo unique.
-    # Si manquant, on retente la frappe ici ; échec persistant => skip sans push.
-    if (msg.get("track") or "OPT") == "agence-ia":
-        needs_demo = (not msg.get("demo_url")) or (DEMO_URL_PLACEHOLDER in (msg.get("body_text") or ""))
-        if needs_demo:
-            try:
-                demo_url = await ensure_demo_site(contact.get("company_id"), msg["contact_id"])
-                new_body = inject_demo_link(msg.get("body_text") or "", demo_url)
-                await db.update(
-                    "messages",
-                    {"demo_url": demo_url, "body_text": new_body},
-                    filters={"id": f"eq.{payload.message_id}"},
-                )
-                msg["demo_url"] = demo_url
-                msg["body_text"] = new_body
-            except Exception as e:  # noqa: BLE001 — pas de push sans lien
-                existing_notes = msg.get("compliance_notes") or ""
-                if DEMO_ALERT_MARKER not in existing_notes:
-                    await slack.notify(
-                        text=(
-                            f":rotating_light: Demo non générée — email bloqué.\n"
-                            f"message_id={payload.message_id} contact_id={msg['contact_id']} "
-                            f"company_id={contact.get('company_id')}\nerreur: {e!r}\n"
-                            f"(Vérifier que le schéma `agence` est exposé à l'API REST.)"
-                        ),
-                        category="alerts",
-                        context="p3_demo_guard",
-                    )
-                    new_notes = f"{existing_notes} | {DEMO_ALERT_MARKER}".strip(" |")
-                    try:
-                        await db.update(
-                            "messages", {"compliance_notes": new_notes},
-                            filters={"id": f"eq.{payload.message_id}"},
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
-                return SendMessageOut(
-                    message_id=payload.message_id, status="skipped_no_demo",
-                    skipped_reason=f"demo_generation_failed: {e!r}",
-                )
-
-    # 5) Push à Instantly (ou simule si dry_run)
+    # 4) Push à Instantly (ou simule si dry_run)
     provider_message_id: str | None = None
     if payload.dry_run:
         provider_message_id = f"dry_run_{payload.message_id[:8]}"
@@ -427,7 +297,16 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
                 error_text=f"instantly: {e}",
             )
 
-    # 6) Update messages : queued + provider + scheduled_at
+    if payload.dry_run:
+        # dry_run : simulation complète, AUCUNE écriture. Le statut reste "ok"
+        # pour que run_wf6 compte le candidat comme poussable (un statut neuf
+        # tomberait dans la branche errors).
+        return SendMessageOut(
+            message_id=payload.message_id, status="ok",
+            provider_message_id=provider_message_id,
+        )
+
+    # 5) Update messages : queued + provider + scheduled_at
     now_iso = datetime.now(timezone.utc).isoformat()
     patch: dict[str, Any] = {
         "status": "queued",
@@ -478,7 +357,7 @@ class RunWf6In(BaseModel):
     dry_run: bool = False
     # Override le daily cap (défaut: env INSTANTLY_DAILY_CAP ou 10).
     daily_cap: int | None = None
-    track: str = "OPT"  # OPT | REACTI — filtre les drafts + choisit la campagne Instantly
+    track: str = "OPT"  # OPT (legacy) | agence-ia — filtre les drafts + choisit la campagne Instantly
 
 
 def _campaign_for_track(track: str) -> str | None:
@@ -506,8 +385,6 @@ class RunWf6Out(BaseModel):
     skipped_warmup: int
     skipped_suppressed: int
     skipped_platform_domain: int = 0
-    skipped_no_site_config: int = 0
-    skipped_no_demo: int = 0
     skipped_other: int
     errors: int
     daily_cap: int
@@ -548,7 +425,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         )
 
     items: list[RunWf6Item] = []
-    pushed = sk_cap = sk_warm = sk_supp = sk_plat = sk_nocfg = sk_nodemo = sk_other = errors = 0
+    pushed = sk_cap = sk_warm = sk_supp = sk_plat = sk_other = errors = 0
 
     if effective_limit <= 0:
         return RunWf6Out(
@@ -567,10 +444,9 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             "status": "eq.draft",
             "compliance_check_passed": "is.true",
             "track": f"eq.{track}",
-            # Jamais tenté d'abord, puis le moins récemment tenté. Un draft que
-            # la garde refuse recule ainsi derrière les frais au lieu d'occuper
-            # la tête de file pour toujours — et repasse quand même à son tour,
-            # donc il partira le jour où son config arrivera.
+            # Jamais tenté d'abord, puis le moins récemment tenté. Un draft
+            # sauté recule derrière les frais au lieu d'occuper la tête de
+            # file — et repasse à son tour.
             "order": "last_send_attempt_at.asc.nullsfirst,created_at.asc",
             "limit": str(min(effective_limit * DRAFT_OVERFETCH_FACTOR, DRAFT_OVERFETCH_MAX)),
         },
@@ -593,7 +469,8 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             errors += 1
             # Le message reste 'draft' : il doit reculer comme un saut, sinon
             # une ligne qui lève à tous les coups garde la tête de file.
-            await _horodater_tentative(d["id"])
+            if not payload.dry_run:
+                await _horodater_tentative(d["id"])
             items.append(RunWf6Item(
                 message_id=d["id"], to_email=d.get("to_email"),
                 status="error", error_text=repr(e),
@@ -608,18 +485,17 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             sk_supp += 1
         elif res.status == "skipped_platform_domain":
             sk_plat += 1
-        elif res.status == "skipped_no_site_config":
-            sk_nocfg += 1
-        elif res.status == "skipped_no_demo":
-            sk_nodemo += 1
         elif res.status == "skipped_not_eligible":
             sk_other += 1
         else:
             errors += 1
 
-        if res.status != "ok":
+        if res.status != "ok" and not payload.dry_run:
             # Un message poussé quitte 'draft' et sort de la requête : inutile
             # de l'horodater. Un message sauté doit reculer dans la file.
+            # `payload.dry_run` est la source de vérité de la passe (c'est lui
+            # qu'on passe à chaque SendMessageIn) : une simulation ne doit pas
+            # réordonner la vraie file FIFO en écrivant last_send_attempt_at.
             await _horodater_tentative(d["id"])
 
         items.append(RunWf6Item(
@@ -641,8 +517,6 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         skipped_warmup=sk_warm,
         skipped_suppressed=sk_supp,
         skipped_platform_domain=sk_plat,
-        skipped_no_site_config=sk_nocfg,
-        skipped_no_demo=sk_nodemo,
         skipped_other=sk_other,
         errors=errors,
         daily_cap=daily_cap,

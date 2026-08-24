@@ -9,8 +9,8 @@ Fallback : si la var spécifique à la catégorie n'est pas set, on retombe
 sur SLACK_WEBHOOK_URL (legacy single-channel). Si rien n'est configuré,
 les notifs sont silencieusement no-op — utile pour dev/test sans Slack.
 
-Failure-mode : Slack DOWN ne DOIT JAMAIS casser la pipeline (auto-reply,
-booking, etc.). Les exceptions sont avalées + loggées en stderr. Le caller
+Failure-mode : Slack DOWN ne DOIT JAMAIS casser la pipeline (classification
+des replies, booking, etc.). Les exceptions sont avalées + loggées en stderr. Le caller
 peut inspecter `notify(...)` return = True/False pour savoir si le ping est
 passé, mais ne doit pas crasher si False.
 
@@ -21,9 +21,15 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
+from zoneinfo import ZoneInfo
 
 import httpx
+
+# Fuseau d'AFFICHAGE des dates rendues à William. La base stocke en UTC ; tout
+# ce qu'il lit doit être dans son heure à lui, comme les compteurs du résumé.
+_FUSEAU_AFFICHAGE = "America/Toronto"
 
 if TYPE_CHECKING:
     from .reacti_tickets import ReactiTicket
@@ -57,6 +63,15 @@ def _webhook_url(category: str | None = None) -> str | None:
                 return url
     url = os.environ.get(SLACK_WEBHOOK_ENV, "").strip()
     return url or None
+
+
+def is_configured(category: Category | None = None) -> bool:
+    """Un webhook est-il résolvable pour cette catégorie (var dédiée ou fallback) ?
+
+    Sert aux healthchecks : ils doivent tester le canal RÉELLEMENT utilisé par le
+    workflow, pas SLACK_WEBHOOK_URL en dur.
+    """
+    return bool(_webhook_url(category))
 
 
 async def notify(
@@ -130,42 +145,152 @@ def build_hot_lead_blocks(
     company_name: str,
     contact_email: str,
     reply_preview: str,
-    auto_reply_sent: bool,
     confidence: float | None = None,
     track: str | None = None,
+    website: str | None = None,
+    research_json: dict[str, Any] | None = None,
+    suppression_check_failed: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Format Slack pour un reply classé 'interested' (WF-7).
+
+    Pivot tri (2026-08-20) : ce ping EST la file de travail — William lit la
+    réponse, produit le site (session artisanale), et répond avec le lien.
+    C'est pourquoi le brief de recherche voyage AVEC le ping : `research_json`
+    (depuis `companies.research_json`, WF-3) ajoute la section 'Brief pré-RDV'
+    après l'extrait de réponse — le site se produit sans rouvrir la DB.
+    Absent/vide => aucun bloc ajouté, format historique intact.
+
+    `suppression_check_failed=True` = la garde de désabonnement n'a pas pu LIRE
+    (fail-open assumé côté reply.py) : on le dit dans 'Prochain geste' pour que
+    la vérif se fasse à la main avant d'écrire.
 
     Returns (fallback_text, blocks) — passer aux 2 args de `notify`.
     """
     tp = _track_prefix(track)
-    status = "Auto-reply envoyé (Cal.com link)" if auto_reply_sent else "À répondre manuellement"
-    fallback = f"{tp}🔥 Hot lead — {contact_name} @ {company_name} ({status})"
+    status = "À toi : produire le site (session artisanale) puis répondre avec le lien démo"
+    fallback = f"{tp}🔥 Hot lead — {contact_name} @ {company_name}"
+    champs = [
+        _kv_field("Contact", f"{contact_name}\n{contact_email}"),
+        _kv_field("Entreprise", company_name),
+    ]
+    if website:
+        champs.append(_kv_field("Site actuel", website))
+    geste = f"*Prochain geste*: {status}"
+    if confidence is not None:
+        geste += f"\n*Confidence*: {confidence:.0%}"
+    if suppression_check_failed:
+        geste += "\n⚠️ vérif désabonnement en panne — vérifier avant d'écrire"
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
             "text": {"type": "plain_text", "text": f"{tp}🔥 Hot lead"},
         },
+        {"type": "section", "fields": champs},
         {
             "type": "section",
-            "fields": [
-                _kv_field("Contact", f"{contact_name}\n{contact_email}"),
-                _kv_field("Entreprise", company_name),
-            ],
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Statut*: {status}"
-                + (f"\n*Confidence*: {confidence:.0%}" if confidence is not None else ""),
-            },
+            "text": {"type": "mrkdwn", "text": geste},
         },
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
                 "text": f"*Reply (extrait)*\n```{_truncate(reply_preview, 400)}```",
+            },
+        },
+    ]
+    blocks.extend(_research_brief_blocks(research_json))
+    return fallback, blocks
+
+
+# Le garde-fou LCAP, en toutes lettres. Il VOYAGE avec la notification : une
+# alerte « il s'est désabonné » sans l'interdit invite au réflexe naturel (« je
+# le relance pour comprendre »), qui est justement l'infraction. Le consentement
+# retiré interdit tout message électronique commercial — sans exception et sans
+# délai. L'appel téléphonique relève d'un autre régime (LNNTE), d'où la nuance.
+GARDE_LCAP_APRES_DESABONNEMENT = (
+    "⛔ Ne PAS relancer par courriel — consentement retiré (LCAP). "
+    "Un appel reste possible : vérifier la LNNTE d'abord."
+)
+
+
+def jour(horodatage: str) -> str:
+    """« 2026-08-21T14:03:00+00:00 » → « 2026-08-21 », en heure de Toronto.
+
+    ⚠️ La conversion de fuseau n'est pas cosmétique : la base stocke en UTC, et
+    un désabonnement à 21 h le 23 août à Toronto y est écrit « 2026-08-24T01:00Z ».
+    Un découpage brut de la chaîne aurait affiché le 24 — William aurait lu
+    « demain » pour un geste d'hier soir, et n'aurait pas reconnu le cas dont on
+    lui parle. On rend donc la date du jour VÉCU, celle qui est aussi le repère
+    de la fenêtre « depuis 7 jours » du résumé.
+
+    Rend la valeur telle quelle si elle ne ressemble pas à de l'ISO : mieux vaut
+    un horodatage brut à l'écran qu'une date inventée par un découpage aveugle.
+
+    Public (et non `_jour`) parce qu'il traverse la frontière du module : le
+    résumé quotidien (`http_api.summary_daily`) affiche les mêmes dates de
+    « oui » que ce ping, et les deux doivent les rendre pareil.
+    """
+    s = (horodatage or "").strip()
+    if not (len(s) >= 10 and s[4] == "-" and s[7] == "-"):
+        return s
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return s[:10]
+    if dt.tzinfo is None:  # naïf en base = UTC, comme partout ailleurs ici
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ZoneInfo(_FUSEAU_AFFICHAGE)).strftime("%Y-%m-%d")
+
+
+def build_interested_unsubscribed_blocks(
+    *,
+    contact_name: str,
+    company_name: str,
+    contact_email: str,
+    interested_at: str,
+    reply_preview: str,
+    track: str | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Format Slack pour un lead qui avait dit OUI puis s'est désabonné (WF-7).
+
+    Besoin exprimé le 2026-08-23 : ces leads-là disparaissent en silence du
+    compteur « en attente de site », et William veut décider LUI-MÊME de la
+    suite. Le ping est donc de la VISIBILITÉ pure — il n'ouvre aucune porte
+    d'envoi et ne déclenche aucune relance.
+
+    Il porte quatre choses : qui, quand il avait dit oui (pour juger si le oui
+    était d'hier ou d'il y a trois mois), ce qu'il vient d'écrire, et l'interdit
+    LCAP. Ce dernier n'est pas décoratif : c'est le seul contrepoids au réflexe
+    de rappeler par courriel un lead qu'on croyait acquis.
+    """
+    tp = _track_prefix(track)
+    titre = "⚠️ Un intéressé s'est désabonné"
+    fallback = f"{tp}{titre} — {contact_name} @ {company_name}"
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{tp}{titre}"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                _kv_field("Contact", f"{contact_name}\n{contact_email}"),
+                _kv_field("Entreprise", company_name),
+                _kv_field("Avait dit oui le", jour(interested_at)),
+            ],
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": GARDE_LCAP_APRES_DESABONNEMENT},
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Sa demande de désabonnement (extrait)*\n"
+                    f"```{_truncate(reply_preview, 400)}```"
+                ),
             },
         },
     ]
