@@ -133,13 +133,16 @@ _RESEARCH = {
 
 
 def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_boom=False,
-                     categorie="interested"):
+                     categorie="interested", interested_at=None):
     """Monte un `handle_reply` complet qui atterrit dans la branche `categorie`
-    (défaut : `interested` ; `other` pour le review manuel).
+    (défaut : `interested` ; `other` pour le review manuel ; `unsubscribe`).
 
     Retourne un dict d'observations : `notifies` (un dict par appel à notify),
     `updates` (table, patch). `notify_par_categorie` mappe la catégorie Slack
-    vers le booléen que `notify` doit rendre (défaut : True partout)."""
+    vers le booléen que `notify` doit rendre (défaut : True partout).
+
+    `interested_at` = valeur rendue par la lecture ciblée `select=interested_at`
+    (branche unsubscribe) : None = ce contact n'avait jamais dit oui."""
     from src import supabase_client
     from src.lib import slack as slack_mod
     from src.tools import reply
@@ -158,6 +161,8 @@ def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_
             if "email" in p:  # _find_contact_by_email
                 return [{"id": "ct-1", "company_id": "co-1", "first_name": "Jean",
                          "last_name": "Roy", "email": "jean@x.ca", "status": "contacted"}]
+            if p.get("select") == "interested_at":  # _contact_interested_at
+                return [{"interested_at": interested_at}]
             return [{"status": "contacted"}]  # garde désabonnement
         if table == "suppression_list":
             return []
@@ -196,13 +201,13 @@ def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_
     return vu
 
 
-def _payload():
+def _payload(corps="Oui, montrez-moi ça."):
     from src.tools import reply
 
     return reply.HandleReplyIn(
         lead_email="jean@x.ca",
         reply_subject="Re: votre site",
-        reply_body_text="Oui, montrez-moi ça.",
+        reply_body_text=corps,
         provider_message_id_inbound="inb-1",
         provider_message_id_parent="out-1",
     )
@@ -330,6 +335,105 @@ async def test_un_ping_de_review_rate_ne_sinscrit_pas_comme_envoye(monkeypatch):
     assert "slack_review_failed" in out.actions_taken
     assert "slack_review" not in out.actions_taken
     assert not [n for n in vu["notifies"] if n["category"] == "alerts"]
+
+
+# =====================================================================
+# La branche `unsubscribe` — visibilité « intéressé PUIS désabonné » (2026-08-23)
+# =====================================================================
+
+_DESABO = "Finalement, retirez-moi de votre liste svp."
+
+
+async def test_desabonnement_dun_lead_jamais_interesse_ne_pingue_rien_de_plus(monkeypatch):
+    """Cas de loin le plus courant : quelqu'un qui n'a jamais dit oui se
+    désabonne. Aucun ping — sinon #leads devient du bruit et le signal se perd."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="unsubscribe", interested_at=None)
+    out = await reply.handle_reply(_payload(_DESABO))
+
+    assert out.category == "unsubscribe"
+    assert "suppression_added" in out.actions_taken
+    assert "contact_opted_out" in out.actions_taken
+    assert not [a for a in out.actions_taken if a.startswith("interested_lead_unsubscribed")]
+    assert vu["notifies"] == []
+
+
+async def test_un_interesse_qui_se_desabonne_est_signale_avec_le_garde_lcap(monkeypatch):
+    from src.tools import reply
+
+    vu = _wire_interested(
+        monkeypatch, categorie="unsubscribe",
+        interested_at="2026-08-21T14:03:00+00:00",
+    )
+    out = await reply.handle_reply(_payload(_DESABO))
+
+    assert "interested_lead_unsubscribed" in out.actions_taken
+    leads = [n for n in vu["notifies"] if n["category"] == "leads"]
+    assert len(leads) == 1
+    corps = str(leads[0]["blocks"])
+    assert "Ne PAS relancer par courriel" in corps  # l'interdit, en toutes lettres
+    assert "LCAP" in corps and "LNNTE" in corps
+    assert "2026-08-21" in corps                    # la date du oui
+    assert "retirez-moi de votre liste" in corps    # l'extrait de sa réponse
+    assert "jean@x.ca" in corps
+
+
+async def test_la_conformite_du_desabonnement_reste_intacte(monkeypatch):
+    """On AJOUTE une notification, on ne touche pas à la conformité : la ligne
+    de suppression et le passage à opted_out partent avant le ping, et partent
+    même si le ping meurt."""
+    from src.tools import reply
+
+    vu = _wire_interested(
+        monkeypatch, categorie="unsubscribe",
+        interested_at="2026-08-21T14:03:00+00:00",
+        notify_par_categorie={"leads": False},
+    )
+    out = await reply.handle_reply(_payload(_DESABO))
+
+    assert "suppression_added" in out.actions_taken
+    assert "contact_opted_out" in out.actions_taken
+    assert ("contacts", {"status": "opted_out"}) in vu["updates"]
+
+
+async def test_un_ping_de_desabonnement_rate_ne_sinscrit_pas_comme_envoye(monkeypatch):
+    from src.tools import reply
+
+    _wire_interested(
+        monkeypatch, categorie="unsubscribe",
+        interested_at="2026-08-21T14:03:00+00:00",
+        notify_par_categorie={"leads": False},
+    )
+    out = await reply.handle_reply(_payload(_DESABO))
+
+    assert "interested_lead_unsubscribed_ping_failed" in out.actions_taken
+    assert "interested_lead_unsubscribed" not in out.actions_taken
+
+
+async def test_lecture_du_marqueur_en_panne_ne_casse_pas_le_desabonnement(monkeypatch):
+    """La lecture est un confort ; le désabonnement, non. Une panne de lecture
+    avale l'exception et le flux de conformité continue."""
+    from src.tools import reply
+
+    from src import supabase_client
+
+    _wire_interested(monkeypatch, categorie="unsubscribe", interested_at=None)
+    # Le select monté par _wire_interested, qu'on laisse répondre pour tout le
+    # reste du flux — seule la lecture ciblée du marqueur tombe.
+    select_monte = supabase_client.select
+
+    async def select_qui_casse_la_lecture_ciblee(table, *, params=None, schema=None):
+        if table == "contacts" and (params or {}).get("select") == "interested_at":
+            raise RuntimeError("db down")
+        return await select_monte(table, params=params, schema=schema)
+
+    monkeypatch.setattr(supabase_client, "select", select_qui_casse_la_lecture_ciblee)
+    out = await reply.handle_reply(_payload(_DESABO))
+
+    assert out.status == "ok"
+    assert "contact_opted_out" in out.actions_taken
+    assert not [a for a in out.actions_taken if a.startswith("interested_lead_unsubscribed")]
 
 
 def test_hot_lead_blocks_nouvelle_signature():

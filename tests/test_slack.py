@@ -205,6 +205,60 @@ def test_build_hot_lead_blocks_avertit_si_verif_desabonnement_en_panne() -> None
     assert "désabonnement" not in sans[2]["text"]["text"]
 
 
+# =====================================================================
+# « Un intéressé s'est désabonné » — visibilité 2026-08-23
+# =====================================================================
+
+def test_build_interested_unsubscribed_blocks_porte_le_garde_lcap() -> None:
+    """Le ping doit être auto-suffisant : qui, quand il avait dit oui, ce qu'il
+    vient d'écrire — et SURTOUT l'interdit LCAP en toutes lettres. Sans lui, le
+    réflexe naturel (« je le relance pour comprendre ») est une infraction."""
+    from src.lib.slack import build_interested_unsubscribed_blocks
+    fb, blocks = build_interested_unsubscribed_blocks(
+        contact_name="Jean Roy",
+        company_name="Plomberie X",
+        contact_email="jean@x.ca",
+        interested_at="2026-08-21T14:03:00+00:00",
+        reply_preview="Finalement retirez-moi de votre liste.",
+        track="agence-ia",
+    )
+    corps = " ".join(str(b) for b in blocks)
+    assert "désabonné" in fb
+    assert "Jean Roy" in fb and "Plomberie X" in fb
+    assert blocks[0]["type"] == "header"
+    assert "désabonné" in blocks[0]["text"]["text"]
+    # Le garde-fou, mot pour mot — c'est la raison d'être du bloc.
+    assert "Ne PAS relancer par courriel" in corps
+    assert "LCAP" in corps
+    assert "LNNTE" in corps
+    # La date du oui : sans elle, impossible de juger si le oui était récent.
+    assert "2026-08-21" in corps
+    assert "jean@x.ca" in corps
+    assert "retirez-moi de votre liste" in corps
+
+
+def test_build_interested_unsubscribed_blocks_tronque_lextrait() -> None:
+    from src.lib.slack import build_interested_unsubscribed_blocks
+    _, blocks = build_interested_unsubscribed_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.ca",
+        interested_at="2026-08-21T14:03:00+00:00",
+        reply_preview="x" * 1000,
+    )
+    assert "…" in blocks[-1]["text"]["text"]
+
+
+def test_build_interested_unsubscribed_blocks_horodatage_non_iso_reste_brut() -> None:
+    """On n'invente pas une date : une valeur qui ne ressemble pas à de l'ISO
+    est affichée telle quelle plutôt que découpée n'importe comment."""
+    from src.lib.slack import build_interested_unsubscribed_blocks
+    _, blocks = build_interested_unsubscribed_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.ca",
+        interested_at="hier",
+        reply_preview="stop",
+    )
+    assert "hier" in " ".join(str(b) for b in blocks)
+
+
 def test_build_review_blocks_includes_category_and_reasoning() -> None:
     from src.lib.slack import build_review_blocks
     fb, blocks = build_review_blocks(

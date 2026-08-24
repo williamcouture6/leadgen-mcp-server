@@ -4,7 +4,9 @@ Reçoit un reply Instantly, le classe via LLM, et route l'action :
   - `interested` → garde désabonnement, puis marqueur contacts.interested_at
     (pivot tri 2026-08-20 : William produit le site en session artisanale et
     répond LUI-MÊME avec le lien — plus aucune auto-réponse) + Slack ping #leads
-  - `unsubscribe` → suppression_list + contact.status='opted_out'
+  - `unsubscribe` → suppression_list + contact.status='opted_out' (+ Slack ping
+    #leads SI le contact avait `interested_at` posé — visibilité seulement, le
+    ping porte l'interdit LCAP de relance par courriel)
   - `not_interested` → contact.status='disqualified'
   - `out_of_office` → log only, contact reste 'contacted'
   - `other` → flag review manuel, Slack ping
@@ -381,6 +383,33 @@ async def _mark_contact_interested(contact_id: str | None) -> bool:
     except Exception as e:  # noqa: BLE001
         print(f"[reply] interested_at update failed: {e!r}")
         return False
+
+
+async def _contact_interested_at(contact_id: str | None) -> str | None:
+    """Horodatage du OUI de ce contact, ou None s'il n'a jamais dit oui.
+
+    Sert à la branche `unsubscribe` : un désabonnement quelconque n'intéresse
+    personne, mais un désabonnement de quelqu'un qui avait dit oui, si — il
+    disparaît sinon en silence de la file de travail de William.
+
+    Lecture pure, exception avalée (comme les autres helpers du fichier) : une
+    panne de lecture ne doit jamais empêcher un désabonnement de s'enregistrer.
+    Le prix d'un échec est une notification manquée, pas une infraction."""
+    if not contact_id:
+        return None
+    try:
+        rows = await db.select(
+            "contacts",
+            params={
+                "select": "interested_at",
+                "id": f"eq.{contact_id}",
+                "limit": "1",
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[reply] interested_at read failed: {e!r}")
+        return None
+    return (rows[0].get("interested_at") if rows else None) or None
 
 
 async def _record_agent_run(
@@ -779,6 +808,33 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             contact_id=contact_id, campaign_id=campaign_id,
             state="lost", last_direction="inbound",
         )
+
+        # Visibilité (2026-08-23) : un lead qui avait dit OUI puis se désabonne
+        # sort du compteur « en attente de site » sans un mot — William veut le
+        # savoir pour arbitrer lui-même. Ajout STRICTEMENT en aval : la ligne de
+        # suppression et le passage à opted_out ci-dessus sont inchangés, et ce
+        # bloc n'écrit rien. Le ping PORTE l'interdit LCAP : on informe, on
+        # n'ouvre aucune porte d'envoi.
+        interested_at = await _contact_interested_at(contact_id)
+        if interested_at:
+            fallback, blocks = slack_lib.build_interested_unsubscribed_blocks(
+                contact_name=contact_name,
+                company_name=company_name,
+                contact_email=payload.lead_email,
+                interested_at=interested_at,
+                reply_preview=cleaned_reply or payload.reply_body_text,
+                track=company_track,
+            )
+            # Même patron d'honnêteté que la branche `interested` : une action
+            # journalisée sur un ping perdu ferait croire William averti.
+            actions.append(
+                "interested_lead_unsubscribed"
+                if await slack_lib.notify(
+                    text=fallback, blocks=blocks,
+                    context="wf7_interested_unsubscribed", category="leads",
+                )
+                else "interested_lead_unsubscribed_ping_failed"
+            )
 
     elif category == "not_interested":
         await _update_contact_status(contact_id, "disqualified")

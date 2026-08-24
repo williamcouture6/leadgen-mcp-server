@@ -196,6 +196,84 @@ def build_hot_lead_blocks(
     return fallback, blocks
 
 
+# Le garde-fou LCAP, en toutes lettres. Il VOYAGE avec la notification : une
+# alerte « il s'est désabonné » sans l'interdit invite au réflexe naturel (« je
+# le relance pour comprendre »), qui est justement l'infraction. Le consentement
+# retiré interdit tout message électronique commercial — sans exception et sans
+# délai. L'appel téléphonique relève d'un autre régime (LNNTE), d'où la nuance.
+GARDE_LCAP_APRES_DESABONNEMENT = (
+    "⛔ Ne PAS relancer par courriel — consentement retiré (LCAP). "
+    "Un appel reste possible : vérifier la LNNTE d'abord."
+)
+
+
+def _jour(horodatage: str) -> str:
+    """« 2026-08-21T14:03:00+00:00 » → « 2026-08-21 ».
+
+    Rend la valeur telle quelle si elle ne ressemble pas à de l'ISO : mieux vaut
+    un horodatage brut à l'écran qu'une date inventée par un découpage aveugle.
+    """
+    s = (horodatage or "").strip()
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    return s
+
+
+def build_interested_unsubscribed_blocks(
+    *,
+    contact_name: str,
+    company_name: str,
+    contact_email: str,
+    interested_at: str,
+    reply_preview: str,
+    track: str | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Format Slack pour un lead qui avait dit OUI puis s'est désabonné (WF-7).
+
+    Besoin exprimé le 2026-08-23 : ces leads-là disparaissent en silence du
+    compteur « en attente de site », et William veut décider LUI-MÊME de la
+    suite. Le ping est donc de la VISIBILITÉ pure — il n'ouvre aucune porte
+    d'envoi et ne déclenche aucune relance.
+
+    Il porte quatre choses : qui, quand il avait dit oui (pour juger si le oui
+    était d'hier ou d'il y a trois mois), ce qu'il vient d'écrire, et l'interdit
+    LCAP. Ce dernier n'est pas décoratif : c'est le seul contrepoids au réflexe
+    de rappeler par courriel un lead qu'on croyait acquis.
+    """
+    tp = _track_prefix(track)
+    titre = "⚠️ Un intéressé s'est désabonné"
+    fallback = f"{tp}{titre} — {contact_name} @ {company_name}"
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{tp}{titre}"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                _kv_field("Contact", f"{contact_name}\n{contact_email}"),
+                _kv_field("Entreprise", company_name),
+                _kv_field("Avait dit oui le", _jour(interested_at)),
+            ],
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": GARDE_LCAP_APRES_DESABONNEMENT},
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Sa demande de désabonnement (extrait)*\n"
+                    f"```{_truncate(reply_preview, 400)}```"
+                ),
+            },
+        },
+    ]
+    return fallback, blocks
+
+
 def build_review_blocks(
     *,
     contact_name: str,

@@ -124,6 +124,12 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
                      (messages.status in sent/delivered/bounced/replied).
       - `interested_waiting_site` = contacts.interested_at posé (WF-7) sans ligne
                      agence.demo_sites encore créée (frappe du jeton, PT2).
+      - `interested_then_unsubscribed` = avait dit oui PUIS a retiré son
+                     consentement : statut opted_out, OU courriel sur
+                     suppression_list avec un motif de retrait (opt_out /
+                     spam_complaint — un hard_bounce n'en est pas un).
+                     Visibilité seulement : aucune relance par courriel n'est
+                     permise après un retrait (LCAP).
     Avant ce correctif (2026-06-04), `envoyés` comptait status!='draft' et gonflait
     les `queued` comme des envois — d'où des « envoyés 10 » alors que rien n'était parti."""
     from datetime import datetime, timezone
@@ -164,28 +170,75 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         replies = await _cnt("messages", {**t, "direction": "eq.inbound"})
 
         # Intéressés (pivot tri 2026-08-20) : ont répondu « oui » au courriel de
-        # tri (WF-7 → contacts.interested_at) et leur démo n'existe pas encore.
+        # tri (WF-7 → contacts.interested_at). Une seule lecture alimente DEUX
+        # compteurs complémentaires, jamais redondants — un lead qui se désabonne
+        # sort du premier pour entrer dans le second :
+        #   🔥 en attente de site  = il attend, produis-lui sa démo
+        #   ⚠️ désabonnés          = il a retiré son consentement, à toi de juger
+        #
         # Cycle de vie complet — leçon P4.10 : un compteur sans sortie dérive.
         # ENTRÉE : interested_at posé par WF-7. SORTIE : la frappe du jeton
         # (session artisanale, PT2) crée la ligne agence.demo_sites du contact.
-        # Sans filtre de date : un intéressé qui attend est celui qu'on veut voir.
-        # Un intéressé devenu opted_out/disqualified/bounced sort du compteur par
-        # son statut — interested_at reste, c'est un journal, pas un état courant.
-        # (booked reste compté : il attend peut-être encore sa démo pendant la vente.)
+        # Sans filtre de date, dans les deux cas : c'est un ÉTAT, pas l'activité
+        # du jour — un intéressé coincé depuis six semaines est celui qu'on veut
+        # voir. Un intéressé devenu opted_out/disqualified/bounced sort de « en
+        # attente de site » (interested_at reste, c'est un journal, pas un état
+        # courant). (booked reste compté : il attend peut-être encore sa démo
+        # pendant la vente.)
+        #
+        # ⚠️ L'exclusion de statut se fait en Python, PAS dans le filtre SQL : le
+        # compteur des désabonnés a besoin de VOIR les opted_out. Le comportement
+        # de « en attente de site » est identique à avant ce changement.
+        #
+        # Pourquoi croiser AUSSI suppression_list, et pas se fier au seul statut :
+        # il y a deux chemins de désabonnement. La réponse « désabonnez-moi »
+        # (WF-7) et le clic sur le lien du footer (Edge Function `unsubscribe`)
+        # posent tous deux status='opted_out'. Mais l'Edge Function écrit TOUJOURS
+        # suppression_list et ne pose le statut qu'au mieux (erreur de lecture ou
+        # d'écriture journalisée puis ignorée, la ligne de suppression restant la
+        # source de vérité). Sans le croisement par courriel, ces cas dégradés
+        # resteraient invisibles ici ET coincés dans la file « en attente de site ».
+        #
         # N+1 assumé ci-dessous : quelques intéressés par semaine ; passer à une
-        # jointure/exclusion si ce volume grossit.
+        # jointure si ce volume grossit.
         interesses = await sb.select_all(
             "contacts",
             order="id",
             params={
-                "select": "id",
+                "select": "id,email,status",
                 "track": f"eq.{tk}",
                 "interested_at": "not.is.null",
-                "status": "not.in.(opted_out,disqualified,bounced)",
             },
         )
+        impasses = {"opted_out", "disqualified", "bounced"}
         interested_waiting_site = 0
+        interested_then_unsubscribed = 0
         for r in interesses:
+            statut = r.get("status")
+            desabonne = statut == "opted_out"
+            if not desabonne and r.get("email"):
+                # ⚠️ Le filtre de motif n'est PAS cosmétique : `hard_bounce`
+                # (posé par WF-6b sur une adresse morte) vit dans la même table.
+                # Sans lui, une adresse morte serait annoncée comme un
+                # désabonnement et se verrait appliquer le garde-fou LCAP,
+                # alors que personne n'a retiré quoi que ce soit.
+                # dncl (téléphone), manual et competitor sont nos décisions à
+                # nous, pas celles du prospect : hors compteur également.
+                sup = await sb.select(
+                    "suppression_list",
+                    params={
+                        "select": "email",
+                        "email": f"eq.{r['email']}",
+                        "reason": "in.(opt_out,spam_complaint)",
+                        "limit": "1",
+                    },
+                )
+                desabonne = bool(sup)
+            if desabonne:
+                interested_then_unsubscribed += 1
+                continue  # on ne lui doit plus de site : jamais dans l'autre file
+            if statut in impasses:
+                continue
             demo = await sb.select(
                 "demo_sites",
                 params={"select": "id", "contact_id": f"eq.{r['id']}", "limit": "1"},
@@ -198,6 +251,7 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             "sourced": sourced, "emails": emails, "drafts": drafts,
             "pushed": pushed, "sent": sent, "replies": replies,
             "interested_waiting_site": interested_waiting_site,
+            "interested_then_unsubscribed": interested_then_unsubscribed,
         }
         ligne = (
             f"*{tk}* — sourcées {sourced} · emails {emails} · drafts {drafts} · "
@@ -205,6 +259,8 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         )
         if interested_waiting_site:
             ligne += f"\n  🔥 intéressés en attente de site {interested_waiting_site}"
+        if interested_then_unsubscribed:
+            ligne += f"\n  ⚠️ intéressés désabonnés {interested_then_unsubscribed}"
         lines.append(ligne)
 
     bookings = await _cnt("booking_events", {})
