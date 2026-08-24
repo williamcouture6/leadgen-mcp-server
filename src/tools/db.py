@@ -121,7 +121,12 @@ REACTI_SECTOR_CATALOG: dict[str, list[str]] = {
     "commerce_local": [
         "entrepreneur en déneigement",
         "paysagiste",
+        # Deux formulations pour la tonte (décision William 2026-08-21) : Google
+        # Places ne rend pas les mêmes entreprises selon le mot employé. Les
+        # doublons ne coûtent rien — `insert_company` dédupe sur google_place_id,
+        # identique pour une même entreprise quelle que soit la requête.
         "tonte de gazon",
+        "tonte de pelouse",
         "exterminateur",
         "entretien de piscine",
         "lavage de vitres",
