@@ -21,9 +21,15 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
+from zoneinfo import ZoneInfo
 
 import httpx
+
+# Fuseau d'AFFICHAGE des dates rendues à William. La base stocke en UTC ; tout
+# ce qu'il lit doit être dans son heure à lui, comme les compteurs du résumé.
+_FUSEAU_AFFICHAGE = "America/Toronto"
 
 if TYPE_CHECKING:
     from .reacti_tickets import ReactiTicket
@@ -208,7 +214,14 @@ GARDE_LCAP_APRES_DESABONNEMENT = (
 
 
 def jour(horodatage: str) -> str:
-    """« 2026-08-21T14:03:00+00:00 » → « 2026-08-21 ».
+    """« 2026-08-21T14:03:00+00:00 » → « 2026-08-21 », en heure de Toronto.
+
+    ⚠️ La conversion de fuseau n'est pas cosmétique : la base stocke en UTC, et
+    un désabonnement à 21 h le 23 août à Toronto y est écrit « 2026-08-24T01:00Z ».
+    Un découpage brut de la chaîne aurait affiché le 24 — William aurait lu
+    « demain » pour un geste d'hier soir, et n'aurait pas reconnu le cas dont on
+    lui parle. On rend donc la date du jour VÉCU, celle qui est aussi le repère
+    de la fenêtre « depuis 7 jours » du résumé.
 
     Rend la valeur telle quelle si elle ne ressemble pas à de l'ISO : mieux vaut
     un horodatage brut à l'écran qu'une date inventée par un découpage aveugle.
@@ -218,9 +231,15 @@ def jour(horodatage: str) -> str:
     « oui » que ce ping, et les deux doivent les rendre pareil.
     """
     s = (horodatage or "").strip()
-    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+    if not (len(s) >= 10 and s[4] == "-" and s[7] == "-"):
+        return s
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
         return s[:10]
-    return s
+    if dt.tzinfo is None:  # naïf en base = UTC, comme partout ailleurs ici
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ZoneInfo(_FUSEAU_AFFICHAGE)).strftime("%Y-%m-%d")
 
 
 def build_interested_unsubscribed_blocks(

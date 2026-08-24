@@ -493,3 +493,36 @@ def test_is_configured_ignore_les_autres_categories(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("SLACK_WEBHOOK_LEADS", "https://hooks.slack.com/l")
     from src.lib.slack import is_configured
     assert is_configured("bookings") is False
+
+
+# --------------------------------------------------------------------------
+# jour() — les dates rendues à William sont dans SON heure, pas en UTC
+# --------------------------------------------------------------------------
+
+def test_jour_rend_la_date_vecue_a_toronto() -> None:
+    """Un désabonnement à 21 h le 23 août à Toronto est stocké « 2026-08-24T01:00Z ».
+    Un découpage brut de la chaîne afficherait le 24 : William lirait « demain »
+    pour un geste d'hier soir et ne reconnaîtrait pas le cas dont on lui parle."""
+    from src.lib.slack import jour
+
+    assert jour("2026-08-24T01:00:00+00:00") == "2026-08-23"
+    assert jour("2026-08-23T16:00:00+00:00") == "2026-08-23"
+
+
+def test_jour_traite_un_horodatage_naif_comme_de_l_utc() -> None:
+    """Postgres peut rendre un timestamptz sans offset explicite ; le reste du
+    projet suppose UTC partout, on ne fait pas d'exception ici."""
+    from src.lib.slack import jour
+
+    assert jour("2026-08-24T01:00:00") == "2026-08-23"
+
+
+def test_jour_ne_fabrique_jamais_une_date() -> None:
+    """Mieux vaut une valeur brute à l'écran qu'une date inventée."""
+    from src.lib.slack import jour
+
+    assert jour("bidon") == "bidon"
+    assert jour("") == ""
+    # ressemble à de l'ISO mais ne parse pas : on retombe sur les 10 premiers
+    # caractères plutôt que de lever au milieu d'un résumé quotidien.
+    assert jour("2026-13-45T99:99:99") == "2026-13-45"
