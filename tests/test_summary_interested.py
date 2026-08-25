@@ -124,7 +124,10 @@ async def test_compte_les_interesses_sans_demo(monkeypatch):
         http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
     )
     assert out["totals"]["agence-ia"]["interested_waiting_site"] == 2
-    assert "intéressés en attente de site 2" in out["text"]
+    # PT3 (2026-08-25) : le compteur RESTE calculé et exposé dans totals — c'est
+    # un contrat d'API lu par le cron — mais son affichage a cédé la place au
+    # bloc nominatif « Tes leads chauds ». On pin donc la valeur, plus le texte.
+    assert "intéressés en attente de site" not in out["text"]
 
 
 async def test_zero_interesse_pas_de_ligne(monkeypatch):

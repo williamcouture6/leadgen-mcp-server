@@ -74,3 +74,232 @@ async def test_la_vue_est_lue_dans_le_schema_agence_et_epinglee_agence_ia(monkey
     assert len(lectures) == 1, "la vue doit être lue UNE fois, hors de la boucle par track"
     assert lectures[0]["schema"] == "agence"
     assert lectures[0]["params"].get("track") == "eq.agence-ia"
+
+
+def _lead(nom, *, etape="site_envoye", jours=3, **kw):
+    base = {
+        "contact_id": f"ct-{nom}", "company_name": nom,
+        "contact_email": f"info@{nom.lower().replace(' ', '')}.ca",
+        "contact_status": "replied", "etape": etape, "note": None, "nb_notes": 0,
+        "reference_immobilite": _il_y_a(jours), "fiche_client_existe": False,
+    }
+    base.update(kw)
+    return base
+
+
+async def test_un_desabonne_avec_des_notes_reste_visible_et_marque(monkeypatch):
+    """Un lead avec six notes et un RDV qui écrit « on verra l'an prochain » est
+    classé disqualified par WF-7 SANS aucun ping : il quitterait la liste du jour
+    au lendemain. La promesse « un lead ne disparaît jamais » ne tient que si les
+    impasses ÉTIQUETTENT au lieu d'exclure."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[{
+            "contact_id": "ct-1", "company_name": "Vitres Nadeau",
+            "contact_email": "info@vitresnadeau.ca", "contact_status": "opted_out",
+            "etape": "feedback_recu", "note": "il aimait ça", "nb_notes": 4,
+            "reference_immobilite": _il_y_a(3), "fiche_client_existe": False,
+        }],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "Vitres Nadeau" in out["text"]
+    assert "s'est désabonné" in out["text"]
+    assert "4 notes" in out["text"]
+
+
+async def test_un_supprime_par_courriel_est_marque_meme_sans_statut(monkeypatch):
+    """Le clic sur le lien du footer écrit TOUJOURS suppression_list mais ne pose
+    contacts.status qu'au mieux. Sans le croisement par courriel — insensible à
+    la casse — ce cas dégradé passerait pour un lead sain."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[{
+            "contact_id": "ct-1", "company_name": "Toiture Gagnon",
+            "contact_email": "Marc@ToitureGagnon.ca", "contact_status": "contacted",
+            "etape": "site_envoye", "note": None, "nb_notes": 0,
+            "reference_immobilite": _il_y_a(2), "fiche_client_existe": False,
+        }],
+        supprimes=["marc@toituregagnon.ca"],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "s'est désabonné" in out["text"]
+
+
+async def test_un_lead_sain_n_est_pas_marque(monkeypatch):
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Paysagement Roy", note="envoyé hier", nb_notes=1, jours=9)],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "Paysagement Roy" in out["text"]
+    assert "désabonné" not in out["text"]
+    assert "a dit non" not in out["text"]
+
+
+async def test_un_site_deja_produit_ne_dit_jamais_a_produire(monkeypatch):
+    """Le défaut à deux niveaux : une ligne demo_sites existe → « site produit ».
+    Sans lui, un site livré depuis deux semaines réclamerait chaque jour sa
+    production — le mensonge exact que PT3 existe pour éteindre."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Toiture Gagnon", etape="site_produit",
+                      demo_frappee_le=_il_y_a(14), jours=14)],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "site produit" in out["text"]
+    assert "à produire" not in out["text"]
+
+
+async def test_un_lead_sans_note_ni_demo_dit_a_produire(monkeypatch):
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Déneigement Côté", etape="a_produire", jours=3)],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "à produire" in out["text"]
+    assert "a dit oui il y a 3 j" in out["text"]
+
+
+async def test_perdu_sort_de_la_liste(monkeypatch):
+    http_api = _socle(monkeypatch, chauds=[_lead("Vitres X", etape="perdu")])
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "Vitres X" not in out["text"]
+
+
+async def test_vendu_avec_fiche_sort_vendu_sans_fiche_reste(monkeypatch):
+    http_api = _socle(
+        monkeypatch,
+        chauds=[
+            _lead("Avec Fiche", etape="vendu", fiche_client_existe=True),
+            _lead("Sans Fiche", etape="vendu", fiche_client_existe=False),
+        ],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "Avec Fiche" not in out["text"]
+    assert "Sans Fiche" in out["text"]
+    assert "fiche client à créer" in out["text"]
+
+
+async def test_le_rdv_calcom_s_affiche_a_cote_de_la_note(monkeypatch):
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("BL Vitres", etape="feedback_recu",
+                      note="il veut changer les couleurs",
+                      rdv_prochain_at=_dans(2))],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "Cal.com" in out["text"]
+
+
+async def test_plafond_dix_et_reste_annonce(monkeypatch):
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead(f"Boite {i}", jours=30 - i) for i in range(13)],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "et 3 autres" in out["text"]
+    assert "Tes leads chauds (13)" in out["text"]
+
+
+async def test_en_pause_reste_affiche_mais_hors_tri(monkeypatch):
+    """Un lead en pause accumule de l'immobilité indéfiniment : laissé dans le
+    tri, il occuperait le haut de la liste à demeure et pousserait les leads
+    actifs sous le plafond."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[
+            _lead("En Pause", etape="en_pause", jours=200),
+            _lead("Actif", jours=5),
+        ],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert out["text"].index("Actif") < out["text"].index("En Pause")
+
+
+async def test_au_dela_de_21_jours_la_ligne_pose_la_question(monkeypatch):
+    """Un opérateur solo ne s'assoit jamais pour déclarer une défaite : sans
+    relance, `perdu` est sous-écrit et le cimetière mange la liste."""
+    http_api = _socle(monkeypatch, chauds=[_lead("Vieux Lead", jours=30)])
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "toujours vivant" in out["text"]
+
+
+async def test_libelle_honnete_sur_le_silence(monkeypatch):
+    """« dernière note il y a 9 j » et non « rien depuis 9 jours » : la phrase
+    mesure le silence de William, pas celui du lead."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Roy", note="envoyé", nb_notes=1,
+                      derniere_note_at=_il_y_a(9), jours=9)],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "dernière note il y a 9 j" in out["text"]
+
+
+async def test_la_ligne_des_desabonnes_est_inchangee(monkeypatch):
+    """🔴 GARDE-FOU. La ligne « intéressés désabonnés » et son interdit LCAP ont
+    été livrés le 2026-08-23 et partagent la lecture que PT3 modifie. Ce test
+    existe pour qu'un futur refactor du bloc « leads chauds » ne les emporte pas
+    en silence : ils ne sont couverts par aucun autre test de ce fichier."""
+    from src import http_api as http_api_mod
+    from src import supabase_client as sb
+    from src.lib import slack as slack_mod
+
+    interesse = {
+        "id": "ct-1", "email": "info@vitresnadeau.ca", "first_name": "Marc",
+        "last_name": "Nadeau", "interested_at": _il_y_a(20), "status": "opted_out",
+    }
+
+    async def fake_count(table, params=None):
+        return 0
+
+    async def fake_select_all(table, order=None, params=None, schema=None, **kw):
+        if table == "contacts" and "interested_at" in (params or {}):
+            return [interesse]
+        if table == "suppression_list":
+            return [{"email": "info@vitresnadeau.ca", "reason": "opt_out",
+                     "created_at": _il_y_a(2)}]
+        return []
+
+    async def fake_select(table, params=None, schema=None, **kw):
+        return []
+
+    async def fake_notify(**kw):
+        return True
+
+    monkeypatch.setattr(sb, "count", fake_count)
+    monkeypatch.setattr(sb, "select_all", fake_select_all)
+    monkeypatch.setattr(sb, "select", fake_select)
+    monkeypatch.setattr(slack_mod, "notify", fake_notify)
+
+    out = await http_api_mod.summary_daily(
+        http_api_mod.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "intéressés désabonnés 1 (cumul" in out["text"]
+    assert "depuis 7 jours" in out["text"]
+    assert slack_mod.GARDE_LCAP_APRES_DESABONNEMENT in out["text"]
+    assert out["totals"]["agence-ia"]["interested_then_unsubscribed"] == 1

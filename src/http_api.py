@@ -135,6 +135,118 @@ def _cle_courriel(valeur: Any) -> str:
     return str(valeur or "").strip().lower()
 
 
+# Marques d'impasse du bloc « leads chauds » (PT3). Un lead en impasse n'est
+# JAMAIS retiré de la liste : il est étiqueté. Un lead avec six notes et un RDV
+# qui bascule `disqualified` — ce que WF-7 fait sans émettre le moindre ping —
+# quitterait sinon la liste sans un mot, avec tout son historique.
+_MARQUES_IMPASSE = {
+    "opted_out": "⛔ s'est désabonné",
+    "disqualified": "✖ a dit non",
+    "bounced": "📵 adresse morte",
+}
+
+
+def _marque_impasse(statut: Any, ligne_suppression: dict[str, Any] | None) -> str | None:
+    """La marque à afficher pour un lead chaud, ou None s'il est sain.
+
+    Deux sources, comme partout ailleurs dans ce résumé : `contacts.status` ET la
+    présence dans `suppression_list`. Le clic sur le lien du footer (Edge Function
+    `unsubscribe`) écrit TOUJOURS la ligne de suppression et ne pose le statut
+    qu'au mieux — sans le croisement, ce cas dégradé passerait pour un lead sain.
+    Le croisement se fait sur la clé normalisée (`_cle_courriel`) : `ilike` serait
+    un piège, `_` y est un joker."""
+    marque = _MARQUES_IMPASSE.get(str(statut or ""))
+    if marque:
+        return marque
+    if ligne_suppression is not None:
+        motif = ligne_suppression.get("reason")
+        if motif in _MOTIFS_RETRAIT_CONSENTEMENT:
+            return _MARQUES_IMPASSE["opted_out"]
+        if motif == "hard_bounce":
+            return _MARQUES_IMPASSE["bounced"]
+        # manual / competitor / dncl : NOUS l'avons écarté. On le dit sans
+        # invoquer un désabonnement que personne n'a demandé.
+        return "✖ écarté de notre côté"
+    return None
+
+
+# Plafond de lignes nommées dans le bloc « leads chauds » avant repli en
+# « et N autres ». N est toujours EXACT : une troncature silencieuse se lit
+# comme « c'est tout », ce qui est le contraire de la vérité.
+_PLAFOND_LEADS_CHAUDS = 10
+
+# Au-delà, la ligne POSE la question au lieu de constater. Un opérateur solo ne
+# s'assoit jamais pour déclarer une défaite : sans relance, `perdu` reste
+# sous-écrit et le cimetière occupe le haut de la liste.
+_JOURS_AVANT_DE_DEMANDER = 21
+
+_ETIQUETTES_ETAPE = {
+    "a_produire": "à produire",
+    "site_produit": "site produit",
+    "site_envoye": "site envoyé",
+    "feedback_recu": "feedback reçu",
+    "rdv_pris": "RDV pris",
+    "demo_faite": "démo faite",
+    "vendu": "vendu",
+    "en_pause": "en pause",
+}
+
+
+def _jours_depuis(valeur: Any, maintenant: datetime) -> int | None:
+    moment = _instant(valeur)
+    return None if moment is None else max(0, (maintenant - moment).days)
+
+
+def _truncate_note(note: str, limite: int = 90) -> str:
+    texte = " ".join(str(note).split())
+    return texte if len(texte) <= limite else texte[: limite - 1] + "…"
+
+
+def _ligne_lead_chaud(lead: dict[str, Any], marque: str | None,
+                      maintenant: datetime) -> str:
+    """Une ligne de la liste : qui, où il en est, et le dernier fait connu."""
+    from .lib import slack as slack_lib
+
+    nom = lead.get("company_name") or lead.get("contact_email") or "(sans nom)"
+    etape = str(lead.get("etape") or "a_produire")
+    bouts: list[str] = [_ETIQUETTES_ETAPE.get(etape, etape)]
+
+    if marque:
+        nb = lead.get("nb_notes") or 0
+        bouts = [marque + (f" · {nb} notes au carnet" if nb else "")]
+
+    # Le RDV est un fait dur : affiché, jamais écrit au carnet.
+    rdv = slack_lib.jour(lead.get("rdv_prochain_at") or "")
+    if rdv:
+        bouts.append(f"RDV {rdv} (Cal.com)")
+
+    if etape == "vendu" and not lead.get("fiche_client_existe"):
+        bouts.append("⚠️ fiche client à créer")
+
+    # Le silence est celui de William, pas celui du lead : on le dit ainsi, et on
+    # affiche à côté le dernier fait obtenu SANS aucune discipline.
+    jours_note = _jours_depuis(lead.get("derniere_note_at"), maintenant)
+    if jours_note is not None:
+        bouts.append(f"dernière note il y a {jours_note} j")
+    else:
+        depuis = _jours_depuis(lead.get("reference_immobilite"), maintenant)
+        repere = slack_lib.jour(lead.get("demo_frappee_le") or "")
+        if repere:
+            bouts.append(f"frappé le {repere}")
+        elif depuis is not None:
+            bouts.append(f"a dit oui il y a {depuis} j")
+
+    immobile = _jours_depuis(lead.get("reference_immobilite"), maintenant)
+    if (immobile is not None and immobile >= _JOURS_AVANT_DE_DEMANDER
+            and etape not in {"en_pause", "vendu"} and not marque):
+        bouts.append("❓ toujours vivant ? (`perdu` ou `en_pause`)")
+
+    if lead.get("note"):
+        bouts.append(f"« {_truncate_note(lead['note'])} »")
+
+    return f"  • {nom} — " + " · ".join(bouts)
+
+
 def _rang_ligne_suppression(row: dict[str, Any]) -> tuple[int, str]:
     """Ordre de préférence entre deux lignes qui normalisent vers la même clé.
 
@@ -428,8 +540,6 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             f"*{tk}* — sourcées {sourced} · emails {emails} · drafts {drafts} · "
             f"poussés {pushed} · envoyés {sent} · réponses {replies}"
         )
-        if interested_waiting_site:
-            ligne += f"\n  🔥 intéressés en attente de site {interested_waiting_site}"
         if desabonnes:
             noms = []
             for d in desabonnes[:_PLAFOND_NOMS_DESABONNES]:
@@ -492,12 +602,50 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         chauds = []
         lecture_chauds_ok = False
 
+    maintenant = datetime.now(timezone.utc)
+    visibles: list[tuple[float, str]] = []
+    en_pause: list[str] = []
+    total_chauds = 0
+    for lead in chauds:
+        etape = str(lead.get("etape") or "a_produire")
+        marque = _marque_impasse(
+            lead.get("contact_status"),
+            suppression.get(_cle_courriel(lead.get("contact_email"))),
+        )
+        # Sortie de la liste : `perdu` écrit à la main, ou `vendu` dont la fiche
+        # client existe. Rien d'autre — surtout pas une impasse, qui MARQUE.
+        if etape == "perdu":
+            continue
+        if etape == "vendu" and lead.get("fiche_client_existe"):
+            continue
+        total_chauds += 1
+        ligne_lead = _ligne_lead_chaud(lead, marque, maintenant)
+        if etape == "en_pause":
+            en_pause.append(ligne_lead)
+            continue
+        anciennete = _jours_depuis(lead.get("reference_immobilite"), maintenant) or 0
+        visibles.append((float(anciennete), ligne_lead))
+
+    # Le plus négligé en haut. `en_pause` reste affiché mais hors du tri : il
+    # accumule de l'ancienneté indéfiniment et squatterait la tête de liste.
+    visibles.sort(key=lambda v: v[0], reverse=True)
+    rendues = [texte for _, texte in visibles] + en_pause
+    reste = max(0, len(rendues) - _PLAFOND_LEADS_CHAUDS)
+    bloc_chauds = ""
+    if total_chauds:
+        bloc_chauds = f"\n🔥 *Tes leads chauds ({total_chauds})*\n" + "\n".join(
+            rendues[:_PLAFOND_LEADS_CHAUDS]
+        )
+        if reste:
+            bloc_chauds += f"\n  … et {reste} autres"
+
     bookings = await _cnt("booking_events", {})
     totals["bookings_total"] = bookings
 
     text = (
         f"📊 *Résumé quotidien — {date_str}*\n"
         + "\n".join(lines)
+        + bloc_chauds
         + f"\n📅 RDV bookés: {bookings}"
     )
 
