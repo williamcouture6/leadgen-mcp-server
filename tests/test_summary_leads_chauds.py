@@ -303,3 +303,114 @@ async def test_la_ligne_des_desabonnes_est_inchangee(monkeypatch):
     assert "depuis 7 jours" in out["text"]
     assert slack_mod.GARDE_LCAP_APRES_DESABONNEMENT in out["text"]
     assert out["totals"]["agence-ia"]["interested_then_unsubscribed"] == 1
+
+
+async def test_un_lead_en_impasse_garde_son_etape_visible(monkeypatch):
+    """Un désabonnement après un RDV vidéo ne se lit pas comme un désabonnement
+    avant même la production du site. La marque s'ajoute à l'étape, elle ne
+    l'efface pas."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Vitres Nadeau", etape="demo_faite", nb_notes=6,
+                      contact_status="opted_out")],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "s'est désabonné" in out["text"]
+    assert "démo faite" in out["text"]
+    assert "6 notes au carnet" in out["text"]
+
+
+# =====================================================================
+# Task 7 — le bloc « À faire » (2026-08-25)
+# =====================================================================
+
+async def test_une_action_due_remonte_en_tete(monkeypatch):
+    """Sans ce bloc, prochaine_action_at n'est jamais lu par une comparaison de
+    date : la jambe « rappelle » de la promesse n'existerait pas, et « je le
+    rappelle mardi » ne produirait rien mardi."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[
+            _lead("Immobile", jours=30),
+            _lead("À Rappeler", prochaine_action="rappeler",
+                  prochaine_action_at=_il_y_a(1), jours=2),
+        ],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "À faire" in out["text"]
+    assert out["text"].index("À Rappeler") < out["text"].index("Immobile")
+
+
+async def test_une_action_lointaine_ne_remonte_pas(monkeypatch):
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Plus Tard", prochaine_action="relancer",
+                      prochaine_action_at=_dans(10))],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "À faire" not in out["text"]
+
+
+async def test_un_vendu_sans_fiche_est_epingle_dans_a_faire(monkeypatch):
+    """Un `vendu` a par construction zéro jour d'immobilité : il se trierait EN
+    DERNIER et sortirait le premier par le plafond. C'est la ligne qu'on ne doit
+    jamais perdre."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead(f"Boite {i}", jours=40 - i) for i in range(12)]
+        + [_lead("Vendu Hier", etape="vendu", fiche_client_existe=False, jours=0)],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "Vendu Hier" in out["text"]
+    assert "fiche client à créer" in out["text"]
+
+
+# =====================================================================
+# Task 8 — ne jamais se taire (2026-08-25)
+# =====================================================================
+
+async def test_liste_vide_imprime_quand_meme_une_ligne(monkeypatch):
+    """Aujourd'hui la ligne 🔥 disparaît quand le compteur vaut 0 : une vue qui
+    rend vide pour une MAUVAISE raison produirait exactement la même sortie
+    qu'une journée calme. Ce résumé est la seule file de travail — il doit
+    toujours dire quelque chose."""
+    http_api = _socle(monkeypatch, chauds=[])
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "aucun lead chaud" in out["text"]
+
+
+async def test_une_lecture_ratee_est_dite_dans_le_resume(monkeypatch):
+    """Fail-soft, jamais silencieux : le patron d'honnêteté de WF-7 appliqué ici."""
+    http_api = _socle(monkeypatch, chauds=[], vue_leve=True)
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "carnet illisible" in out["text"]
+    assert "aucun lead chaud" not in out["text"]
+
+
+async def test_tout_epingle_ne_laisse_pas_un_entete_sur_du_vide(monkeypatch):
+    """Quand chaque lead chaud est épinglé dans « À faire », la liste du dessous
+    est vide. Un « (1) » posé sur zéro ligne — suivi d'une ligne blanche — se lit
+    comme une liste perdue en route : le mode d'échec exact que Task 8 éteint un
+    cran plus haut. Le compte inclut bien les épinglés, on dit juste où ils sont."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Vendu Seul", etape="vendu", fiche_client_existe=False,
+                      jours=0)],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "Tes leads chauds (1)* — tous dans « À faire » ci-dessus" in out["text"]
+    assert "\n\n" not in out["text"], "un en-tête ne doit jamais surplomber du vide"

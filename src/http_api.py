@@ -180,6 +180,11 @@ _PLAFOND_LEADS_CHAUDS = 10
 # sous-écrit et le cimetière occupe le haut de la liste.
 _JOURS_AVANT_DE_DEMANDER = 21
 
+# Fenêtre du bloc « À faire » : échu, aujourd'hui, ou demain. Plus large, il
+# devient une deuxième liste de tout ; plus étroit, une action du matin arrive
+# après coup.
+_HORIZON_A_FAIRE_JOURS = 1
+
 _ETIQUETTES_ETAPE = {
     "a_produire": "à produire",
     "site_produit": "site produit",
@@ -212,8 +217,14 @@ def _ligne_lead_chaud(lead: dict[str, Any], marque: str | None,
     bouts: list[str] = [_ETIQUETTES_ETAPE.get(etape, etape)]
 
     if marque:
+        # La marque PRÉCÈDE l'étape, elle ne l'efface pas : la première question
+        # devant un lead en impasse est « où il en était ». Un désabonnement
+        # après une démo ne se lit pas comme un désabonnement avant même la
+        # production du site.
         nb = lead.get("nb_notes") or 0
-        bouts = [marque + (f" · {nb} notes au carnet" if nb else "")]
+        bouts = [marque, _ETIQUETTES_ETAPE.get(etape, etape)] + (
+            [f"{nb} notes au carnet"] if nb else []
+        )
 
     # Le RDV est un fait dur : affiché, jamais écrit au carnet.
     rdv = slack_lib.jour(lead.get("rdv_prochain_at") or "")
@@ -603,6 +614,8 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         lecture_chauds_ok = False
 
     maintenant = datetime.now(timezone.utc)
+    horizon = maintenant + timedelta(days=_HORIZON_A_FAIRE_JOURS)
+    a_faire: list[str] = []
     visibles: list[tuple[float, str]] = []
     en_pause: list[str] = []
     total_chauds = 0
@@ -620,6 +633,15 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             continue
         total_chauds += 1
         ligne_lead = _ligne_lead_chaud(lead, marque, maintenant)
+
+        # Épinglé en tête, hors tri et hors plafond : une action due, et la
+        # vente dont la fiche n'est pas ouverte.
+        echeance = _instant(lead.get("prochaine_action_at"))
+        due = echeance is not None and echeance <= horizon
+        if due or (etape == "vendu" and not lead.get("fiche_client_existe")):
+            a_faire.append(ligne_lead)
+            continue
+
         if etape == "en_pause":
             en_pause.append(ligne_lead)
             continue
@@ -632,12 +654,27 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     rendues = [texte for _, texte in visibles] + en_pause
     reste = max(0, len(rendues) - _PLAFOND_LEADS_CHAUDS)
     bloc_chauds = ""
-    if total_chauds:
-        bloc_chauds = f"\n🔥 *Tes leads chauds ({total_chauds})*\n" + "\n".join(
-            rendues[:_PLAFOND_LEADS_CHAUDS]
-        )
-        if reste:
-            bloc_chauds += f"\n  … et {reste} autres"
+    if a_faire:
+        bloc_chauds += "\n⏰ *À faire*\n" + "\n".join(a_faire)
+    if not lecture_chauds_ok:
+        # Dire la panne PLUTÔT que de rendre une liste vide qui ressemble à une
+        # journée calme. Le fail-soft protège le reste du résumé ; il ne doit pas
+        # protéger William de la vérité.
+        bloc_chauds += "\n🔥 *Tes leads chauds* — ⚠️ carnet illisible (lecture en échec)"
+    elif not total_chauds:
+        bloc_chauds += "\n🔥 *Tes leads chauds* — aucun lead chaud aujourd'hui"
+    else:
+        entete = f"\n🔥 *Tes leads chauds ({total_chauds})*"
+        if not rendues:
+            # Tout ce qui est chaud est épinglé au-dessus. Le compte inclut les
+            # épinglés (ils RESTENT des leads chauds), mais un « (1) » posé sur
+            # zéro ligne — suivi d'une ligne vide — se lit comme une liste perdue
+            # en route. On dit où sont les lignes au lieu de laisser douter.
+            bloc_chauds += entete + " — tous dans « À faire » ci-dessus"
+        else:
+            bloc_chauds += entete + "\n" + "\n".join(rendues[:_PLAFOND_LEADS_CHAUDS])
+            if reste:
+                bloc_chauds += f"\n  … et {reste} autres"
 
     bookings = await _cnt("booking_events", {})
     totals["bookings_total"] = bookings
