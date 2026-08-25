@@ -462,6 +462,36 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             ligne += f"\n    {slack_lib.GARDE_LCAP_APRES_DESABONNEMENT}"
         lines.append(ligne)
 
+    # ---------------------------------------------------------- PT3 leads chauds
+    # Hors de la boucle par track, et épinglé sur 'agence-ia' : une seule offre
+    # depuis le pivot du 2026-06-07, et le cron passe encore ["OPT", "agence-ia"]
+    # — laissé dans la boucle, le bloc s'imprimerait deux fois dont une section
+    # OPT vide. Même choix que le bloc v_pourquoi_pas_de_courriel plus bas.
+    try:
+        chauds = await sb.select_all(
+            "v_suivi_lead_courant",
+            order="contact_id",
+            params={
+                "select": (
+                    "contact_id,company_id,company_name,contact_email,first_name,"
+                    "last_name,contact_status,interested_at,etape,note,"
+                    "prochaine_action,prochaine_action_at,derniere_note_at,nb_notes,"
+                    "demo_frappee_le,rdv_prochain_at,derniere_reponse_at,"
+                    "fiche_client_existe,reference_immobilite"
+                ),
+                "track": "eq.agence-ia",
+            },
+            schema="agence",
+        )
+        lecture_chauds_ok = True
+    except Exception as e:  # noqa: BLE001
+        # Fail-soft, mais JAMAIS silencieux : ce bloc est la file de travail de
+        # William. Une liste vide pour cause de panne serait indiscernable d'une
+        # journée sans lead chaud — le mode d'échec que ce travail doit éteindre.
+        print(f"[summary] lecture v_suivi_lead_courant échouée: {e!r}")
+        chauds = []
+        lecture_chauds_ok = False
+
     bookings = await _cnt("booking_events", {})
     totals["bookings_total"] = bookings
 
