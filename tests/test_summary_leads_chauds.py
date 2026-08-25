@@ -414,3 +414,55 @@ async def test_tout_epingle_ne_laisse_pas_un_entete_sur_du_vide(monkeypatch):
     )
     assert "Tes leads chauds (1)* — tous dans « À faire » ci-dessus" in out["text"]
     assert "\n\n" not in out["text"], "un en-tête ne doit jamais surplomber du vide"
+
+
+# =====================================================================
+# Revue du 18a5bbc — la ligne dit quoi faire, l'horizon est calendaire
+# =====================================================================
+
+async def test_la_ligne_dit_quoi_faire_pas_seulement_quand(monkeypatch):
+    """Un bloc « À faire » qui n'affiche pas l'action manque son objet : William
+    devrait deviner ce qu'il avait prévu. C'est le critère d'acceptation n°1 de
+    la spec — « son étape ET sa prochaine action datée »."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Plomberie Roy", etape="feedback_recu",
+                      note="veut changer les couleurs",
+                      prochaine_action="envoyer le devis revise",
+                      prochaine_action_at=_il_y_a(1), jours=4)],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "À faire" in out["text"]
+    assert "envoyer le devis revise" in out["text"]
+    # L'action passe avant le compte rendu du passé.
+    assert out["text"].index("envoyer le devis revise") < out["text"].index("veut changer")
+
+
+async def test_l_horizon_est_ancre_sur_minuit_toronto(monkeypatch):
+    """Une action datée à la toute fin de demain (heure de Toronto) est encore
+    « À faire » ; une datée après-demain ne l'est pas. Le reste du résumé compte
+    ses journées ainsi — un horizon en UTC absolu donnerait une deuxième vérité."""
+    from zoneinfo import ZoneInfo
+    minuit = datetime.now(ZoneInfo("America/Toronto")).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    fin_de_demain = (minuit + timedelta(days=1, hours=23, minutes=59)).astimezone(timezone.utc)
+    apres_demain = (minuit + timedelta(days=2, hours=12)).astimezone(timezone.utc)
+
+    http_api = _socle(
+        monkeypatch,
+        chauds=[
+            _lead("Demain Soir", prochaine_action="rappeler",
+                  prochaine_action_at=fin_de_demain.isoformat()),
+            _lead("Apres Demain", prochaine_action="relancer",
+                  prochaine_action_at=apres_demain.isoformat()),
+        ],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    bloc_a_faire = out["text"].split("🔥")[0]
+    assert "Demain Soir" in bloc_a_faire
+    assert "Apres Demain" not in bloc_a_faire

@@ -180,9 +180,12 @@ _PLAFOND_LEADS_CHAUDS = 10
 # sous-écrit et le cimetière occupe le haut de la liste.
 _JOURS_AVANT_DE_DEMANDER = 21
 
-# Fenêtre du bloc « À faire » : échu, aujourd'hui, ou demain. Plus large, il
-# devient une deuxième liste de tout ; plus étroit, une action du matin arrive
-# après coup.
+# Fenêtre du bloc « À faire », en JOURS CALENDAIRES à partir de minuit
+# America/Toronto : 0 = aujourd'hui seulement, 1 = jusqu'à la fin de demain.
+# L'échu remonte toujours. Ce n'est pas une durée en heures — une action du
+# lendemain matin doit apparaître dès le résumé de la veille, pas 24 h avant.
+# Plus large, le bloc devient une deuxième liste de tout ; plus étroit, une
+# action du matin arrive après coup.
 _HORIZON_A_FAIRE_JOURS = 1
 
 _ETIQUETTES_ETAPE = {
@@ -225,6 +228,13 @@ def _ligne_lead_chaud(lead: dict[str, Any], marque: str | None,
         bouts = [marque, _ETIQUETTES_ETAPE.get(etape, etape)] + (
             [f"{nb} notes au carnet"] if nb else []
         )
+
+    # L'action prévue AVANT la note : « À faire » qui ne dit pas quoi faire manque
+    # son objet, et c'est ce champ qui porte la jambe « rappelle » de la promesse.
+    action = str(lead.get("prochaine_action") or "").strip()
+    if action:
+        quand = slack_lib.jour(lead.get("prochaine_action_at") or "")
+        bouts.append(f"⏰ {action}" + (f" ({quand})" if quand else ""))
 
     # Le RDV est un fait dur : affiché, jamais écrit au carnet.
     rdv = slack_lib.jour(lead.get("rdv_prochain_at") or "")
@@ -614,7 +624,11 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         lecture_chauds_ok = False
 
     maintenant = datetime.now(timezone.utc)
-    horizon = maintenant + timedelta(days=_HORIZON_A_FAIRE_JOURS)
+    # Ancré sur minuit America/Toronto comme TOUT le reste du résumé (compteurs
+    # du jour, fenêtre « depuis 7 jours » des désabonnés) : deux fuseaux dans un
+    # seul résumé donneraient deux vérités. L'horizon couvre la fin de demain,
+    # pas « dans 24 h » — c'est une journée calendaire, pas une durée.
+    horizon = start_local + timedelta(days=_HORIZON_A_FAIRE_JOURS + 1)
     a_faire: list[str] = []
     visibles: list[tuple[float, str]] = []
     en_pause: list[str] = []
