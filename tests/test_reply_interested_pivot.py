@@ -3,8 +3,9 @@ garde désabonnement AVANT toute écriture, marqueur interested_at idempotent,
 plus aucune chaîne auto-reply/composer.
 
 Contient aussi le contrat « le journal ne dit QUE ce qui a réussi », épinglé
-sur les deux branches qui pinguent Slack : `interested` (hot lead) et `other`
-(review manuel)."""
+sur toutes les branches qui pinguent Slack : `interested` (hot lead), `other`
+(review manuel), `unsubscribe` (un intéressé qui se désabonne) et
+`not_interested` (réponse négative — AC2, 2026-08-24)."""
 from __future__ import annotations
 
 import pytest
@@ -138,8 +139,10 @@ def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_
     (défaut : `interested` ; `other` pour le review manuel ; `unsubscribe`).
 
     Retourne un dict d'observations : `notifies` (un dict par appel à notify),
-    `updates` (table, patch). `notify_par_categorie` mappe la catégorie Slack
-    vers le booléen que `notify` doit rendre (défaut : True partout).
+    `updates` (table, patch), `inserts` (table, row — c'est là que passe l'upsert
+    de conversation, donc le seul endroit où se lit l'état `cold`/`hot`/`lost`).
+    `notify_par_categorie` mappe la catégorie Slack vers le booléen que `notify`
+    doit rendre (défaut : True partout).
 
     `interested_at` = valeur rendue par la lecture ciblée `select=interested_at`
     (branche unsubscribe) : None = ce contact n'avait jamais dit oui."""
@@ -148,7 +151,7 @@ def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_
     from src.tools import reply
 
     notify_par_categorie = notify_par_categorie or {}
-    vu: dict = {"notifies": [], "updates": []}
+    vu: dict = {"notifies": [], "updates": [], "inserts": []}
 
     async def fake_select(table, *, params=None, schema=None):
         p = params or {}
@@ -174,6 +177,7 @@ def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_
         raise AssertionError(f"select inattendu sur {table!r}")
 
     async def fake_insert(table, row, **kw):
+        vu["inserts"].append((table, row))
         return [{"id": {"messages": "in-1", "agent_runs": "ar-1"}.get(table, "x-1")}]
 
     async def fake_update(table, patch, *, filters=None, schema=None):
@@ -468,3 +472,130 @@ def test_hot_lead_blocks_nouvelle_signature():
     assert "produire le site" in fallback.lower() or "produire le site" in joined.lower()
     assert "plomberiex.ca" in joined
     assert "Auto-reply" not in joined
+
+
+# =====================================================================
+# La branche `not_interested` — plus rien ne disparaît en silence (AC2)
+# =====================================================================
+
+# Volontairement PAS un « non merci » : le prompt du classifieur range aussi
+# « on gère ça à l'interne » et « recontactez-moi dans 6 mois » dans
+# `not_interested`. Ce sont des objections traitables, et elles partaient au
+# cimetière sans un mot. Le tri fin est AC2 ; ici on rend seulement l'extrait
+# visible pour que William tranche lui-même.
+#
+# ⚠️ Formulé avec des mots qu'on ne trouve NULLE PART ailleurs dans le bloc : le
+# ping contient aussi une ligne d'exemples (« on gère ça à l'interne »,
+# « rappelez-moi dans 6 mois »). Un extrait rédigé avec ces mots-là rendait le
+# test increvable — il matchait le texte fixe même quand l'extrait réel était
+# vide. Vérifié par mutation : `reply_preview=""` doit faire rougir.
+_REFUS_DOUX = (
+    "Merci, mais on s'occupe de tout ça nous-mêmes. Reparlez-m'en au printemps."
+)
+
+
+async def test_une_reponse_negative_est_signalee_avec_son_extrait(monkeypatch):
+    """L'extrait EST le service rendu : sans lui, le ping dirait seulement
+    « quelqu'un a dit non » et William ne pourrait pas distinguer un refus franc
+    d'un « rappelez-moi en janvier »."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="not_interested")
+    out = await reply.handle_reply(_payload(_REFUS_DOUX))
+
+    assert out.category == "not_interested"
+    assert "slack_not_interested" in out.actions_taken
+    leads = [n for n in vu["notifies"] if n["category"] == "leads"]
+    assert len(leads) == 1
+    assert leads[0]["context"] == "wf7_not_interested"
+    corps = str(leads[0]["blocks"])
+    assert "on s'occupe de tout ça nous-mêmes" in corps
+    assert "au printemps" in corps
+    assert "jean@x.ca" in corps
+    assert "Jean Roy" in corps
+    assert "Plomberie X" in corps
+    assert "93" in corps  # la confiance du classifieur, en clair
+
+
+async def test_le_ping_dit_letat_reel_et_ne_promet_aucune_relance(monkeypatch):
+    """Le contact EST disqualifié. Un ping qui dirait « à relancer » ou « en
+    attente » ferait attendre William d'un système qui ne fera plus rien."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="not_interested")
+    await reply.handle_reply(_payload(_REFUS_DOUX))
+
+    corps = str([n for n in vu["notifies"] if n["category"] == "leads"][0]["blocks"])
+    assert "disqualified" in corps
+    assert "recontactera plus" in corps
+    for mensonge in ("à relancer", "en attente", "file de reprise"):
+        assert mensonge not in corps.lower(), mensonge
+
+
+async def test_le_contact_reste_disqualifie_et_la_conversation_froide(monkeypatch):
+    """Non-régression : on AJOUTE de la visibilité, on ne change pas le
+    comportement. Le changement de comportement, c'est AC2."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="not_interested")
+    out = await reply.handle_reply(_payload(_REFUS_DOUX))
+
+    assert "contact_disqualified" in out.actions_taken
+    assert ("contacts", {"status": "disqualified"}) in vu["updates"]
+    conversations = [row for table, row in vu["inserts"] if table == "conversations"]
+    assert len(conversations) == 1
+    assert conversations[0]["state"] == "cold"
+
+
+async def test_un_ping_de_refus_rate_ne_sinscrit_pas_comme_envoye(monkeypatch):
+    """Même contrat d'honnêteté que ses voisines. Pas de repli sur #alertes :
+    un prospect qui dit non n'est pas une panne (choix déjà fait pour la
+    branche `other`)."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="not_interested",
+                          notify_par_categorie={"leads": False})
+    out = await reply.handle_reply(_payload(_REFUS_DOUX))
+
+    assert "slack_not_interested_ping_failed" in out.actions_taken
+    assert "slack_not_interested" not in out.actions_taken
+    assert not [n for n in vu["notifies"] if n["category"] == "alerts"]
+    # la disqualification, elle, part quand même — le ping n'est pas une garde
+    assert "contact_disqualified" in out.actions_taken
+
+
+async def test_une_absence_du_bureau_ne_pingue_toujours_rien(monkeypatch):
+    """Garde-fou de périmètre : le nouveau ping ne doit pas déborder sur la
+    seule branche encore volontairement muette. Un répondeur d'absence qui
+    sonne sur #leads, c'est du bruit pur."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="out_of_office")
+    out = await reply.handle_reply(_payload("Je suis absent jusqu'au 5 septembre."))
+
+    assert out.category == "out_of_office"
+    assert "ooo_logged" in out.actions_taken
+    assert vu["notifies"] == []
+    assert not [t for t, _ in vu["updates"] if t == "contacts"]
+
+
+def test_not_interested_blocks_portent_letat_reel():
+    from src.lib import slack
+
+    fallback, blocks = slack.build_not_interested_blocks(
+        contact_name="Jean Roy",
+        company_name="Plomberie X",
+        contact_email="jean@plomberiex.ca",
+        # Mots absents de la ligne d'exemples du bloc — sinon l'assertion
+        # ci-dessous passerait même avec un extrait vide (cf. _REFUS_DOUX).
+        reply_preview="On s'occupe de tout ça nous-mêmes.",
+        confidence=0.88,
+        track="agence-ia",
+    )
+    joined = str(blocks)
+    assert "[AGENCE-IA]" in fallback  # même préfixe de track que ses voisins
+    assert "Jean Roy" in fallback and "Plomberie X" in fallback
+    assert "jean@plomberiex.ca" in joined
+    assert "s'occupe de tout ça nous-mêmes" in joined
+    assert "88" in joined            # la confiance, en clair
+    assert "disqualified" in joined  # ce que le système a VRAIMENT fait

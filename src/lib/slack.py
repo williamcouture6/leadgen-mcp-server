@@ -305,6 +305,84 @@ def build_interested_unsubscribed_blocks(
     return fallback, blocks
 
 
+def build_not_interested_blocks(
+    *,
+    contact_name: str,
+    company_name: str,
+    contact_email: str,
+    reply_preview: str,
+    confidence: float | None = None,
+    track: str | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Format Slack pour un reply classé 'not_interested' (WF-7).
+
+    Le trou bouché : cette branche ne pinguait RIEN. Le contact passait
+    `disqualified`, la conversation `cold`, et William ne savait même pas que le
+    prospect avait répondu. Or le classifieur range dans `not_interested` des
+    phrases qui n'en sont pas — « on gère ça à l'interne », « recontactez-moi
+    dans 6 mois » : des objections que William sait traiter, enterrées en
+    silence.
+
+    D'où le contenu : l'EXTRAIT de la réponse est le cœur du bloc. C'est lui qui
+    laisse William faire à la main le tri fin qu'AC2 automatisera (catégories
+    dédiées, file de reprise, date de rappel).
+
+    Ce bloc ne promet aucune suite. Le contact EST disqualifié et sorti du
+    pipeline : écrire « à relancer » ou « en attente » ferait attendre William
+    d'un système qui ne fera plus rien. On dit l'état réel, et on dit à qui
+    revient le prochain geste s'il y en a un : à lui.
+    """
+    tp = _track_prefix(track)
+    titre = "🚫 Réponse négative — sorti du pipeline"
+    fallback = f"{tp}{titre} — {contact_name} @ {company_name}"
+    etat = (
+        "*Ce que le système a fait*: contact passé à `disqualified`, "
+        "conversation `cold`. Il ne recevra plus rien — le système ne le "
+        "recontactera plus."
+    )
+    if confidence is not None:
+        etat += f"\n*Confiance du classifieur*: {confidence:.0%}"
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{tp}{titre}"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                _kv_field("Contact", f"{contact_name}\n{contact_email}"),
+                _kv_field("Entreprise", company_name),
+            ],
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": etat},
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*Sa réponse (extrait)*\n"
+                    f"```{_truncate(reply_preview, 400)}```"
+                ),
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "_Lis l'extrait : si ce n'est pas un vrai refus (« on gère "
+                    "ça à l'interne », « rappelez-moi dans 6 mois »), le geste "
+                    "t'appartient._"
+                ),
+            },
+        },
+    ]
+    return fallback, blocks
+
+
 def build_review_blocks(
     *,
     contact_name: str,

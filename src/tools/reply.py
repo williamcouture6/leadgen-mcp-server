@@ -7,7 +7,10 @@ Reçoit un reply Instantly, le classe via LLM, et route l'action :
   - `unsubscribe` → suppression_list + contact.status='opted_out' (+ Slack ping
     #leads SI le contact avait `interested_at` posé — visibilité seulement, le
     ping porte l'interdit LCAP de relance par courriel)
-  - `not_interested` → contact.status='disqualified'
+  - `not_interested` → contact.status='disqualified' (+ Slack ping #leads
+    portant l'EXTRAIT de la réponse — le classifieur range aussi ici des
+    objections traitables, « on gère ça à l'interne », « recontactez-moi dans
+    6 mois » ; visibilité seulement, le contact reste sorti du pipeline)
   - `out_of_office` → log only, contact reste 'contacted'
   - `other` → flag review manuel, Slack ping
 
@@ -855,6 +858,37 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         await _upsert_conversation(
             contact_id=contact_id, campaign_id=campaign_id,
             state="cold", last_direction="inbound",
+        )
+
+        # Visibilité (2026-08-24) : cette branche ne pinguait rien. Le prospect
+        # sortait du pipeline pour de bon et William ne savait même pas qu'il
+        # avait répondu. Or le prompt du classifieur range aussi dans
+        # `not_interested` des objections traitables (« on gère ça à
+        # l'interne », « recontactez-moi dans 6 mois ») — elles partaient au
+        # cimetière sans un mot.
+        #
+        # Ajout STRICTEMENT en aval : la disqualification et l'état `cold`
+        # ci-dessus sont inchangés, ce bloc n'écrit rien. Le ping porte
+        # l'EXTRAIT de la réponse — c'est lui qui permet à William de faire à la
+        # main le tri fin qu'AC2 automatisera.
+        fallback, blocks = slack_lib.build_not_interested_blocks(
+            contact_name=contact_name,
+            company_name=company_name,
+            contact_email=payload.lead_email,
+            reply_preview=cleaned_reply or payload.reply_body_text,
+            confidence=confidence,
+            track=company_track,
+        )
+        # Même patron d'honnêteté que ses voisines. Pas de repli sur #alertes :
+        # un prospect qui dit non n'est pas une panne (le choix déjà fait pour
+        # `build_review_blocks`) ; l'honnêteté du journal suffit.
+        actions.append(
+            "slack_not_interested"
+            if await slack_lib.notify(
+                text=fallback, blocks=blocks,
+                context="wf7_not_interested", category="leads",
+            )
+            else "slack_not_interested_ping_failed"
         )
 
     elif category == "out_of_office":
