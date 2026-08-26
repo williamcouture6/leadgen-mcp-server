@@ -150,6 +150,7 @@ def build_hot_lead_blocks(
     website: str | None = None,
     research_json: dict[str, Any] | None = None,
     suppression_check_failed: bool = False,
+    already_booked: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Format Slack pour un reply classé 'interested' (WF-7).
 
@@ -163,6 +164,12 @@ def build_hot_lead_blocks(
     `suppression_check_failed=True` = la garde de désabonnement n'a pas pu LIRE
     (fail-open assumé côté reply.py) : on le dit dans 'Prochain geste' pour que
     la vérif se fasse à la main avant d'écrire.
+
+    `already_booked=True` = ce contact a DÉJÀ un RDV au calendrier (une
+    conversation à l'état `booked`, posée par WF-8). Sans cette mention le ping
+    est mot pour mot celui d'un lead frais : il réclame « produire le site »
+    sans dire qu'un appel est déjà pris, et William risque de reproposer un
+    créneau à quelqu'un qui en a un.
 
     Returns (fallback_text, blocks) — passer aux 2 args de `notify`.
     """
@@ -180,6 +187,11 @@ def build_hot_lead_blocks(
         geste += f"\n*Confidence*: {confidence:.0%}"
     if suppression_check_failed:
         geste += "\n⚠️ vérif désabonnement en panne — vérifier avant d'écrire"
+    if already_booked:
+        geste += (
+            "\n📅 RDV déjà au calendrier — le site sert à préparer l'appel, "
+            "ne repropose pas de créneau"
+        )
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",

@@ -135,7 +135,7 @@ _RESEARCH = {
 
 def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_boom=False,
                      suppression_insert_boom=False,
-                     categorie="interested", interested_at=None):
+                     categorie="interested", interested_at=None, deja_booke=False):
     """Monte un `handle_reply` complet qui atterrit dans la branche `categorie`
     (défaut : `interested` ; `other` pour le review manuel ; `unsubscribe`).
 
@@ -150,7 +150,11 @@ def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_
 
     `suppression_insert_boom` fait tomber le SEUL insert qui compte pour la
     LCAP (`suppression_list`) en laissant tout le reste debout — c'est la panne
-    partielle qui rendait le journal menteur avant C6."""
+    partielle qui rendait le journal menteur avant C6.
+
+    `deja_booke=True` = le contact a déjà un RDV Cal.com (une conversation à
+    l'état `booked`, posée par WF-8) : c'est ce que lit
+    `_conversation_is_booked`."""
     from src import supabase_client
     from src.lib import slack as slack_mod
     from src.tools import reply
@@ -178,7 +182,7 @@ def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_
             return [{"id": "co-1", "name": "Plomberie X", "website": "https://x.ca",
                      "track": "agence-ia", "research_json": _RESEARCH}]
         if table == "conversations":
-            return []  # pas de RDV déjà booké
+            return [{"id": "cv-1"}] if deja_booke else []
         raise AssertionError(f"select inattendu sur {table!r}")
 
     async def fake_insert(table, row, **kw):
@@ -317,6 +321,82 @@ async def test_verif_desabonnement_en_panne_est_dite_au_journal_et_au_ping(monke
 
 async def _none():
     return None
+
+
+# =====================================================================
+# Rupture A — un lead qui a DÉJÀ un RDV entre quand même au carnet
+# =====================================================================
+#
+# La garde `booked` sautait TROIS écritures d'un bloc : statut `replied`,
+# marqueur `contacts.interested_at`, et upsert de conversation vers `hot`.
+# Une seule des trois posait problème (la conversation, qui régresserait de
+# `booked` à `hot`). Les deux autres sont dues : sans `interested_at`, le lead
+# est rejeté à vie du carnet de suivi — la vue se termine sur
+# `where ct.interested_at is not null`. Un prospect avec un rendez-vous au
+# calendrier de William restait donc marqué « a dit non » en base.
+
+# Le cas réel : il a réservé, PUIS il écrit.
+_APRES_LE_RDV = "Parfait, montrez-moi le site avant notre appel de jeudi."
+
+
+async def test_un_lead_deja_booke_est_quand_meme_promu(monkeypatch):
+    """Les deux promotions de statut ne dépendent pas de la garde `booked`."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, deja_booke=True)
+    out = await reply.handle_reply(_payload(_APRES_LE_RDV))
+
+    assert "contact_replied" in out.actions_taken
+    assert "contact_interested" in out.actions_taken
+    assert not [a for a in out.actions_taken if a.endswith("_failed")]
+    # Et les écritures ont bien EU LIEU — pas juste le journal qui l'affirme.
+    patches = [p for t, p in vu["updates"] if t == "contacts"]
+    assert any("interested_at" in p for p in patches), patches
+    assert any(p.get("status") == "replied" for p in patches), patches
+
+
+async def test_la_conversation_dun_lead_booke_ne_regresse_pas(monkeypatch):
+    """La garde survit, mais RÉTRÉCIE : elle ne couvre plus que la conversation.
+
+    Repasser `booked` → `hot` ferait disparaître le RDV de l'état de la
+    conversation ; c'est la seule chose que la garde doit protéger."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, deja_booke=True)
+    out = await reply.handle_reply(_payload(_APRES_LE_RDV))
+
+    assert "skipped_conversation_already_booked" in out.actions_taken
+    assert not [r for t, r in vu["inserts"] if t == "conversations"], vu["inserts"]
+
+
+async def test_un_lead_frais_pose_bien_sa_conversation_a_hot(monkeypatch):
+    """Contrôle : sans RDV, l'upsert `hot` doit toujours partir."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch)
+    out = await reply.handle_reply(_payload())
+
+    assert "skipped_conversation_already_booked" not in out.actions_taken
+    convs = [r for t, r in vu["inserts"] if t == "conversations"]
+    assert [c["state"] for c in convs] == ["hot"], convs
+
+
+async def test_le_ping_dit_le_rdv_seulement_quand_il_existe(monkeypatch):
+    """Sans cette mention, le ping d'un lead qui a déjà un RDV est mot pour mot
+    celui d'un lead frais : il réclame « à toi de produire le site » sans dire
+    qu'un appel est déjà au calendrier."""
+    from src.tools import reply
+
+    vu_booke = _wire_interested(monkeypatch, deja_booke=True)
+    await reply.handle_reply(_payload(_APRES_LE_RDV))
+    booke = str([n for n in vu_booke["notifies"] if n["category"] == "leads"][0]["blocks"])
+
+    vu_frais = _wire_interested(monkeypatch)
+    await reply.handle_reply(_payload())
+    frais = str([n for n in vu_frais["notifies"] if n["category"] == "leads"][0]["blocks"])
+
+    assert "RDV déjà" in booke
+    assert "RDV déjà" not in frais  # tue la mutation « la ligne est toujours là »
 
 
 # =====================================================================
@@ -572,6 +652,26 @@ def test_hot_lead_blocks_nouvelle_signature():
     assert "produire le site" in fallback.lower() or "produire le site" in joined.lower()
     assert "plomberiex.ca" in joined
     assert "Auto-reply" not in joined
+
+
+def test_hot_lead_blocks_signalent_un_rdv_deja_pris():
+    """Même patron que `suppression_check_failed` : une sous-ligne du bloc
+    « Prochain geste », posée seulement quand le drapeau est vrai."""
+    from src.lib import slack
+
+    args = dict(
+        contact_name="Jean Roy",
+        company_name="Plomberie X",
+        contact_email="jean@plomberiex.ca",
+        reply_preview="Parfait, montrez-moi le site avant notre appel",
+        confidence=0.91,
+        track="agence-ia",
+    )
+    _, avec = slack.build_hot_lead_blocks(**args, already_booked=True)
+    _, sans = slack.build_hot_lead_blocks(**args)  # défaut = pas de RDV
+
+    assert "RDV déjà" in str(avec)
+    assert "RDV déjà" not in str(sans)
 
 
 # =====================================================================

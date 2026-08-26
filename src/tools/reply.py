@@ -686,15 +686,36 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
                 orphan_id = ins_orphan[0]["id"] if ins_orphan else None
             except Exception:  # noqa: BLE001
                 orphan_id = None
-            await slack_lib.notify(
-                text=f"⚠️ Reply orphelin reçu de {payload.lead_email} — contact introuvable en DB",
+            # L'EXTRAIT voyage avec l'alerte. Sans lui, William lit « contact
+            # introuvable » et doit ouvrir Outlook pour savoir si c'est un oui
+            # qu'il vient de rater — or c'est justement le cas typique : le
+            # prospect répond depuis son gmail perso, pas depuis l'adresse à
+            # qui on a écrit. Même borne et même ellipse que les extraits des
+            # pings voisins (une seule définition dans slack.py).
+            extrait_orphelin = slack_lib._truncate(
+                strip_quote_and_signature(payload.reply_body_text)
+                or payload.reply_body_text
+                or "(corps vide)",
+                400,
+            )
+            ping_ok = await slack_lib.notify(
+                text=(
+                    f"⚠️ Reply orphelin reçu de {payload.lead_email} — "
+                    f"contact introuvable en DB\n"
+                    f"*Reply (extrait)*\n```{extrait_orphelin}```"
+                ),
                 context="wf7_orphan_reply",
                 category="alerts",
             )
             return HandleReplyOut(
                 status="skipped_no_contact",
                 inbound_message_id=orphan_id,
-                actions_taken=["orphan_logged", "slack_ping"],
+                # Le journal ne dit QUE ce qui a réussi : `slack_ping` écrit en
+                # dur affirmait qu'une alerte perdue était partie.
+                actions_taken=[
+                    "orphan_logged",
+                    "slack_ping" if ping_ok else "slack_ping_failed",
+                ],
                 error_text=f"no contact found for {payload.lead_email}",
                 duration_ms=int((time.monotonic() - started) * 1000),
             )
@@ -950,8 +971,8 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         # Pivot tri (PT1) : plus d'auto-reply — le prospect attend LE lien
         # démo, que William produit (session artisanale) et envoie lui-même.
         # Ordre des gardes : désabonnement d'abord (aucune écriture, aucun
-        # ping de production pour un désabonné), puis booked (ne pas régresser
-        # une conversation déjà en RDV).
+        # ping de production pour un désabonné), puis booked — qui ne couvre
+        # QUE l'état de conversation (voir plus bas).
         suppressed_lead = await _interested_lead_is_suppressed(
             contact_id, payload.lead_email
         )
@@ -964,23 +985,36 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         if suppressed_lead:
             actions.append("skipped_interested_suppressed")
         else:
+            # Le journal ne dit QUE ce qui a réussi : une écriture ratée
+            # inscrite comme faite ferait disparaître un hot lead de la
+            # file sans alerte.
+            #
+            # ⚠️ Ces deux promotions sont dues MÊME si un RDV existe déjà.
+            # La garde `booked` les sautait autrefois avec l'upsert, dans un
+            # seul bloc : un prospect qui réservait un appel PUIS écrivait
+            # « parfait, montrez-moi le site avant » ressortait avec zéro
+            # écriture sur `contacts`. Sans `interested_at`, il était rejeté à
+            # vie du carnet de suivi (la vue se termine sur
+            # `where ct.interested_at is not null`) et restait marqué « a dit
+            # non » en base alors qu'il avait un rendez-vous au calendrier.
+            actions.append(
+                "contact_replied"
+                if await _update_contact_status(contact_id, "replied")
+                else "contact_replied_failed"
+            )
+            actions.append(
+                "contact_interested"
+                if await _mark_contact_interested(contact_id)
+                else "contact_interested_failed"
+            )
+
+            # La garde `booked` survit, mais RÉTRÉCIE à la seule écriture qui
+            # posait problème : repasser une conversation `booked` à `hot` la
+            # ferait régresser, le RDV disparaîtrait de son état.
             already_booked = await _conversation_is_booked(contact_id)
             if already_booked:
-                actions.append("skipped_marker_already_booked")
+                actions.append("skipped_conversation_already_booked")
             else:
-                # Le journal ne dit QUE ce qui a réussi : une écriture ratée
-                # inscrite comme faite ferait disparaître un hot lead de la
-                # file sans alerte.
-                actions.append(
-                    "contact_replied"
-                    if await _update_contact_status(contact_id, "replied")
-                    else "contact_replied_failed"
-                )
-                actions.append(
-                    "contact_interested"
-                    if await _mark_contact_interested(contact_id)
-                    else "contact_interested_failed"
-                )
                 await _upsert_conversation(
                     contact_id=contact_id, campaign_id=campaign_id,
                     state="hot", last_direction="inbound",
@@ -996,6 +1030,10 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
                 website=(company_row or {}).get("website"),
                 research_json=(company_row or {}).get("research_json"),
                 suppression_check_failed=suppression_check_failed,
+                # Sans ça le ping est identique à celui d'un lead frais : il
+                # réclame « à toi de produire le site » sans dire qu'un appel
+                # est déjà pris.
+                already_booked=already_booked,
             )
             ping_ok = await slack_lib.notify(
                 text=fallback, blocks=blocks, context="wf7_hot_lead", category="leads",
@@ -1077,6 +1115,25 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
 # ----------------------------------------------------------------------
 # Webhook payload extraction (Instantly v2)
 # ----------------------------------------------------------------------
+
+def _horodatage_item(item: Any) -> str:
+    """« Quand ce message est arrivé », en une seule définition.
+
+    Deux appelants doivent lire EXACTEMENT le même champ, sinon ils divergent :
+    `extract_from_instantly_email_list_item` (qui le pose dans `received_at`)
+    et `poll_and_process_replies` (qui l'utilise comme clé de tri du lot).
+
+    Rend TOUJOURS une chaîne — jamais None, jamais un int. C'est ce qui rend le
+    tri increvable : comparer un None à une chaîne lèverait un TypeError qui
+    ferait tomber tout le poll, pas seulement l'item mal formé. Un item non
+    daté tombe donc à `""`, qui trie AVANT toute date ISO : il ne peut jamais
+    l'emporter sur un item daté, et `sorted` étant stable, les non-datés
+    gardent entre eux l'ordre rendu par l'API.
+    """
+    if not isinstance(item, dict):
+        return ""
+    return str(item.get("timestamp_created") or item.get("created_at") or "")
+
 
 def extract_from_instantly_email_list_item(item: dict[str, Any]) -> HandleReplyIn | None:
     """Convertit un item de la réponse GET /api/v2/emails (type=received) en
@@ -1166,7 +1223,7 @@ def extract_from_instantly_email_list_item(item: dict[str, Any]) -> HandleReplyI
             or item.get("reply_to_uuid")
             or item.get("thread_id")
         ),
-        received_at=str(item.get("timestamp_created") or item.get("created_at") or ""),
+        received_at=_horodatage_item(item),
         eaccount=eaccount,
         raw_payload=item,
     )
@@ -1201,6 +1258,10 @@ async def poll_and_process_replies(payload: PollRepliesIn) -> PollRepliesOut:
     """Fetch les N derniers emails received dans Instantly + process chaque
     nouveau via handle_reply. Idempotent : skip si provider_message_id déjà
     en `messages` (direction=inbound). Pas de cursor — on s'appuie sur l'idempotence.
+
+    Le lot est traité dans l'ordre CHRONOLOGIQUE, pas dans celui rendu par
+    l'API : quand un prospect écrit deux fois entre deux passes du cron, c'est
+    sa dernière parole qui doit être la dernière écrite en base.
     """
     try:
         resp = await instantly_lib.list_emails(
@@ -1224,6 +1285,21 @@ async def poll_and_process_replies(payload: PollRepliesIn) -> PollRepliesOut:
         items_raw = []
 
     fetched = len(items_raw)
+
+    # La chronologie AVANT tout traitement. Instantly ne garantit aucun ordre
+    # sur GET /emails, et un lot mélangé fait gagner la réponse la PLUS VIEILLE
+    # (c'est la dernière écrite qui l'emporte). Cas réel : « on gère ça à
+    # l'interne » à 9h05, William répond de sa main à 9h12, « ah ok, montrez-
+    # moi » à 9h20 — le cron de 30 min ramène les deux dans le même paquet. Si
+    # Instantly rend le plus récent d'abord, le contact finit `disqualified` +
+    # `cold` alors que sa dernière parole est un oui.
+    #
+    # Tri croissant sur `timestamp_created` (ISO-8601 UTC chez Instantly : le
+    # tri lexicographique de la chaîne EST le tri chronologique). Voir
+    # `_horodatage_item` pour les items sans horodatage — la clé ne lève
+    # jamais, un tri qui plante casserait tout le poll.
+    items_raw = sorted(items_raw, key=_horodatage_item)
+
     processed = skipped_duplicate = skipped_invalid = errors = 0
     out_items: list[PollRepliesItem] = []
 
