@@ -170,6 +170,28 @@ def _marque_impasse(statut: Any, ligne_suppression: dict[str, Any] | None) -> st
     return None
 
 
+def _mention_action_caduque(marque: str) -> str:
+    """Ce qu'on écrit À LA PLACE d'une consigne de relance, sur un lead marqué.
+
+    Une action prévue avant l'impasse ne s'exécute plus. L'afficher nue — « ⏰
+    relancer par courriel » — sur un désabonné est une invitation à commettre
+    l'infraction ; la retirer sans rien dire laisse William la reconstruire de
+    tête. On la remplace donc par la RAISON pour laquelle elle est morte.
+
+    Les trois raisons ne se confondent pas, et le projet ne met pas de mensonge
+    à l'écran : seul l'`opted_out` est un retrait de consentement (LCAP). Un
+    hard bounce ferme le canal sans que personne n'ait rien retiré, et un
+    « a dit non » / « écarté de notre côté » ne ferme même pas le canal — c'est
+    la relance qui n'a plus d'objet."""
+    from .lib import slack as slack_lib
+
+    if marque == _MARQUES_IMPASSE["opted_out"]:
+        return slack_lib.GARDE_LCAP_RELANCE_COURTE
+    if marque == _MARQUES_IMPASSE["bounced"]:
+        return "⏸️ relance impossible — le courriel ne se rend plus"
+    return "⏸️ relance annulée"
+
+
 # Plafond de lignes nommées dans le bloc « leads chauds » avant repli en
 # « et N autres ». N est toujours EXACT : une troncature silencieuse se lit
 # comme « c'est tout », ce qui est le contraire de la vérité.
@@ -231,8 +253,12 @@ def _ligne_lead_chaud(lead: dict[str, Any], marque: str | None,
 
     # L'action prévue AVANT la note : « À faire » qui ne dit pas quoi faire manque
     # son objet, et c'est ce champ qui porte la jambe « rappelle » de la promesse.
+    # Sur un lead MARQUÉ, la consigne est caduque : on affiche pourquoi, jamais
+    # l'ordre de relancer (voir `_mention_action_caduque`).
     action = str(lead.get("prochaine_action") or "").strip()
-    if action:
+    if action and marque:
+        bouts.append(_mention_action_caduque(marque))
+    elif action:
         quand = slack_lib.jour(lead.get("prochaine_action_at") or "")
         bouts.append(f"⏰ {action}" + (f" ({quand})" if quand else ""))
 
@@ -240,6 +266,14 @@ def _ligne_lead_chaud(lead: dict[str, Any], marque: str | None,
     rdv = slack_lib.jour(lead.get("rdv_prochain_at") or "")
     if rdv:
         bouts.append(f"RDV {rdv} (Cal.com)")
+
+    # La dernière réponse du prospect est un fait dur du même ordre que la démo
+    # frappée et le RDV : un signe de vie obtenu SANS aucune discipline de
+    # William. La vue la lisait déjà et le code la jetait — d'où un résumé qui
+    # pouvait demander « toujours vivant ? » sur quelqu'un qui a écrit hier.
+    jours_reponse = _jours_depuis(lead.get("derniere_reponse_at"), maintenant)
+    if jours_reponse is not None:
+        bouts.append(f"a répondu il y a {jours_reponse} j")
 
     if etape == "vendu" and not lead.get("fiche_client_existe"):
         bouts.append("⚠️ fiche client à créer")
@@ -257,9 +291,16 @@ def _ligne_lead_chaud(lead: dict[str, Any], marque: str | None,
         elif depuis is not None:
             bouts.append(f"a dit oui il y a {depuis} j")
 
+    # Une réponse dans la même fenêtre que la question RÉPOND à la question :
+    # même seuil, sinon on aurait deux mesures du même silence. Au-delà, la
+    # réponse est le silence elle-même et la question redevient légitime.
+    repondu_recemment = (
+        jours_reponse is not None and jours_reponse < _JOURS_AVANT_DE_DEMANDER
+    )
     immobile = _jours_depuis(lead.get("reference_immobilite"), maintenant)
     if (immobile is not None and immobile >= _JOURS_AVANT_DE_DEMANDER
-            and etape not in {"en_pause", "vendu"} and not marque):
+            and etape not in {"en_pause", "vendu"} and not marque
+            and not repondu_recemment):
         bouts.append("❓ toujours vivant ? (`perdu` ou `en_pause`)")
 
     if lead.get("note"):
@@ -650,9 +691,18 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
 
         # Épinglé en tête, hors tri et hors plafond : une action due, et la
         # vente dont la fiche n'est pas ouverte.
+        #
+        # JAMAIS un lead marqué. « À faire » est la ligne la plus visible du
+        # résumé : y épingler un désabonné avec sa consigne de relance, c'est
+        # mettre l'infraction LCAP en tête d'affiche. Plus largement, l'action
+        # prévue avant une impasse ne s'exécute plus, quelle que soit l'impasse.
+        # Le lead reste dans la liste principale, marqué — il ne réclame juste
+        # plus rien.
         echeance = _instant(lead.get("prochaine_action_at"))
         due = echeance is not None and echeance <= horizon
-        if due or (etape == "vendu" and not lead.get("fiche_client_existe")):
+        if not marque and (
+            due or (etape == "vendu" and not lead.get("fiche_client_existe"))
+        ):
             a_faire.append(ligne_lead)
             continue
 

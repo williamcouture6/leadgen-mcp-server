@@ -466,3 +466,106 @@ async def test_l_horizon_est_ancre_sur_minuit_toronto(monkeypatch):
     bloc_a_faire = out["text"].split("🔥")[0]
     assert "Demain Soir" in bloc_a_faire
     assert "Apres Demain" not in bloc_a_faire
+
+
+# =====================================================================
+# Revue du conseil — l'impasse éteint la consigne, la réponse éteint la
+# question (2026-08-25)
+# =====================================================================
+
+async def test_un_desabonne_n_est_jamais_epingle_dans_a_faire(monkeypatch):
+    """Une consigne de relance sur un désabonné, en ligne la plus visible du
+    résumé, est une invitation à enfreindre la LCAP. Son action est caduque."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Parti", contact_status="opted_out",
+                      prochaine_action="relancer par courriel",
+                      prochaine_action_at=_il_y_a(1))],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    bloc_a_faire = out["text"].split("🔥")[0]
+    assert "Parti" not in bloc_a_faire
+    assert "Parti" in out["text"]          # il reste visible, marqué
+    assert "relancer par courriel" not in out["text"]
+    # La consigne n'est pas seulement retirée : elle est REMPLACÉE par l'interdit.
+    # Une ligne muette laisserait William reconstruire la relance de tête.
+    assert "relance interdite (LCAP)" in out["text"]
+
+
+async def test_un_disqualifie_ne_recoit_pas_le_texte_lcap(monkeypatch):
+    """« a dit non » n'est pas un retrait de consentement : lui appliquer
+    l'interdit LCAP serait un mensonge.
+
+    Le lead porte ici une action prévue — sans elle, la mention ne serait même
+    pas calculée et le test ne prouverait rien de l'implémentation."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Pas Interesse", contact_status="disqualified",
+                      prochaine_action="relancer par courriel",
+                      prochaine_action_at=_il_y_a(1))],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "a dit non" in out["text"]
+    assert "LCAP" not in out["text"].split("🔥")[1]
+    # L'action reste caduque — on le dit, sans invoquer un consentement que
+    # personne n'a retiré.
+    assert "relance annulée" in out["text"]
+    assert "⏰ relancer par courriel" not in out["text"]
+
+
+async def test_une_adresse_morte_n_est_pas_un_retrait_de_consentement(monkeypatch):
+    """Un hard bounce ferme le canal courriel sans que personne n'ait retiré
+    son consentement. Écrire « consentement retiré (LCAP) » sur un rebond
+    serait le même genre de mensonge que sur un « a dit non »."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Boite Morte", contact_status="bounced",
+                      prochaine_action="relancer par courriel",
+                      prochaine_action_at=_il_y_a(1))],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "adresse morte" in out["text"]
+    assert "LCAP" not in out["text"].split("🔥")[1]
+    assert "⏰ relancer par courriel" not in out["text"]
+
+
+async def test_une_reponse_recente_eteint_la_question_toujours_vivant(monkeypatch):
+    """Le fait qui contredit la question était déjà dans la ligne lue."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Repondu Hier", jours=40, derniere_reponse_at=_il_y_a(1))],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "toujours vivant" not in out["text"]
+    assert "a répondu il y a 1 j" in out["text"]
+
+
+async def test_sans_reponse_recente_la_question_est_posee(monkeypatch):
+    http_api = _socle(monkeypatch, chauds=[_lead("Silencieux", jours=40)])
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "toujours vivant" in out["text"]
+
+
+async def test_une_vieille_reponse_ne_couvre_pas_le_silence(monkeypatch):
+    """Le seuil est le MÊME que celui de la question : une réponse d'il y a
+    deux mois n'est plus un signe de vie, elle est le silence lui-même. Sans
+    borne, un seul `derniere_reponse_at` éteindrait la question à jamais."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Repondu Jadis", jours=60, derniere_reponse_at=_il_y_a(55))],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "toujours vivant" in out["text"]
+    assert "a répondu il y a 55 j" in out["text"]

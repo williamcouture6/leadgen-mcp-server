@@ -212,6 +212,14 @@ GARDE_LCAP_APRES_DESABONNEMENT = (
     "Un appel reste possible : vérifier la LNNTE d'abord."
 )
 
+# LE MÊME INTERDIT, en fin de ligne de liste. Deux rendus, un seul endroit où on
+# l'écrit : la version longue ci-dessus est un bloc à elle seule (ping WF-7,
+# sous-ligne du compteur de désabonnés) ; celle-ci s'insère dans une énumération
+# « nom — étape · action · note » où la phrase complète, avec son propre tiret
+# cadratin et ses deux phrases, entrerait en collision avec les séparateurs de la
+# ligne. Si l'interdit change, il change ICI, les deux à la fois.
+GARDE_LCAP_RELANCE_COURTE = "⛔ relance interdite (LCAP)"
+
 
 def jour(horodatage: str) -> str:
     """« 2026-08-21T14:03:00+00:00 » → « 2026-08-21 », en heure de Toronto.
