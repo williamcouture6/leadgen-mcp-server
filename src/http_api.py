@@ -248,7 +248,7 @@ def _ligne_lead_chaud(lead: dict[str, Any], marque: str | None,
         # production du site.
         nb = lead.get("nb_notes") or 0
         bouts = [marque, _ETIQUETTES_ETAPE.get(etape, etape)] + (
-            [f"{nb} notes au carnet"] if nb else []
+            [f"{nb} note{'s' if nb > 1 else ''} au carnet"] if nb else []
         )
 
     # L'action prévue AVANT la note : « À faire » qui ne dit pas quoi faire manque
@@ -689,20 +689,29 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         total_chauds += 1
         ligne_lead = _ligne_lead_chaud(lead, marque, maintenant)
 
-        # Épinglé en tête, hors tri et hors plafond : une action due, et la
-        # vente dont la fiche n'est pas ouverte.
+        # Épinglé en tête, hors tri et hors plafond, pour DEUX motifs qui ne se
+        # comportent PAS pareil devant une marque d'impasse.
         #
-        # JAMAIS un lead marqué. « À faire » est la ligne la plus visible du
-        # résumé : y épingler un désabonné avec sa consigne de relance, c'est
-        # mettre l'infraction LCAP en tête d'affiche. Plus largement, l'action
-        # prévue avant une impasse ne s'exécute plus, quelle que soit l'impasse.
-        # Le lead reste dans la liste principale, marqué — il ne réclame juste
-        # plus rien.
+        # 1. Une ACTION DUE — jamais sur un lead marqué. « À faire » est la ligne
+        #    la plus visible du résumé : y épingler un désabonné avec sa consigne
+        #    de relance, c'est mettre l'infraction LCAP en tête d'affiche. Plus
+        #    largement, l'action prévue avant une impasse ne s'exécute plus,
+        #    quelle que soit l'impasse. Le lead reste dans la liste principale,
+        #    marqué — il ne réclame juste plus rien.
+        #
+        # 2. Un `vendu` DONT LA FICHE N'EST PAS OUVERTE — épinglé TOUJOURS, marque
+        #    ou pas. « fiche client à créer » est de la COMPTABILITÉ INTERNE, pas
+        #    une sollicitation : ouvrir une fiche ne recontacte personne, il n'y a
+        #    donc rien à interdire. Or WF-7 peut classer `disqualified` sur une
+        #    réponse mal lue APRÈS la vente ; sous la règle catégorique, la ligne
+        #    quittait « À faire » — et un `vendu` a par construction zéro jour
+        #    d'immobilité, donc il se trie EN DERNIER et sort le premier par le
+        #    plafond de 10. La marque, elle, reste affichée sur la ligne
+        #    (_ligne_lead_chaud la met en tête des bouts).
         echeance = _instant(lead.get("prochaine_action_at"))
         due = echeance is not None and echeance <= horizon
-        if not marque and (
-            due or (etape == "vendu" and not lead.get("fiche_client_existe"))
-        ):
+        fiche_a_ouvrir = etape == "vendu" and not lead.get("fiche_client_existe")
+        if fiche_a_ouvrir or (due and not marque):
             a_faire.append(ligne_lead)
             continue
 
@@ -738,7 +747,7 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         else:
             bloc_chauds += entete + "\n" + "\n".join(rendues[:_PLAFOND_LEADS_CHAUDS])
             if reste:
-                bloc_chauds += f"\n  … et {reste} autres"
+                bloc_chauds += f"\n  … et {reste} autre{'s' if reste > 1 else ''}"
 
     bookings = await _cnt("booking_events", {})
     totals["bookings_total"] = bookings

@@ -569,3 +569,79 @@ async def test_une_vieille_reponse_ne_couvre_pas_le_silence(monkeypatch):
     )
     assert "toujours vivant" in out["text"]
     assert "a répondu il y a 55 j" in out["text"]
+
+
+# =====================================================================
+# Revue du conseil — l'épinglage a DEUX motifs, et les accords suivent le
+# nombre (2026-08-25)
+# =====================================================================
+
+async def test_un_vendu_marque_reste_epingle_car_la_fiche_est_interne(monkeypatch):
+    """« fiche client à créer » est de la comptabilité, pas une sollicitation :
+    aucun risque LCAP. Et un vendu a zéro jour d'immobilité, donc sans épinglage
+    il sort le premier par le plafond — la ligne qu'on ne doit jamais perdre."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead(f"Boite {i}", jours=40 - i) for i in range(12)]
+        + [_lead("Vendu Marque", etape="vendu", fiche_client_existe=False,
+                 contact_status="disqualified", jours=0)],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    bloc_a_faire = out["text"].split("🔥")[0]
+    assert "Vendu Marque" in bloc_a_faire
+    assert "fiche client à créer" in bloc_a_faire
+    assert "a dit non" in bloc_a_faire      # la marque reste visible
+
+
+async def test_un_marque_avec_action_due_n_est_toujours_pas_epingle(monkeypatch):
+    """L'exception du `vendu` ne desserre PAS la garde LCAP : c'est le motif
+    « fiche à ouvrir » qui traverse la marque, jamais l'action due. Un site_envoye
+    désabonné avec une consigne échue reste hors de « À faire »."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead("Parti Mais Du", contact_status="opted_out",
+                      prochaine_action="relancer par courriel",
+                      prochaine_action_at=_il_y_a(1))],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    assert "À faire" not in out["text"].split("🔥")[0]
+    assert "Parti Mais Du" in out["text"]
+
+
+async def test_un_seul_element_s_accorde_au_singulier(monkeypatch):
+    """« 1 notes au carnet » et « … et 1 autres » sont deux fautes que William
+    lit chaque matin. L'accord suit le NOMBRE."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead(f"Boite {i}", jours=40 - i) for i in range(10)]
+        + [_lead("Marque Une", contact_status="disqualified", nb_notes=1, jours=99)],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    texte = out["text"]
+    assert "1 note au carnet" in texte
+    assert "1 notes au carnet" not in texte
+    assert "… et 1 autre" in texte
+    assert "… et 1 autres" not in texte
+
+
+async def test_plusieurs_elements_gardent_le_pluriel(monkeypatch):
+    """Le pendant du test précédent : l'accord est une condition sur le nombre,
+    pas un singulier figé à la place d'un pluriel figé."""
+    http_api = _socle(
+        monkeypatch,
+        chauds=[_lead(f"Boite {i}", jours=40 - i) for i in range(11)]
+        + [_lead("Marque Quatre", contact_status="disqualified", nb_notes=4,
+                 jours=99)],
+    )
+    out = await http_api.summary_daily(
+        http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+    )
+    texte = out["text"]
+    assert "4 notes au carnet" in texte
+    assert "… et 2 autres" in texte
