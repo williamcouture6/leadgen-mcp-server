@@ -564,6 +564,28 @@ async def test_un_ping_de_refus_rate_ne_sinscrit_pas_comme_envoye(monkeypatch):
     assert "contact_disqualified" in out.actions_taken
 
 
+async def test_une_disqualification_ratee_ne_sinscrit_pas_comme_faite(monkeypatch):
+    """Le journal ne dit QUE ce qui a réussi — même contrat que la branche
+    `interested`. Si l'écriture du statut échoue, le contact reste `contacted`
+    et redevient éligible à un envoi ; un `contact_disqualified` inscrit quand
+    même ferait croire la porte fermée le jour où ce lead reçoit un courriel de
+    trop. C'est le mode d'échec que le projet a déjà payé avec le désabonnement
+    qui répondait « c'est fait » sans rien enregistrer."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="not_interested",
+                          contacts_update_boom=True)
+    out = await reply.handle_reply(_payload(_REFUS_DOUX))
+
+    assert "contact_disqualified_failed" in out.actions_taken
+    assert "contact_disqualified" not in out.actions_taken
+    # L'écriture a bien été TENTÉE : le test doit rougir sur le journal, pas sur
+    # une branche qui aurait simplement cessé d'écrire.
+    assert ("contacts", {"status": "disqualified"}) in vu["updates"]
+    # Le ping, lui, part quand même — c'est le seul moyen que William le voie.
+    assert "slack_not_interested" in out.actions_taken
+
+
 async def test_une_absence_du_bureau_ne_pingue_toujours_rien(monkeypatch):
     """Garde-fou de périmètre : le nouveau ping ne doit pas déborder sur la
     seule branche encore volontairement muette. Un répondeur d'absence qui

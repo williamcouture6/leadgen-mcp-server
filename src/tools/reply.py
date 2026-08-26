@@ -317,8 +317,14 @@ async def _update_contact_status(contact_id: str, status: str) -> bool:
     """Retourne True si l'écriture est passée, False si l'exception a été
     avalée. Les appelants qui inscrivent une action au journal DOIVENT lire ce
     retour — une action journalisée sur une écriture ratée est un mensonge.
-    Les branches unsubscribe / not_interested l'ignorent volontairement
-    (comportement inchangé)."""
+    Seule la branche unsubscribe l'ignore encore : son interdit d'envoi ne
+    repose pas sur ce statut mais sur `suppression_list` (écrite juste avant),
+    seule table que `send.py` interroge avant de pousser. Laissé tel quel le
+    2026-08-26 — mais ce n'est pas une garde complète : `_add_to_suppression`
+    avale elle aussi ses exceptions SANS rien rendre, donc une base morte fait
+    inscrire `suppression_added` ET `contact_opted_out` sans qu'aucune des deux
+    écritures ait eu lieu. Refermer ce trou-là demande de faire rendre un
+    booléen à `_add_to_suppression` — plus large que la correction AC2."""
     try:
         await db.update(
             "contacts", {"status": status},
@@ -851,8 +857,15 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             )
 
     elif category == "not_interested":
-        await _update_contact_status(contact_id, "disqualified")
-        actions.append("contact_disqualified")
+        # Le journal ne dit QUE ce qui a réussi (AC2, 2026-08-26 — même patron
+        # que la branche `interested`). Une disqualification ratée mais inscrite
+        # comme faite laisse le contact dans le pipeline, éligible à un nouvel
+        # envoi, pendant que la trace affirme la porte fermée.
+        actions.append(
+            "contact_disqualified"
+            if await _update_contact_status(contact_id, "disqualified")
+            else "contact_disqualified_failed"
+        )
         # Soft suppression : on évite de les re-contacter dans 6 mois.
         # Pas dans suppression_list (réservé aux opt-outs durs).
         await _upsert_conversation(
