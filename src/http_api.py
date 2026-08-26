@@ -355,6 +355,24 @@ def _instant(horodatage: Any) -> datetime | None:
 _JAMAIS = datetime.min.replace(tzinfo=timezone.utc)
 
 
+def _dette_reglee(variable: str) -> bool:
+    """Une dette assumée est-elle éteinte ? Vrai UNIQUEMENT si la variable
+    d'environnement vaut littéralement « true ».
+
+    ⚠️ FAIL-SAFE, et c'est **l'inverse assumé** de `check_warmup_window`
+    (`src/lib/compliance_checks.py`), qui est fail-CLOSED : là-bas, une variable
+    absente BLOQUE l'envoi, parce que le dommage à éviter est un courriel parti
+    par erreur — irréversible. Ici, une variable absente AFFICHE le rappel,
+    parce que le dommage à éviter est une dette oubliée : le coût d'un rappel de
+    trop est une ligne dans Slack, celui d'un rappel manquant est un défaut qui
+    dort des mois. Les deux sens protègent contre des dommages opposés : ne PAS
+    « harmoniser » ce helper sur le patron du warmup.
+
+    Corollaire : une valeur illisible (`"1"`, `"oui"`, une faute de frappe) ne
+    règle rien — le rappel reste. On préfère le voir une fois de trop."""
+    return os.environ.get(variable, "").strip().lower() == "true"
+
+
 def _identite_lead(row: dict[str, Any]) -> str:
     """« Jean Roy <jean@plomberiex.ca> » — de quoi reconnaître la boîte d'un coup
     d'œil sans une requête de plus (le domaine du courriel suffit à l'identifier).
@@ -788,6 +806,75 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         text += "\n🧱 " + " · ".join(f"{m} {n}" for m, n in top3)
     if a_juger:
         text += f"\n🔎 {a_juger} entreprises que le temps ne réparera pas"
+
+    # ------------------------------------------------ PT3 : dettes assumées
+    # PT3 laisse deux dettes volontaires, écrites dans docs/go-live-checklist.md.
+    # Mais une dette consignée dans un fichier que personne ne rouvre au bon
+    # moment n'existe pas : ce projet a déjà payé ce mode d'échec deux fois (le
+    # runbook qui disait l'inverse de la réalité sur WARMUP_END_DATE ; la panne
+    # Google Places restée invisible cinq semaines). William est seul — le jour
+    # où la dette devient exigible, il vend, il ne relit pas une checklist
+    # rédigée des mois plus tôt. Le résumé la lui redit donc LUI-MÊME, au moment
+    # où elle devient vraie.
+    #
+    # Extinction par variable d'environnement, en FAIL-SAFE (variable absente ⇒
+    # rappel affiché) — voir `_dette_reglee` pour pourquoi le sens est l'inverse
+    # de check_warmup_window. Poser la variable est le geste qui éteint le
+    # rappel : rien à recoder, rien à redéployer.
+    #
+    # Placé en toute fin, après les motifs 🧱/🔎 : c'est une note de bas de page,
+    # elle ne doit jamais repousser les leads chauds vers le bas.
+    dettes: list[str] = []
+
+    if not _dette_reglee("DETTE_WF7_REGLEE"):
+        # Condition d'apparition : au moins un « oui » enregistré, tous tracks
+        # confondus. Avant le premier oui, le scénario du double-réponse ne peut
+        # pas se produire et le rappel ne serait que du bruit quotidien.
+        #
+        # `count()` et non `select_all()` : la question est « y en a-t-il AU
+        # MOINS un ? ». Ramener les lignes pour les compter en Python, ce serait
+        # payer le N+1 et se faire couper au plafond PostgREST de 1000. Les
+        # agrégats côté serveur (`select=count()`) sont désactivés sur ce projet
+        # (PGRST123) : `sb.count` lit l'en-tête Content-Range, ce qui marche.
+        try:
+            des_oui = await sb.count("contacts", params={"interested_at": "not.is.null"})
+            condition_lue = True
+        except Exception as e:  # noqa: BLE001
+            # Fail-soft, mais JAMAIS silencieux : sans ça, un rappel absent pour
+            # cause de panne serait indiscernable d'un rappel absent parce que
+            # personne n'a encore dit oui. C'est très exactement le mode d'échec
+            # que ce bloc existe pour éteindre — on ne va pas le réintroduire ici.
+            print(f"[summary] lecture de la condition dette WF-7 échouée: {e!r}")
+            des_oui, condition_lue = 0, False
+        if not condition_lue:
+            dettes.append(
+                "⚠️ *Dette PT3* — lecture de contacts.interested_at en ÉCHEC : "
+                "impossible de dire si un lead a déjà répondu oui, donc le rappel "
+                "du ping WF-7 peut manquer aujourd'hui sans que ça se voie. "
+                "Détail : docs/go-live-checklist.md § 4bis."
+            )
+        elif des_oui:
+            dettes.append(
+                "⚠️ *Dette PT3* — un lead a dit oui : au premier qui répond DEUX "
+                "fois, vérifier dans les logs de /wf7/poll (ou l'Unibox Instantly) "
+                "si la 2e réponse est captée, PUIS corriger le ping WF-7. "
+                "Détail et piège : docs/go-live-checklist.md § 4bis."
+            )
+
+    if not _dette_reglee("DETTE_ERRORWF_VERIFIEE"):
+        # Pas de condition d'apparition : elle est vraie tant que personne n'a
+        # ouvert le menu n8n. Elle se rappelle DANS le message qu'elle protège —
+        # si ce résumé arrive, le rappel arrive avec lui ; s'il n'arrive pas,
+        # c'est précisément le défaut dont il parle.
+        dettes.append(
+            "⚠️ *Dette PT3* — vérifier dans n8n que le champ « Error Workflow » du "
+            "résumé quotidien affiche bien [OPS] Error Handler → Slack. L'id "
+            "weHbzb97xdjo2OEd vient de wf-9 et n'est vérifiable QUE dans le menu "
+            "n8n. S'il pointe à côté, ce résumé peut mourir en silence."
+        )
+
+    if dettes:
+        text += "\n" + "\n".join(dettes)
 
     posted = False
     if payload.post:
