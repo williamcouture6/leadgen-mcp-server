@@ -134,6 +134,7 @@ _RESEARCH = {
 
 
 def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_boom=False,
+                     suppression_insert_boom=False,
                      categorie="interested", interested_at=None):
     """Monte un `handle_reply` complet qui atterrit dans la branche `categorie`
     (défaut : `interested` ; `other` pour le review manuel ; `unsubscribe`).
@@ -145,7 +146,11 @@ def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_
     doit rendre (défaut : True partout).
 
     `interested_at` = valeur rendue par la lecture ciblée `select=interested_at`
-    (branche unsubscribe) : None = ce contact n'avait jamais dit oui."""
+    (branche unsubscribe) : None = ce contact n'avait jamais dit oui.
+
+    `suppression_insert_boom` fait tomber le SEUL insert qui compte pour la
+    LCAP (`suppression_list`) en laissant tout le reste debout — c'est la panne
+    partielle qui rendait le journal menteur avant C6."""
     from src import supabase_client
     from src.lib import slack as slack_mod
     from src.tools import reply
@@ -177,7 +182,12 @@ def _wire_interested(monkeypatch, *, notify_par_categorie=None, contacts_update_
         raise AssertionError(f"select inattendu sur {table!r}")
 
     async def fake_insert(table, row, **kw):
+        # On enregistre AVANT de lever : les tests doivent pouvoir vérifier que
+        # l'écriture a été TENTÉE, sinon ils rougiraient aussi sur une branche
+        # qui aurait simplement cessé d'écrire.
         vu["inserts"].append((table, row))
+        if suppression_insert_boom and table == "suppression_list":
+            raise RuntimeError("db down")
         return [{"id": {"messages": "in-1", "agent_runs": "ar-1"}.get(table, "x-1")}]
 
     async def fake_update(table, patch, *, filters=None, schema=None):
@@ -454,6 +464,96 @@ async def test_un_desabonne_sans_oui_ne_crie_pas_a_la_panne(monkeypatch):
     out = await reply.handle_reply(_payload(_DESABO))
 
     assert "interested_at_read_failed" not in out.actions_taken
+
+
+# ---------------------------------------------------------------------
+# C6 — le journal ne déclare plus un désabonnement qu'il n'a pas obtenu
+# ---------------------------------------------------------------------
+# Ce projet a déjà payé ce mode d'échec trois mois durant : la page de
+# désabonnement répondait « c'est fait » pendant qu'`ON CONFLICT` mourait en
+# 42P10 et que rien ne s'écrivait. Rien ne plantait, donc personne n'a rien vu.
+# Ici c'est le même mensonge sur le même chemin : `send.py` n'interroge que
+# `suppression_list` avant de pousser — une ligne absente ne bloque RIEN, et le
+# journal jurait le contraire. C'est une infraction LCAP rendue invisible.
+
+
+async def test_une_suppression_ratee_ne_sinscrit_pas_comme_faite(monkeypatch):
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="unsubscribe",
+                          suppression_insert_boom=True)
+    out = await reply.handle_reply(_payload(_DESABO))
+
+    assert "suppression_failed" in out.actions_taken
+    assert "suppression_added" not in out.actions_taken
+    # L'écriture a bien été TENTÉE : le test doit rougir sur le journal, pas sur
+    # une branche qui aurait simplement cessé d'écrire.
+    assert [row for table, row in vu["inserts"] if table == "suppression_list"]
+    # Le reste de la conformité continue : le statut passe quand même.
+    assert "contact_opted_out" in out.actions_taken
+    assert ("contacts", {"status": "opted_out"}) in vu["updates"]
+
+
+async def test_une_suppression_ratee_crie_sur_alertes(monkeypatch):
+    """Un désabonnement perdu n'est pas une info manquée (le refus, lui, se
+    contente du journal) : c'est une infraction potentielle, et personne ne le
+    saura si le seul témoin est une ligne d'`agent_runs`."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="unsubscribe",
+                          suppression_insert_boom=True)
+    out = await reply.handle_reply(_payload(_DESABO))
+
+    alertes = [n for n in vu["notifies"] if n["category"] == "alerts"]
+    assert len(alertes) == 1
+    assert alertes[0]["context"] == "wf7_suppression_failed"
+    assert "jean@x.ca" in alertes[0]["text"]   # qui retirer à la main
+    assert "ct-1" in alertes[0]["text"]
+    assert "alert_ping_sent" in out.actions_taken
+
+
+async def test_une_alerte_de_suppression_ratee_qui_rate_ne_sinscrit_pas(monkeypatch):
+    """L'alerte elle-même doit être honnête : Slack mort ne devient pas
+    « William est prévenu »."""
+    from src.tools import reply
+
+    _wire_interested(monkeypatch, categorie="unsubscribe",
+                     suppression_insert_boom=True,
+                     notify_par_categorie={"alerts": False})
+    out = await reply.handle_reply(_payload(_DESABO))
+
+    assert "suppression_failed" in out.actions_taken
+    assert "alert_ping_sent" not in out.actions_taken
+
+
+async def test_un_opted_out_rate_ne_sinscrit_pas_comme_fait(monkeypatch):
+    """Second étage du même mensonge : `_update_contact_status` rendait déjà un
+    booléen lisible, mais cette branche le jetait."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="unsubscribe",
+                          contacts_update_boom=True)
+    out = await reply.handle_reply(_payload(_DESABO))
+
+    assert "contact_opted_out_failed" in out.actions_taken
+    assert "contact_opted_out" not in out.actions_taken
+    assert ("contacts", {"status": "opted_out"}) in vu["updates"]
+    # La ligne de suppression, elle, est passée — c'est ELLE que send.py lit.
+    assert "suppression_added" in out.actions_taken
+
+
+async def test_le_desabonnement_nominal_declare_les_deux_ecritures_sans_alerte(monkeypatch):
+    """Le contrepoids : quand tout marche, le journal le dit et #alertes reste
+    muet. Sans ce test, faire crier la branche à tout coup passerait."""
+    from src.tools import reply
+
+    vu = _wire_interested(monkeypatch, categorie="unsubscribe", interested_at=None)
+    out = await reply.handle_reply(_payload(_DESABO))
+
+    assert "suppression_added" in out.actions_taken
+    assert "contact_opted_out" in out.actions_taken
+    assert not [a for a in out.actions_taken if a.endswith("_failed")]
+    assert not [n for n in vu["notifies"] if n["category"] == "alerts"]
 
 
 def test_hot_lead_blocks_nouvelle_signature():

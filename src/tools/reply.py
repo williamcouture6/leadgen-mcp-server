@@ -6,7 +6,8 @@ Reçoit un reply Instantly, le classe via LLM, et route l'action :
     répond LUI-MÊME avec le lien — plus aucune auto-réponse) + Slack ping #leads
   - `unsubscribe` → suppression_list + contact.status='opted_out' (+ Slack ping
     #leads SI le contact avait `interested_at` posé — visibilité seulement, le
-    ping porte l'interdit LCAP de relance par courriel)
+    ping porte l'interdit LCAP de relance par courriel ; + alerte #alertes SI
+    l'écriture de suppression échoue — le contact reste alors ENVOYABLE)
   - `not_interested` → contact.status='disqualified' (+ Slack ping #leads
     portant l'EXTRAIT de la réponse — le classifieur range aussi ici des
     objections traitables, « on gère ça à l'interne », « recontactez-moi dans
@@ -294,8 +295,17 @@ async def _add_to_suppression(
     reason: str = "opt_out",
     source: str = "reply_parse",
     notes: str | None = None,
-) -> None:
-    """Insert dans suppression_list, idempotent (unique sur email)."""
+) -> bool:
+    """Insert dans suppression_list, idempotent (unique sur email).
+
+    Retourne True si l'écriture est passée, False si l'exception a été avalée —
+    même patron que `_update_contact_status` / `_mark_contact_interested`.
+    L'appelant DOIT lire ce retour : `send.py` n'interroge QUE cette table avant
+    de pousser, donc une ligne absente ne bloque rien du tout. Inscrire
+    `suppression_added` sans avoir obtenu l'écriture, c'est rendre une infraction
+    LCAP invisible — exactement le mode d'échec que la page de désabonnement a
+    servi trois mois durant (`ON CONFLICT` en 42P10 : « c'est fait » à l'écran,
+    rien en base, rien qui plante, personne qui voit)."""
     row: dict[str, Any] = {
         "email": email,
         "reason": reason,
@@ -309,22 +319,19 @@ async def _add_to_suppression(
             on_conflict="email",
             ignore_duplicates=True,
         )
+        return True
     except Exception as e:  # noqa: BLE001
         print(f"[reply] suppression insert failed: {e!r}")
+        return False
 
 
 async def _update_contact_status(contact_id: str, status: str) -> bool:
     """Retourne True si l'écriture est passée, False si l'exception a été
     avalée. Les appelants qui inscrivent une action au journal DOIVENT lire ce
     retour — une action journalisée sur une écriture ratée est un mensonge.
-    Seule la branche unsubscribe l'ignore encore : son interdit d'envoi ne
-    repose pas sur ce statut mais sur `suppression_list` (écrite juste avant),
-    seule table que `send.py` interroge avant de pousser. Laissé tel quel le
-    2026-08-26 — mais ce n'est pas une garde complète : `_add_to_suppression`
-    avale elle aussi ses exceptions SANS rien rendre, donc une base morte fait
-    inscrire `suppression_added` ET `contact_opted_out` sans qu'aucune des deux
-    écritures ait eu lieu. Refermer ce trou-là demande de faire rendre un
-    booléen à `_add_to_suppression` — plus large que la correction AC2."""
+    Plus aucun appelant ne l'ignore depuis le 2026-08-26 : `unsubscribe` était
+    la dernière, et sa voisine `_add_to_suppression` rend elle aussi un booléen
+    désormais (trouvaille C6 du conseil PT1)."""
     try:
         await db.update(
             "contacts", {"status": status},
@@ -810,15 +817,41 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
     company_track = (company_row or {}).get("track")
 
     if category == "unsubscribe":
-        await _add_to_suppression(
+        # Ces deux écritures SONT la conformité, et le journal ne déclare que ce
+        # qu'il a obtenu (C6) : `send.py` n'interroge que `suppression_list`,
+        # donc une ligne manquante laisse le contact envoyable pendant que la
+        # trace jure le contraire. Rien d'autre ne bouge — mêmes appels, même
+        # ordre, seuls les retours sont désormais lus.
+        suppression_ok = await _add_to_suppression(
             email=payload.lead_email,
             reason="opt_out",
             source="reply_parse",
             notes=f"reply_classified_unsubscribe; conf={confidence:.2f}",
         )
-        actions.append("suppression_added")
-        await _update_contact_status(contact_id, "opted_out")
-        actions.append("contact_opted_out")
+        actions.append("suppression_added" if suppression_ok else "suppression_failed")
+        actions.append(
+            "contact_opted_out"
+            if await _update_contact_status(contact_id, "opted_out")
+            else "contact_opted_out_failed"
+        )
+        if not suppression_ok:
+            # Repli d'alerte, même patron que le hot lead non notifié. Il se
+            # justifie ici alors qu'il ne se justifiait pas pour le refus : un
+            # désabonnement perdu n'est pas une information manquée, c'est une
+            # infraction potentielle, et le seul témoin serait sinon une ligne
+            # d'`agent_runs` que personne ne lit. L'alerte elle-même ne
+            # s'inscrit que si elle est réellement partie.
+            if await slack_lib.notify(
+                text=(
+                    "🚨 DÉSABONNEMENT NON ENREGISTRÉ — l'écriture dans "
+                    f"suppression_list a échoué pour {payload.lead_email} "
+                    f"(contact_id={contact_id or '(inconnu)'}). Le contact reste "
+                    "ENVOYABLE : le retirer à la main AVANT tout envoi (risque LCAP)."
+                ),
+                context="wf7_suppression_failed",
+                category="alerts",
+            ):
+                actions.append("alert_ping_sent")
         await _upsert_conversation(
             contact_id=contact_id, campaign_id=campaign_id,
             state="lost", last_direction="inbound",
