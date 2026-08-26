@@ -6,8 +6,12 @@ Reçoit un reply Instantly, le classe via LLM, et route l'action :
     répond LUI-MÊME avec le lien — plus aucune auto-réponse) + Slack ping #leads
   - `unsubscribe` → suppression_list + contact.status='opted_out' (+ Slack ping
     #leads SI le contact avait `interested_at` posé — visibilité seulement, le
-    ping porte l'interdit LCAP de relance par courriel)
-  - `not_interested` → contact.status='disqualified'
+    ping porte l'interdit LCAP de relance par courriel ; + alerte #alertes SI
+    l'écriture de suppression échoue — le contact reste alors ENVOYABLE)
+  - `not_interested` → contact.status='disqualified' (+ Slack ping #leads
+    portant l'EXTRAIT de la réponse — le classifieur range aussi ici des
+    objections traitables, « on gère ça à l'interne », « recontactez-moi dans
+    6 mois » ; visibilité seulement, le contact reste sorti du pipeline)
   - `out_of_office` → log only, contact reste 'contacted'
   - `other` → flag review manuel, Slack ping
 
@@ -291,8 +295,17 @@ async def _add_to_suppression(
     reason: str = "opt_out",
     source: str = "reply_parse",
     notes: str | None = None,
-) -> None:
-    """Insert dans suppression_list, idempotent (unique sur email)."""
+) -> bool:
+    """Insert dans suppression_list, idempotent (unique sur email).
+
+    Retourne True si l'écriture est passée, False si l'exception a été avalée —
+    même patron que `_update_contact_status` / `_mark_contact_interested`.
+    L'appelant DOIT lire ce retour : `send.py` n'interroge QUE cette table avant
+    de pousser, donc une ligne absente ne bloque rien du tout. Inscrire
+    `suppression_added` sans avoir obtenu l'écriture, c'est rendre une infraction
+    LCAP invisible — exactement le mode d'échec que la page de désabonnement a
+    servi trois mois durant (`ON CONFLICT` en 42P10 : « c'est fait » à l'écran,
+    rien en base, rien qui plante, personne qui voit)."""
     row: dict[str, Any] = {
         "email": email,
         "reason": reason,
@@ -306,16 +319,19 @@ async def _add_to_suppression(
             on_conflict="email",
             ignore_duplicates=True,
         )
+        return True
     except Exception as e:  # noqa: BLE001
         print(f"[reply] suppression insert failed: {e!r}")
+        return False
 
 
 async def _update_contact_status(contact_id: str, status: str) -> bool:
     """Retourne True si l'écriture est passée, False si l'exception a été
     avalée. Les appelants qui inscrivent une action au journal DOIVENT lire ce
     retour — une action journalisée sur une écriture ratée est un mensonge.
-    Les branches unsubscribe / not_interested l'ignorent volontairement
-    (comportement inchangé)."""
+    Plus aucun appelant ne l'ignore depuis le 2026-08-26 : `unsubscribe` était
+    la dernière, et sa voisine `_add_to_suppression` rend elle aussi un booléen
+    désormais (trouvaille C6 du conseil PT1)."""
     try:
         await db.update(
             "contacts", {"status": status},
@@ -670,15 +686,36 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
                 orphan_id = ins_orphan[0]["id"] if ins_orphan else None
             except Exception:  # noqa: BLE001
                 orphan_id = None
-            await slack_lib.notify(
-                text=f"⚠️ Reply orphelin reçu de {payload.lead_email} — contact introuvable en DB",
+            # L'EXTRAIT voyage avec l'alerte. Sans lui, William lit « contact
+            # introuvable » et doit ouvrir Outlook pour savoir si c'est un oui
+            # qu'il vient de rater — or c'est justement le cas typique : le
+            # prospect répond depuis son gmail perso, pas depuis l'adresse à
+            # qui on a écrit. Même borne et même ellipse que les extraits des
+            # pings voisins (une seule définition dans slack.py).
+            extrait_orphelin = slack_lib._truncate(
+                strip_quote_and_signature(payload.reply_body_text)
+                or payload.reply_body_text
+                or "(corps vide)",
+                400,
+            )
+            ping_ok = await slack_lib.notify(
+                text=(
+                    f"⚠️ Reply orphelin reçu de {payload.lead_email} — "
+                    f"contact introuvable en DB\n"
+                    f"*Reply (extrait)*\n```{extrait_orphelin}```"
+                ),
                 context="wf7_orphan_reply",
                 category="alerts",
             )
             return HandleReplyOut(
                 status="skipped_no_contact",
                 inbound_message_id=orphan_id,
-                actions_taken=["orphan_logged", "slack_ping"],
+                # Le journal ne dit QUE ce qui a réussi : `slack_ping` écrit en
+                # dur affirmait qu'une alerte perdue était partie.
+                actions_taken=[
+                    "orphan_logged",
+                    "slack_ping" if ping_ok else "slack_ping_failed",
+                ],
                 error_text=f"no contact found for {payload.lead_email}",
                 duration_ms=int((time.monotonic() - started) * 1000),
             )
@@ -801,15 +838,41 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
     company_track = (company_row or {}).get("track")
 
     if category == "unsubscribe":
-        await _add_to_suppression(
+        # Ces deux écritures SONT la conformité, et le journal ne déclare que ce
+        # qu'il a obtenu (C6) : `send.py` n'interroge que `suppression_list`,
+        # donc une ligne manquante laisse le contact envoyable pendant que la
+        # trace jure le contraire. Rien d'autre ne bouge — mêmes appels, même
+        # ordre, seuls les retours sont désormais lus.
+        suppression_ok = await _add_to_suppression(
             email=payload.lead_email,
             reason="opt_out",
             source="reply_parse",
             notes=f"reply_classified_unsubscribe; conf={confidence:.2f}",
         )
-        actions.append("suppression_added")
-        await _update_contact_status(contact_id, "opted_out")
-        actions.append("contact_opted_out")
+        actions.append("suppression_added" if suppression_ok else "suppression_failed")
+        actions.append(
+            "contact_opted_out"
+            if await _update_contact_status(contact_id, "opted_out")
+            else "contact_opted_out_failed"
+        )
+        if not suppression_ok:
+            # Repli d'alerte, même patron que le hot lead non notifié. Il se
+            # justifie ici alors qu'il ne se justifiait pas pour le refus : un
+            # désabonnement perdu n'est pas une information manquée, c'est une
+            # infraction potentielle, et le seul témoin serait sinon une ligne
+            # d'`agent_runs` que personne ne lit. L'alerte elle-même ne
+            # s'inscrit que si elle est réellement partie.
+            if await slack_lib.notify(
+                text=(
+                    "🚨 DÉSABONNEMENT NON ENREGISTRÉ — l'écriture dans "
+                    f"suppression_list a échoué pour {payload.lead_email} "
+                    f"(contact_id={contact_id or '(inconnu)'}). Le contact reste "
+                    "ENVOYABLE : le retirer à la main AVANT tout envoi (risque LCAP)."
+                ),
+                context="wf7_suppression_failed",
+                category="alerts",
+            ):
+                actions.append("alert_ping_sent")
         await _upsert_conversation(
             contact_id=contact_id, campaign_id=campaign_id,
             state="lost", last_direction="inbound",
@@ -848,13 +911,51 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
             )
 
     elif category == "not_interested":
-        await _update_contact_status(contact_id, "disqualified")
-        actions.append("contact_disqualified")
+        # Le journal ne dit QUE ce qui a réussi (AC2, 2026-08-26 — même patron
+        # que la branche `interested`). Une disqualification ratée mais inscrite
+        # comme faite laisse le contact dans le pipeline, éligible à un nouvel
+        # envoi, pendant que la trace affirme la porte fermée.
+        actions.append(
+            "contact_disqualified"
+            if await _update_contact_status(contact_id, "disqualified")
+            else "contact_disqualified_failed"
+        )
         # Soft suppression : on évite de les re-contacter dans 6 mois.
         # Pas dans suppression_list (réservé aux opt-outs durs).
         await _upsert_conversation(
             contact_id=contact_id, campaign_id=campaign_id,
             state="cold", last_direction="inbound",
+        )
+
+        # Visibilité (2026-08-24) : cette branche ne pinguait rien. Le prospect
+        # sortait du pipeline pour de bon et William ne savait même pas qu'il
+        # avait répondu. Or le prompt du classifieur range aussi dans
+        # `not_interested` des objections traitables (« on gère ça à
+        # l'interne », « recontactez-moi dans 6 mois ») — elles partaient au
+        # cimetière sans un mot.
+        #
+        # Ajout STRICTEMENT en aval : la disqualification et l'état `cold`
+        # ci-dessus sont inchangés, ce bloc n'écrit rien. Le ping porte
+        # l'EXTRAIT de la réponse — c'est lui qui permet à William de faire à la
+        # main le tri fin qu'AC2 automatisera.
+        fallback, blocks = slack_lib.build_not_interested_blocks(
+            contact_name=contact_name,
+            company_name=company_name,
+            contact_email=payload.lead_email,
+            reply_preview=cleaned_reply or payload.reply_body_text,
+            confidence=confidence,
+            track=company_track,
+        )
+        # Même patron d'honnêteté que ses voisines. Pas de repli sur #alertes :
+        # un prospect qui dit non n'est pas une panne (le choix déjà fait pour
+        # `build_review_blocks`) ; l'honnêteté du journal suffit.
+        actions.append(
+            "slack_not_interested"
+            if await slack_lib.notify(
+                text=fallback, blocks=blocks,
+                context="wf7_not_interested", category="leads",
+            )
+            else "slack_not_interested_ping_failed"
         )
 
     elif category == "out_of_office":
@@ -870,8 +971,8 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         # Pivot tri (PT1) : plus d'auto-reply — le prospect attend LE lien
         # démo, que William produit (session artisanale) et envoie lui-même.
         # Ordre des gardes : désabonnement d'abord (aucune écriture, aucun
-        # ping de production pour un désabonné), puis booked (ne pas régresser
-        # une conversation déjà en RDV).
+        # ping de production pour un désabonné), puis booked — qui ne couvre
+        # QUE l'état de conversation (voir plus bas).
         suppressed_lead = await _interested_lead_is_suppressed(
             contact_id, payload.lead_email
         )
@@ -884,23 +985,36 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         if suppressed_lead:
             actions.append("skipped_interested_suppressed")
         else:
+            # Le journal ne dit QUE ce qui a réussi : une écriture ratée
+            # inscrite comme faite ferait disparaître un hot lead de la
+            # file sans alerte.
+            #
+            # ⚠️ Ces deux promotions sont dues MÊME si un RDV existe déjà.
+            # La garde `booked` les sautait autrefois avec l'upsert, dans un
+            # seul bloc : un prospect qui réservait un appel PUIS écrivait
+            # « parfait, montrez-moi le site avant » ressortait avec zéro
+            # écriture sur `contacts`. Sans `interested_at`, il était rejeté à
+            # vie du carnet de suivi (la vue se termine sur
+            # `where ct.interested_at is not null`) et restait marqué « a dit
+            # non » en base alors qu'il avait un rendez-vous au calendrier.
+            actions.append(
+                "contact_replied"
+                if await _update_contact_status(contact_id, "replied")
+                else "contact_replied_failed"
+            )
+            actions.append(
+                "contact_interested"
+                if await _mark_contact_interested(contact_id)
+                else "contact_interested_failed"
+            )
+
+            # La garde `booked` survit, mais RÉTRÉCIE à la seule écriture qui
+            # posait problème : repasser une conversation `booked` à `hot` la
+            # ferait régresser, le RDV disparaîtrait de son état.
             already_booked = await _conversation_is_booked(contact_id)
             if already_booked:
-                actions.append("skipped_marker_already_booked")
+                actions.append("skipped_conversation_already_booked")
             else:
-                # Le journal ne dit QUE ce qui a réussi : une écriture ratée
-                # inscrite comme faite ferait disparaître un hot lead de la
-                # file sans alerte.
-                actions.append(
-                    "contact_replied"
-                    if await _update_contact_status(contact_id, "replied")
-                    else "contact_replied_failed"
-                )
-                actions.append(
-                    "contact_interested"
-                    if await _mark_contact_interested(contact_id)
-                    else "contact_interested_failed"
-                )
                 await _upsert_conversation(
                     contact_id=contact_id, campaign_id=campaign_id,
                     state="hot", last_direction="inbound",
@@ -916,6 +1030,10 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
                 website=(company_row or {}).get("website"),
                 research_json=(company_row or {}).get("research_json"),
                 suppression_check_failed=suppression_check_failed,
+                # Sans ça le ping est identique à celui d'un lead frais : il
+                # réclame « à toi de produire le site » sans dire qu'un appel
+                # est déjà pris.
+                already_booked=already_booked,
             )
             ping_ok = await slack_lib.notify(
                 text=fallback, blocks=blocks, context="wf7_hot_lead", category="leads",
@@ -997,6 +1115,25 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
 # ----------------------------------------------------------------------
 # Webhook payload extraction (Instantly v2)
 # ----------------------------------------------------------------------
+
+def _horodatage_item(item: Any) -> str:
+    """« Quand ce message est arrivé », en une seule définition.
+
+    Deux appelants doivent lire EXACTEMENT le même champ, sinon ils divergent :
+    `extract_from_instantly_email_list_item` (qui le pose dans `received_at`)
+    et `poll_and_process_replies` (qui l'utilise comme clé de tri du lot).
+
+    Rend TOUJOURS une chaîne — jamais None, jamais un int. C'est ce qui rend le
+    tri increvable : comparer un None à une chaîne lèverait un TypeError qui
+    ferait tomber tout le poll, pas seulement l'item mal formé. Un item non
+    daté tombe donc à `""`, qui trie AVANT toute date ISO : il ne peut jamais
+    l'emporter sur un item daté, et `sorted` étant stable, les non-datés
+    gardent entre eux l'ordre rendu par l'API.
+    """
+    if not isinstance(item, dict):
+        return ""
+    return str(item.get("timestamp_created") or item.get("created_at") or "")
+
 
 def extract_from_instantly_email_list_item(item: dict[str, Any]) -> HandleReplyIn | None:
     """Convertit un item de la réponse GET /api/v2/emails (type=received) en
@@ -1086,7 +1223,7 @@ def extract_from_instantly_email_list_item(item: dict[str, Any]) -> HandleReplyI
             or item.get("reply_to_uuid")
             or item.get("thread_id")
         ),
-        received_at=str(item.get("timestamp_created") or item.get("created_at") or ""),
+        received_at=_horodatage_item(item),
         eaccount=eaccount,
         raw_payload=item,
     )
@@ -1121,6 +1258,10 @@ async def poll_and_process_replies(payload: PollRepliesIn) -> PollRepliesOut:
     """Fetch les N derniers emails received dans Instantly + process chaque
     nouveau via handle_reply. Idempotent : skip si provider_message_id déjà
     en `messages` (direction=inbound). Pas de cursor — on s'appuie sur l'idempotence.
+
+    Le lot est traité dans l'ordre CHRONOLOGIQUE, pas dans celui rendu par
+    l'API : quand un prospect écrit deux fois entre deux passes du cron, c'est
+    sa dernière parole qui doit être la dernière écrite en base.
     """
     try:
         resp = await instantly_lib.list_emails(
@@ -1144,6 +1285,21 @@ async def poll_and_process_replies(payload: PollRepliesIn) -> PollRepliesOut:
         items_raw = []
 
     fetched = len(items_raw)
+
+    # La chronologie AVANT tout traitement. Instantly ne garantit aucun ordre
+    # sur GET /emails, et un lot mélangé fait gagner la réponse la PLUS VIEILLE
+    # (c'est la dernière écrite qui l'emporte). Cas réel : « on gère ça à
+    # l'interne » à 9h05, William répond de sa main à 9h12, « ah ok, montrez-
+    # moi » à 9h20 — le cron de 30 min ramène les deux dans le même paquet. Si
+    # Instantly rend le plus récent d'abord, le contact finit `disqualified` +
+    # `cold` alors que sa dernière parole est un oui.
+    #
+    # Tri croissant sur `timestamp_created` (ISO-8601 UTC chez Instantly : le
+    # tri lexicographique de la chaîne EST le tri chronologique). Voir
+    # `_horodatage_item` pour les items sans horodatage — la clé ne lève
+    # jamais, un tri qui plante casserait tout le poll.
+    items_raw = sorted(items_raw, key=_horodatage_item)
+
     processed = skipped_duplicate = skipped_invalid = errors = 0
     out_items: list[PollRepliesItem] = []
 

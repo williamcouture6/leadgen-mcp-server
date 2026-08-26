@@ -135,6 +135,180 @@ def _cle_courriel(valeur: Any) -> str:
     return str(valeur or "").strip().lower()
 
 
+# Marques d'impasse du bloc « leads chauds » (PT3). Un lead en impasse n'est
+# JAMAIS retiré de la liste : il est étiqueté. Un lead avec six notes et un RDV
+# qui bascule `disqualified` — ce que WF-7 fait sans émettre le moindre ping —
+# quitterait sinon la liste sans un mot, avec tout son historique.
+_MARQUES_IMPASSE = {
+    "opted_out": "⛔ s'est désabonné",
+    "disqualified": "✖ a dit non",
+    "bounced": "📵 adresse morte",
+}
+
+
+def _marque_impasse(statut: Any, ligne_suppression: dict[str, Any] | None) -> str | None:
+    """La marque à afficher pour un lead chaud, ou None s'il est sain.
+
+    Deux sources, comme partout ailleurs dans ce résumé : `contacts.status` ET la
+    présence dans `suppression_list`. Le clic sur le lien du footer (Edge Function
+    `unsubscribe`) écrit TOUJOURS la ligne de suppression et ne pose le statut
+    qu'au mieux — sans le croisement, ce cas dégradé passerait pour un lead sain.
+    Le croisement se fait sur la clé normalisée (`_cle_courriel`) : `ilike` serait
+    un piège, `_` y est un joker."""
+    marque = _MARQUES_IMPASSE.get(str(statut or ""))
+    if marque:
+        return marque
+    if ligne_suppression is not None:
+        motif = ligne_suppression.get("reason")
+        if motif in _MOTIFS_RETRAIT_CONSENTEMENT:
+            return _MARQUES_IMPASSE["opted_out"]
+        if motif == "hard_bounce":
+            return _MARQUES_IMPASSE["bounced"]
+        # manual / competitor / dncl : NOUS l'avons écarté. On le dit sans
+        # invoquer un désabonnement que personne n'a demandé.
+        return "✖ écarté de notre côté"
+    return None
+
+
+def _mention_action_caduque(marque: str) -> str:
+    """Ce qu'on écrit À LA PLACE d'une consigne de relance, sur un lead marqué.
+
+    Une action prévue avant l'impasse ne s'exécute plus. L'afficher nue — « ⏰
+    relancer par courriel » — sur un désabonné est une invitation à commettre
+    l'infraction ; la retirer sans rien dire laisse William la reconstruire de
+    tête. On la remplace donc par la RAISON pour laquelle elle est morte.
+
+    Les trois raisons ne se confondent pas, et le projet ne met pas de mensonge
+    à l'écran : seul l'`opted_out` est un retrait de consentement (LCAP). Un
+    hard bounce ferme le canal sans que personne n'ait rien retiré, et un
+    « a dit non » / « écarté de notre côté » ne ferme même pas le canal — c'est
+    la relance qui n'a plus d'objet."""
+    from .lib import slack as slack_lib
+
+    if marque == _MARQUES_IMPASSE["opted_out"]:
+        return slack_lib.GARDE_LCAP_RELANCE_COURTE
+    if marque == _MARQUES_IMPASSE["bounced"]:
+        return "⏸️ relance impossible — le courriel ne se rend plus"
+    return "⏸️ relance annulée"
+
+
+# Plafond de lignes nommées dans le bloc « leads chauds » avant repli en
+# « et N autres ». N est toujours EXACT : une troncature silencieuse se lit
+# comme « c'est tout », ce qui est le contraire de la vérité.
+_PLAFOND_LEADS_CHAUDS = 10
+
+# Au-delà, la ligne POSE la question au lieu de constater. Un opérateur solo ne
+# s'assoit jamais pour déclarer une défaite : sans relance, `perdu` reste
+# sous-écrit et le cimetière occupe le haut de la liste.
+_JOURS_AVANT_DE_DEMANDER = 21
+
+# Fenêtre du bloc « À faire », en JOURS CALENDAIRES à partir de minuit
+# America/Toronto : 0 = aujourd'hui seulement, 1 = jusqu'à la fin de demain.
+# L'échu remonte toujours. Ce n'est pas une durée en heures — une action du
+# lendemain matin doit apparaître dès le résumé de la veille, pas 24 h avant.
+# Plus large, le bloc devient une deuxième liste de tout ; plus étroit, une
+# action du matin arrive après coup.
+_HORIZON_A_FAIRE_JOURS = 1
+
+_ETIQUETTES_ETAPE = {
+    "a_produire": "à produire",
+    "site_produit": "site produit",
+    "site_envoye": "site envoyé",
+    "feedback_recu": "feedback reçu",
+    "rdv_pris": "RDV pris",
+    "demo_faite": "démo faite",
+    "vendu": "vendu",
+    "en_pause": "en pause",
+}
+
+
+def _jours_depuis(valeur: Any, maintenant: datetime) -> int | None:
+    moment = _instant(valeur)
+    return None if moment is None else max(0, (maintenant - moment).days)
+
+
+def _truncate_note(note: str, limite: int = 90) -> str:
+    texte = " ".join(str(note).split())
+    return texte if len(texte) <= limite else texte[: limite - 1] + "…"
+
+
+def _ligne_lead_chaud(lead: dict[str, Any], marque: str | None,
+                      maintenant: datetime) -> str:
+    """Une ligne de la liste : qui, où il en est, et le dernier fait connu."""
+    from .lib import slack as slack_lib
+
+    nom = lead.get("company_name") or lead.get("contact_email") or "(sans nom)"
+    etape = str(lead.get("etape") or "a_produire")
+    bouts: list[str] = [_ETIQUETTES_ETAPE.get(etape, etape)]
+
+    if marque:
+        # La marque PRÉCÈDE l'étape, elle ne l'efface pas : la première question
+        # devant un lead en impasse est « où il en était ». Un désabonnement
+        # après une démo ne se lit pas comme un désabonnement avant même la
+        # production du site.
+        nb = lead.get("nb_notes") or 0
+        bouts = [marque, _ETIQUETTES_ETAPE.get(etape, etape)] + (
+            [f"{nb} note{'s' if nb > 1 else ''} au carnet"] if nb else []
+        )
+
+    # L'action prévue AVANT la note : « À faire » qui ne dit pas quoi faire manque
+    # son objet, et c'est ce champ qui porte la jambe « rappelle » de la promesse.
+    # Sur un lead MARQUÉ, la consigne est caduque : on affiche pourquoi, jamais
+    # l'ordre de relancer (voir `_mention_action_caduque`).
+    action = str(lead.get("prochaine_action") or "").strip()
+    if action and marque:
+        bouts.append(_mention_action_caduque(marque))
+    elif action:
+        quand = slack_lib.jour(lead.get("prochaine_action_at") or "")
+        bouts.append(f"⏰ {action}" + (f" ({quand})" if quand else ""))
+
+    # Le RDV est un fait dur : affiché, jamais écrit au carnet.
+    rdv = slack_lib.jour(lead.get("rdv_prochain_at") or "")
+    if rdv:
+        bouts.append(f"RDV {rdv} (Cal.com)")
+
+    # La dernière réponse du prospect est un fait dur du même ordre que la démo
+    # frappée et le RDV : un signe de vie obtenu SANS aucune discipline de
+    # William. La vue la lisait déjà et le code la jetait — d'où un résumé qui
+    # pouvait demander « toujours vivant ? » sur quelqu'un qui a écrit hier.
+    jours_reponse = _jours_depuis(lead.get("derniere_reponse_at"), maintenant)
+    if jours_reponse is not None:
+        bouts.append(f"a répondu il y a {jours_reponse} j")
+
+    if etape == "vendu" and not lead.get("fiche_client_existe"):
+        bouts.append("⚠️ fiche client à créer")
+
+    # Le silence est celui de William, pas celui du lead : on le dit ainsi, et on
+    # affiche à côté le dernier fait obtenu SANS aucune discipline.
+    jours_note = _jours_depuis(lead.get("derniere_note_at"), maintenant)
+    if jours_note is not None:
+        bouts.append(f"dernière note il y a {jours_note} j")
+    else:
+        depuis = _jours_depuis(lead.get("reference_immobilite"), maintenant)
+        repere = slack_lib.jour(lead.get("demo_frappee_le") or "")
+        if repere:
+            bouts.append(f"frappé le {repere}")
+        elif depuis is not None:
+            bouts.append(f"a dit oui il y a {depuis} j")
+
+    # Une réponse dans la même fenêtre que la question RÉPOND à la question :
+    # même seuil, sinon on aurait deux mesures du même silence. Au-delà, la
+    # réponse est le silence elle-même et la question redevient légitime.
+    repondu_recemment = (
+        jours_reponse is not None and jours_reponse < _JOURS_AVANT_DE_DEMANDER
+    )
+    immobile = _jours_depuis(lead.get("reference_immobilite"), maintenant)
+    if (immobile is not None and immobile >= _JOURS_AVANT_DE_DEMANDER
+            and etape not in {"en_pause", "vendu"} and not marque
+            and not repondu_recemment):
+        bouts.append("❓ toujours vivant ? (`perdu` ou `en_pause`)")
+
+    if lead.get("note"):
+        bouts.append(f"« {_truncate_note(lead['note'])} »")
+
+    return f"  • {nom} — " + " · ".join(bouts)
+
+
 def _rang_ligne_suppression(row: dict[str, Any]) -> tuple[int, str]:
     """Ordre de préférence entre deux lignes qui normalisent vers la même clé.
 
@@ -179,6 +353,24 @@ def _instant(horodatage: Any) -> datetime | None:
 # Sentinelle de tri pour « date de désabonnement inconnue » : plus petite que
 # toute date réelle, donc reléguée en fin de liste (le tri est décroissant).
 _JAMAIS = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _dette_reglee(variable: str) -> bool:
+    """Une dette assumée est-elle éteinte ? Vrai UNIQUEMENT si la variable
+    d'environnement vaut littéralement « true ».
+
+    ⚠️ FAIL-SAFE, et c'est **l'inverse assumé** de `check_warmup_window`
+    (`src/lib/compliance_checks.py`), qui est fail-CLOSED : là-bas, une variable
+    absente BLOQUE l'envoi, parce que le dommage à éviter est un courriel parti
+    par erreur — irréversible. Ici, une variable absente AFFICHE le rappel,
+    parce que le dommage à éviter est une dette oubliée : le coût d'un rappel de
+    trop est une ligne dans Slack, celui d'un rappel manquant est un défaut qui
+    dort des mois. Les deux sens protègent contre des dommages opposés : ne PAS
+    « harmoniser » ce helper sur le patron du warmup.
+
+    Corollaire : une valeur illisible (`"1"`, `"oui"`, une faute de frappe) ne
+    règle rien — le rappel reste. On préfère le voir une fois de trop."""
+    return os.environ.get(variable, "").strip().lower() == "true"
 
 
 def _identite_lead(row: dict[str, Any]) -> str:
@@ -428,8 +620,6 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             f"*{tk}* — sourcées {sourced} · emails {emails} · drafts {drafts} · "
             f"poussés {pushed} · envoyés {sent} · réponses {replies}"
         )
-        if interested_waiting_site:
-            ligne += f"\n  🔥 intéressés en attente de site {interested_waiting_site}"
         if desabonnes:
             noms = []
             for d in desabonnes[:_PLAFOND_NOMS_DESABONNES]:
@@ -462,12 +652,128 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             ligne += f"\n    {slack_lib.GARDE_LCAP_APRES_DESABONNEMENT}"
         lines.append(ligne)
 
+    # ---------------------------------------------------------- PT3 leads chauds
+    # Hors de la boucle par track, et épinglé sur 'agence-ia' : une seule offre
+    # depuis le pivot du 2026-06-07, et le cron passe encore ["OPT", "agence-ia"]
+    # — laissé dans la boucle, le bloc s'imprimerait deux fois dont une section
+    # OPT vide. Même choix que le bloc v_pourquoi_pas_de_courriel plus bas.
+    try:
+        chauds = await sb.select_all(
+            "v_suivi_lead_courant",
+            order="contact_id",
+            params={
+                "select": (
+                    "contact_id,company_id,company_name,contact_email,first_name,"
+                    "last_name,contact_status,interested_at,etape,note,"
+                    "prochaine_action,prochaine_action_at,derniere_note_at,nb_notes,"
+                    "demo_frappee_le,rdv_prochain_at,derniere_reponse_at,"
+                    "fiche_client_existe,reference_immobilite"
+                ),
+                "track": "eq.agence-ia",
+            },
+            schema="agence",
+        )
+        lecture_chauds_ok = True
+    except Exception as e:  # noqa: BLE001
+        # Fail-soft, mais JAMAIS silencieux : ce bloc est la file de travail de
+        # William. Une liste vide pour cause de panne serait indiscernable d'une
+        # journée sans lead chaud — le mode d'échec que ce travail doit éteindre.
+        print(f"[summary] lecture v_suivi_lead_courant échouée: {e!r}")
+        chauds = []
+        lecture_chauds_ok = False
+
+    maintenant = datetime.now(timezone.utc)
+    # Ancré sur minuit America/Toronto comme TOUT le reste du résumé (compteurs
+    # du jour, fenêtre « depuis 7 jours » des désabonnés) : deux fuseaux dans un
+    # seul résumé donneraient deux vérités. L'horizon couvre la fin de demain,
+    # pas « dans 24 h » — c'est une journée calendaire, pas une durée.
+    horizon = start_local + timedelta(days=_HORIZON_A_FAIRE_JOURS + 1)
+    a_faire: list[str] = []
+    visibles: list[tuple[float, str]] = []
+    en_pause: list[str] = []
+    total_chauds = 0
+    for lead in chauds:
+        etape = str(lead.get("etape") or "a_produire")
+        marque = _marque_impasse(
+            lead.get("contact_status"),
+            suppression.get(_cle_courriel(lead.get("contact_email"))),
+        )
+        # Sortie de la liste : `perdu` écrit à la main, ou `vendu` dont la fiche
+        # client existe. Rien d'autre — surtout pas une impasse, qui MARQUE.
+        if etape == "perdu":
+            continue
+        if etape == "vendu" and lead.get("fiche_client_existe"):
+            continue
+        total_chauds += 1
+        ligne_lead = _ligne_lead_chaud(lead, marque, maintenant)
+
+        # Épinglé en tête, hors tri et hors plafond, pour DEUX motifs qui ne se
+        # comportent PAS pareil devant une marque d'impasse.
+        #
+        # 1. Une ACTION DUE — jamais sur un lead marqué. « À faire » est la ligne
+        #    la plus visible du résumé : y épingler un désabonné avec sa consigne
+        #    de relance, c'est mettre l'infraction LCAP en tête d'affiche. Plus
+        #    largement, l'action prévue avant une impasse ne s'exécute plus,
+        #    quelle que soit l'impasse. Le lead reste dans la liste principale,
+        #    marqué — il ne réclame juste plus rien.
+        #
+        # 2. Un `vendu` DONT LA FICHE N'EST PAS OUVERTE — épinglé TOUJOURS, marque
+        #    ou pas. « fiche client à créer » est de la COMPTABILITÉ INTERNE, pas
+        #    une sollicitation : ouvrir une fiche ne recontacte personne, il n'y a
+        #    donc rien à interdire. Or WF-7 peut classer `disqualified` sur une
+        #    réponse mal lue APRÈS la vente ; sous la règle catégorique, la ligne
+        #    quittait « À faire » — et un `vendu` a par construction zéro jour
+        #    d'immobilité, donc il se trie EN DERNIER et sort le premier par le
+        #    plafond de 10. La marque, elle, reste affichée sur la ligne
+        #    (_ligne_lead_chaud la met en tête des bouts).
+        echeance = _instant(lead.get("prochaine_action_at"))
+        due = echeance is not None and echeance <= horizon
+        fiche_a_ouvrir = etape == "vendu" and not lead.get("fiche_client_existe")
+        if fiche_a_ouvrir or (due and not marque):
+            a_faire.append(ligne_lead)
+            continue
+
+        if etape == "en_pause":
+            en_pause.append(ligne_lead)
+            continue
+        anciennete = _jours_depuis(lead.get("reference_immobilite"), maintenant) or 0
+        visibles.append((float(anciennete), ligne_lead))
+
+    # Le plus négligé en haut. `en_pause` reste affiché mais hors du tri : il
+    # accumule de l'ancienneté indéfiniment et squatterait la tête de liste.
+    visibles.sort(key=lambda v: v[0], reverse=True)
+    rendues = [texte for _, texte in visibles] + en_pause
+    reste = max(0, len(rendues) - _PLAFOND_LEADS_CHAUDS)
+    bloc_chauds = ""
+    if a_faire:
+        bloc_chauds += "\n⏰ *À faire*\n" + "\n".join(a_faire)
+    if not lecture_chauds_ok:
+        # Dire la panne PLUTÔT que de rendre une liste vide qui ressemble à une
+        # journée calme. Le fail-soft protège le reste du résumé ; il ne doit pas
+        # protéger William de la vérité.
+        bloc_chauds += "\n🔥 *Tes leads chauds* — ⚠️ carnet illisible (lecture en échec)"
+    elif not total_chauds:
+        bloc_chauds += "\n🔥 *Tes leads chauds* — aucun lead chaud aujourd'hui"
+    else:
+        entete = f"\n🔥 *Tes leads chauds ({total_chauds})*"
+        if not rendues:
+            # Tout ce qui est chaud est épinglé au-dessus. Le compte inclut les
+            # épinglés (ils RESTENT des leads chauds), mais un « (1) » posé sur
+            # zéro ligne — suivi d'une ligne vide — se lit comme une liste perdue
+            # en route. On dit où sont les lignes au lieu de laisser douter.
+            bloc_chauds += entete + " — tous dans « À faire » ci-dessus"
+        else:
+            bloc_chauds += entete + "\n" + "\n".join(rendues[:_PLAFOND_LEADS_CHAUDS])
+            if reste:
+                bloc_chauds += f"\n  … et {reste} autre{'s' if reste > 1 else ''}"
+
     bookings = await _cnt("booking_events", {})
     totals["bookings_total"] = bookings
 
     text = (
         f"📊 *Résumé quotidien — {date_str}*\n"
         + "\n".join(lines)
+        + bloc_chauds
         + f"\n📅 RDV bookés: {bookings}"
     )
 
@@ -500,6 +806,75 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         text += "\n🧱 " + " · ".join(f"{m} {n}" for m, n in top3)
     if a_juger:
         text += f"\n🔎 {a_juger} entreprises que le temps ne réparera pas"
+
+    # ------------------------------------------------ PT3 : dettes assumées
+    # PT3 laisse deux dettes volontaires, écrites dans docs/go-live-checklist.md.
+    # Mais une dette consignée dans un fichier que personne ne rouvre au bon
+    # moment n'existe pas : ce projet a déjà payé ce mode d'échec deux fois (le
+    # runbook qui disait l'inverse de la réalité sur WARMUP_END_DATE ; la panne
+    # Google Places restée invisible cinq semaines). William est seul — le jour
+    # où la dette devient exigible, il vend, il ne relit pas une checklist
+    # rédigée des mois plus tôt. Le résumé la lui redit donc LUI-MÊME, au moment
+    # où elle devient vraie.
+    #
+    # Extinction par variable d'environnement, en FAIL-SAFE (variable absente ⇒
+    # rappel affiché) — voir `_dette_reglee` pour pourquoi le sens est l'inverse
+    # de check_warmup_window. Poser la variable est le geste qui éteint le
+    # rappel : rien à recoder, rien à redéployer.
+    #
+    # Placé en toute fin, après les motifs 🧱/🔎 : c'est une note de bas de page,
+    # elle ne doit jamais repousser les leads chauds vers le bas.
+    dettes: list[str] = []
+
+    if not _dette_reglee("DETTE_WF7_REGLEE"):
+        # Condition d'apparition : au moins un « oui » enregistré, tous tracks
+        # confondus. Avant le premier oui, le scénario du double-réponse ne peut
+        # pas se produire et le rappel ne serait que du bruit quotidien.
+        #
+        # `count()` et non `select_all()` : la question est « y en a-t-il AU
+        # MOINS un ? ». Ramener les lignes pour les compter en Python, ce serait
+        # payer le N+1 et se faire couper au plafond PostgREST de 1000. Les
+        # agrégats côté serveur (`select=count()`) sont désactivés sur ce projet
+        # (PGRST123) : `sb.count` lit l'en-tête Content-Range, ce qui marche.
+        try:
+            des_oui = await sb.count("contacts", params={"interested_at": "not.is.null"})
+            condition_lue = True
+        except Exception as e:  # noqa: BLE001
+            # Fail-soft, mais JAMAIS silencieux : sans ça, un rappel absent pour
+            # cause de panne serait indiscernable d'un rappel absent parce que
+            # personne n'a encore dit oui. C'est très exactement le mode d'échec
+            # que ce bloc existe pour éteindre — on ne va pas le réintroduire ici.
+            print(f"[summary] lecture de la condition dette WF-7 échouée: {e!r}")
+            des_oui, condition_lue = 0, False
+        if not condition_lue:
+            dettes.append(
+                "⚠️ *Dette PT3* — lecture de contacts.interested_at en ÉCHEC : "
+                "impossible de dire si un lead a déjà répondu oui, donc le rappel "
+                "du ping WF-7 peut manquer aujourd'hui sans que ça se voie. "
+                "Détail : docs/go-live-checklist.md § 4bis."
+            )
+        elif des_oui:
+            dettes.append(
+                "⚠️ *Dette PT3* — un lead a dit oui : au premier qui répond DEUX "
+                "fois, vérifier dans les logs de /wf7/poll (ou l'Unibox Instantly) "
+                "si la 2e réponse est captée, PUIS corriger le ping WF-7. "
+                "Détail et piège : docs/go-live-checklist.md § 4bis."
+            )
+
+    if not _dette_reglee("DETTE_ERRORWF_VERIFIEE"):
+        # Pas de condition d'apparition : elle est vraie tant que personne n'a
+        # ouvert le menu n8n. Elle se rappelle DANS le message qu'elle protège —
+        # si ce résumé arrive, le rappel arrive avec lui ; s'il n'arrive pas,
+        # c'est précisément le défaut dont il parle.
+        dettes.append(
+            "⚠️ *Dette PT3* — vérifier dans n8n que le champ « Error Workflow » du "
+            "résumé quotidien affiche bien [OPS] Error Handler → Slack. L'id "
+            "weHbzb97xdjo2OEd vient de wf-9 et n'est vérifiable QUE dans le menu "
+            "n8n. S'il pointe à côté, ce résumé peut mourir en silence."
+        )
+
+    if dettes:
+        text += "\n" + "\n".join(dettes)
 
     posted = False
     if payload.post:

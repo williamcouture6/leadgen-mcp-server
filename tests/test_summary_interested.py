@@ -124,16 +124,27 @@ async def test_compte_les_interesses_sans_demo(monkeypatch):
         http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
     )
     assert out["totals"]["agence-ia"]["interested_waiting_site"] == 2
-    assert "intéressés en attente de site 2" in out["text"]
+    # PT3 (2026-08-25) : le compteur RESTE calculé et exposé dans totals — c'est
+    # un contrat d'API lu par le cron — mais son affichage a cédé la place au
+    # bloc nominatif « Tes leads chauds ». On pin donc la valeur, plus le texte.
+    assert "intéressés en attente de site" not in out["text"]
 
 
 async def test_zero_interesse_pas_de_ligne(monkeypatch):
+    """PT3 (2026-08-25) : l'affichage « intéressés en attente de site » a disparu
+    au profit du bloc nominatif, donc l'ancienne assertion sur le texte était
+    devenue vacuously vraie. Ce qui reste à protéger, c'est le COMPTEUR : il est
+    toujours calculé et exposé dans totals, où le cron n8n le lit.
+
+    Le bloc nominatif qui a pris sa place, lui, ne se tait JAMAIS (Task 8) :
+    zéro lead chaud se DIT, il ne se rend pas par une absence de ligne — sinon
+    une vue en panne produirait exactement la même sortie qu'une journée calme."""
     http_api = _socle(monkeypatch, interesses=[], demo_par_contact={})
     out = await http_api.summary_daily(
         http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
     )
     assert out["totals"]["agence-ia"]["interested_waiting_site"] == 0
-    assert "en attente de site" not in out["text"]
+    assert "aucun lead chaud" in out["text"]
 
 
 async def test_les_impasses_sortent_du_compteur(monkeypatch):
