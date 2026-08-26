@@ -599,3 +599,52 @@ def test_not_interested_blocks_portent_letat_reel():
     assert "s'occupe de tout ça nous-mêmes" in joined
     assert "88" in joined            # la confiance, en clair
     assert "disqualified" in joined  # ce que le système a VRAIMENT fait
+
+
+def test_not_interested_blocks_ont_un_en_tete_et_bornent_lextrait():
+    """Deux garde-fous que `build_hot_lead_blocks` et
+    `build_interested_unsubscribed_blocks` ont déjà et qui manquaient ici.
+
+    L'en-tête : sans lui le ping arrive dans #leads sans titre, à côté des
+    « 🔥 Hot lead » — or les deux appellent des gestes opposés, et c'est
+    justement le titre qui les sépare d'un coup d'œil.
+
+    La borne sur l'extrait : une réponse de prospect cite très souvent tout le
+    fil au complet. Non borné, l'extrait pousse le bloc au-delà de la limite de
+    Slack, qui coupe alors où il veut — au pire, l'API refuse le message et le
+    ping est perdu, ce qui ramène exactement le silence qu'on vient de boucher.
+    """
+    from src.lib import slack
+
+    _, blocks = slack.build_not_interested_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.ca",
+        reply_preview="x" * 4000, confidence=0.5, track="agence-ia",
+    )
+    assert blocks[0]["type"] == "header"
+    assert "[AGENCE-IA]" in blocks[0]["text"]["text"]
+
+    extrait = [b for b in blocks if "Sa réponse" in str(b.get("text", ""))]
+    assert len(extrait) == 1
+    texte = extrait[0]["text"]["text"]
+    assert "…" in texte              # coupé par nous, pas par Slack
+    assert len(texte) < 600
+
+
+def test_not_interested_blocks_disent_a_qui_revient_le_geste():
+    """Dire l'état sans dire à qui revient la suite, c'est se lire comme un
+    accusé de réception : « c'est réglé, rien à faire ». Or c'est faux — la
+    moitié de ces réponses sont des objections traitables, et tant qu'AC2
+    n'existe pas, PERSONNE ne reprendra le lead si William ne le fait pas.
+    La phrase qui lui rend la main est donc une exigence, pas un ornement.
+    """
+    from src.lib import slack
+
+    _, blocks = slack.build_not_interested_blocks(
+        contact_name="A", company_name="B", contact_email="a@b.ca",
+        reply_preview="Pas intéressé.", confidence=0.99,
+    )
+    corps = str(blocks)
+    assert "t'appartient" in corps
+    # …sans jamais retomber dans la promesse d'une file qui n'existe pas.
+    for mensonge in ("à relancer", "en attente", "file de reprise"):
+        assert mensonge not in corps.lower(), mensonge
