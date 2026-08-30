@@ -7,7 +7,7 @@ not regress, in priority order :
 2. first_person_actions — anti-mensonge: "j'ai testé/appelé/visité" bloqué
 3. fake_social_proof  — anti-preuve-sociale-inventée quand social_proof_count=0
 4. cta_slots_real     — anti-créneau-inventé (doit matcher Cal.com)
-5. vouvoiement        — culture business QC: vous/votre ≥2, jamais tutoiement
+5. registre           — cohérence tu/vous dérivée du track, pas un registre imposé
 6. warmup_window      — gate délivrabilité avant fin warmup Instantly
 7. banned_words       — détection vocabulaire IA-generated / sales-y
 
@@ -267,6 +267,22 @@ def test_registre_sans_track_retombe_sur_vous() -> None:
     assert cc.check_registre(corps, track=None).passed
 
 
+def test_registre_ne_bloque_pas_sur_rendez_vous() -> None:
+    """« rendez-vous » contient le token « vous » — il ne doit pas compter."""
+    corps = "Bonjour,\n\nTon client veut un rendez-vous pis tu peux pas répondre.\n\n---\nWilliam"
+    assert cc.check_registre(corps, track="agence-ia").passed
+
+
+def test_registre_compte_toujours_un_vrai_vous_apres_rendez_vous() -> None:
+    corps = "Bonjour,\n\nTon rendez-vous, vous pouvez le déplacer, votre équipe.\n\n---\nWilliam"
+    assert not cc.check_registre(corps, track="agence-ia").passed
+
+
+def test_registre_reconnait_te_toi_et_ten() -> None:
+    corps = "Bonjour,\n\nÇa te permet d'en faire plus. Toi, t'en profites.\n\n---\nWilliam"
+    assert cc.check_registre(corps, track="agence-ia").passed
+
+
 # ---------------- 6. warmup_window (gate délivrabilité) ----------------
 
 def test_warmup_window_blocks_before_end_date(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -378,7 +394,7 @@ def test_run_all_returns_13_checks() -> None:
         email_subject="Question rapide",
     )
     # 13 checks expected: warmup + 6 body + 3 subject + length + cta_present
-    # + cta_slots_real + vouvoiement
+    # + cta_slots_real + registre
     assert len(results) == 13, f"attendu 13 checks, eu {len(results)}"
     names = [r.name for r in results]
     # Sanity: pas de doublon

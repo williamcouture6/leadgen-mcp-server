@@ -3,7 +3,8 @@
 Pre-send firewall pour les drafts outbound. Deux layers :
   1. **Deterministic checks** (rapide, sans LLM) — voir `lib/compliance_checks.py`.
      Bloque sur mots bannis, actions 1ère personne, fake social proof, footer
-     LCAP, longueur, CTA, vouvoiement, créneaux Cal.com fabriqués, warmup window.
+     LCAP, longueur, CTA, registre (cohérence tu/vous), créneaux Cal.com
+     fabriqués, warmup window.
   2. **LLM judge** (Claude Sonnet) — voir `prompts/compliance.md`. Détecte les
      violations sémantiques que les regex ne peuvent pas voir (faits non
      vérifiables, preuve sociale subtile, promesses non tenables, etc.).

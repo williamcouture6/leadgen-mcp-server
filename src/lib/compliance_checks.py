@@ -402,10 +402,21 @@ def check_registre(email_body: str, track: str | None = None) -> CheckResult:
     révèle un gabarit mal assemblé. Le registre attendu se dérive du track :
     `agence-ia` tutoie (décision du pivot), `OPT` vouvoie. Un track inconnu
     retombe sur `vous` — le comportement historique.
+
+    Le seuil diffère entre les deux branches, et c'est voulu : la conjugaison
+    à la 2e personne du singulier se répète naturellement dans un corps
+    tutoyé (14 occurrences dans le gabarit A), alors que le vouvoiement peut
+    tenir en deux mots. Le `>= 2` côté `vous` vient de l'ancien check et
+    protège contre un corps trop neutre où une occurrence isolée ne prouve
+    rien.
     """
     body_low = _body_without_signature(email_body).lower()
-    vous_hits = re.findall(r"\b(vous|votre|vos)\b", body_low)
-    tu_hits = re.findall(r"\b(tu|t'as|t'es|tes|ton|ta)\b", body_low)
+    # (?<!rendez-) : « rendez-vous » contient le token « vous » parce que le
+    # trait d'union n'est pas un caractère de mot. Sans ce garde-fou, un seul
+    # « rendez-vous » — le vocabulaire même du produit — bloque un corps
+    # tutoyé, et un refus fige le contact à vie.
+    vous_hits = re.findall(r"(?<!rendez-)\b(vous|votre|vos)\b", body_low)
+    tu_hits = re.findall(r"\b(tu|t'as|t'es|t'en|tes|ton|ta|te|toi)\b", body_low)
     attendu = _REGISTRE_PAR_TRACK.get(track or "", "vous")
 
     if attendu == "tu":
