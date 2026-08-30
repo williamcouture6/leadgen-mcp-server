@@ -224,6 +224,17 @@ def test_cta_retrocompat_opt_avec_question() -> None:
     assert cc.check_cta_present(corps).passed
 
 
+def test_cta_echoue_sur_une_question_rhetorique_sans_demande() -> None:
+    """Un « ? » dans l'ouvreur généré ne prouve pas qu'on demande quelque chose."""
+    corps = (
+        "Bonjour,\n\n"
+        "Est-ce que ça t'arrive souvent de manquer des appels le soir?\n\n"
+        "Si c'est pas toi qui gères ça, tu peux-tu me pointer la bonne personne?\n"
+        "\n---\nWilliam"
+    )
+    assert not cc.check_cta_present(corps).passed
+
+
 # ---------------- 4. cta_slots_real (anti-créneau-inventé) ----------------
 
 def test_cta_slots_real_skipped_when_no_slots_provided() -> None:

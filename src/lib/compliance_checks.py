@@ -271,28 +271,26 @@ def check_length(
     )
 
 
-# Ligne de RENVOI vers la bonne personne ("...tu peux-tu me pointer la bonne
-# personne?") — présente dans TOUS les gabarits `agence-ia` et TOUTES les
-# relances. C'est un routage ("est-ce bien toi le bon interlocuteur ?"), pas
-# une demande de réponse au sujet de l'offre. Son "?" ne doit JAMAIS suffire
-# seul à faire passer check_cta_present, sinon le check ne peut plus jamais
-# échouer (il verdirait sur un corps sans aucun CTA).
-_ROUTING_LINE_RE = re.compile(r"(?im)^.*\bbonne personne\b.*$")
-
-# Invitation explicite à répondre, indépendante de "un appel" (qui décrit
-# aussi le CANAL du bloc service, pas une action) et du "?" (que la ligne de
-# renvoi porte déjà). Formules réellement utilisées par le prompt `agence-ia`
-# (ex. "Dis-moi juste si tu veux le voir.") pour le CTA du corps généré.
+# Invitation explicite à répondre. Formules réellement utilisées par les
+# prompts `agence-ia`/OPT (ex. "Dis-moi juste si tu veux le voir.",
+# "...un appel rapide ?") pour le CTA du corps généré. "un appel rapide" est
+# DISTINCT de "Un appel que tu peux pas prendre" (bloc service, canal — pas
+# une action) : ce dernier ne matche pas.
+# "(15|20|25|30) minutes" : rétrocompat OPT — motif FERMÉ et spécifique
+# (pas un "?" générique), donc il ne recrée pas le faux vert : ni le bloc
+# service ni la ligne de renvoi ne contiennent cette formule numérique.
 _EXPLICIT_INVITE_RE = re.compile(
     r"dis[\s-]moi|juste[\s-][àa][\s-]me[\s-]dire|fais[\s-]moi[\s-]signe|"
-    r"me[\s-]le[\s-]dire|fais[\s-]moi[\s-]savoir"
+    r"me[\s-]le[\s-]dire|fais[\s-]moi[\s-]savoir|un appel rapide|"
+    r"\b(15|20|25|30)\s*minutes?\b"
 )
 
 
 def check_cta_present(email_body: str) -> CheckResult:
-    """Le paragraphe GÉNÉRÉ demande-t-il quelque chose au lecteur ?
+    """Le corps entier (hors signature) contient-il une invitation explicite
+    à répondre ?
 
-    Ancienne règle : `has_question ET (has_call_invite OU has_time_ask)`.
+    Ancienne règle (v1) : `has_question ET (has_call_invite OU has_time_ask)`.
     Mesurée FAUSSE VERTE à DEUX MOITIÉS sur CORPS_A (voir
     tests/fixtures/corps_ac1.py) : `has_call_invite` verdissait sur le bloc
     SERVICE ("Un appel que tu peux pas prendre, un texto...") qui décrit un
@@ -302,28 +300,35 @@ def check_cta_present(email_body: str) -> CheckResult:
     vrai CTA ("Dis-moi juste si tu veux le voir.") ne portait ni l'un ni
     l'autre et n'était jamais regardé.
 
-    Nouvelle règle : `question (hors ligne de renvoi) OU invitation
-    explicite à répondre`. On ne garantit plus qu'un CTA précis existe —
-    celui-là vit dans le texte FIXE du gabarit, que le rédacteur automatique
-    ne peut pas retirer. Le check n'est plus qu'un garde-fou sur le
-    paragraphe généré : il demande juste que CE paragraphe sollicite une
-    réponse, sans compter la question de routage qui accompagne toujours
-    le vrai CTA (et masquerait donc sa disparition).
+    v2 : `question (hors ligne de renvoi) OU invitation explicite`. Encore
+    FAUSSE VERTE : une question RHÉTORIQUE dans l'ouvreur généré (ex. "Est-ce
+    que ça t'arrive souvent de manquer des appels le soir?") porte un "?" qui
+    n'est pas dans la ligne de renvoi, donc `has_question` verdit — alors que
+    ce corps ne demande rien. Un "?" ne distingue pas une DEMANDE d'une
+    question rhétorique.
+
+    v3 (actuelle) : on abandonne `has_question` entièrement — le "?" seul ne
+    prouve jamais qu'on sollicite une réponse. On exige une FORMULE
+    d'invitation explicite. Ça rend la regex d'exclusion de la ligne de
+    renvoi (v2) inutile : plus de "?" compté, plus besoin de l'exclure —
+    supprimée.
+
+    Compromis assumé : une future formulation du CTA absente de la liste
+    produirait un FAUX REFUS (brouillon envoyé en relecture manuelle plutôt
+    qu'auto-approuvé), pas un faux vert. C'est le bon sens d'erreur : un faux
+    refus est VISIBLE (le brouillon atterrit dans la file « à relire » du
+    résumé quotidien) alors qu'un faux vert expédie un courriel que personne
+    n'a lu. On choisit délibérément l'erreur récupérable.
     """
     body = _body_without_signature(email_body).lower()
-    body_sans_renvoi = _ROUTING_LINE_RE.sub("", body)
-    has_question = "?" in body_sans_renvoi
     has_explicit_invite = bool(_EXPLICIT_INVITE_RE.search(body))
-    passed = has_question or has_explicit_invite
+    passed = has_explicit_invite
     return CheckResult(
         name="cta_present",
         passed=passed,
         severity="warn",
-        message="CTA (question hors renvoi, ou invitation explicite) présent" if passed else "CTA faible ou absent",
-        matches=[] if passed else [
-            f"question_hors_renvoi={has_question}",
-            f"invitation_explicite={has_explicit_invite}",
-        ],
+        message="CTA (invitation explicite) présent" if passed else "CTA faible ou absent",
+        matches=[] if passed else [f"invitation_explicite={has_explicit_invite}"],
     )
 
 
