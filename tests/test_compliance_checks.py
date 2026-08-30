@@ -107,6 +107,119 @@ def test_legal_footer_stop_mention_acceptable_substitute(
     assert r.passed
 
 
+# ---------------- 1bis. L'interrupteur des mentions réduites ----------------
+#
+# Décision William du 2026-08-30, portée telle quelle. Vérifié le même jour :
+# aucun pied de page de campagne n'est configuré côté Instantly (la variable
+# INSTANTLY_CAMPAIGN_FOOTER n'est qu'une DÉCLARATION lue par compliance.py —
+# aucun code ne la pousse à l'ESP). Ce qui s'ajoute réellement au courriel
+# reçu est la signature du COMPTE d'envoi — nom, domaine — augmentée du lien
+# de désabonnement. Tombent donc : l'adresse postale (identification LCAP) et
+# le canal vie privée explicite (Loi 25).
+#
+# Le correctif est un interrupteur NOMMÉ, pas un assouplissement de regex :
+# on n'ouvre pas une garde en silence. Ces tests pinnent les DEUX moitiés du
+# contrat — ce que le drapeau excuse, et surtout ce qu'il n'excuse PAS.
+
+SIGNATURE_COMPTE_INSTANTLY = (
+    "William Couture\n"
+    "Couture IA\n"
+    "couture-ia.com\n"
+    "Pour te désabonner : https://couture-ia.com/unsubscribe?email=x@y.com"
+)
+
+_CORPS_NU = "Bonjour,\n\nDis-moi juste si tu veux le voir."
+
+
+@pytest.fixture
+def _env_lcap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEGAL_COMPANY_NAME", "William Couture Couture IA")
+    monkeypatch.setenv("LEGAL_COMPANY_ADDRESS", "193 rue de l'Anse, Lévis QC G6K 1C9")
+    monkeypatch.setenv("UNSUBSCRIBE_URL", "https://couture-ia.com/unsubscribe")
+    monkeypatch.delenv("DPO_EMAIL", raising=False)
+
+
+def test_sans_le_drapeau_labsence_dadresse_bloque(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    """Le défaut reste fail-closed. C'est la garde, pas une formalité."""
+    monkeypatch.delenv("LCAP_MENTIONS_REDUITES", raising=False)
+    r = cc.check_legal_footer(_CORPS_NU, appended_footer=SIGNATURE_COMPTE_INSTANTLY)
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_avec_le_drapeau_ladresse_nest_plus_exigee(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+    r = cc.check_legal_footer(_CORPS_NU, appended_footer=SIGNATURE_COMPTE_INSTANTLY)
+    assert r.passed, r.matches
+    assert "mentions réduites" in r.message, (
+        "la trace de l'exception doit rester lisible dans les notes de "
+        "conformité du message, sinon la décision devient invisible"
+    )
+
+
+def test_le_drapeau_nexcuse_PAS_labsence_de_desabonnement(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    """Ce que la décision assume, c'est l'adresse postale. PAS le
+    désabonnement — c'est lui qui protège le destinataire, et il reste exigé
+    drapeau ou pas."""
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+    r = cc.check_legal_footer(
+        _CORPS_NU, appended_footer="William Couture\nCouture IA\ncouture-ia.com"
+    )
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_le_drapeau_neteint_pas_le_nom_legal(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+    r = cc.check_legal_footer(
+        _CORPS_NU,
+        appended_footer=(
+            "couture-ia.com\nPour te désabonner : https://couture-ia.com/unsubscribe"
+        ),
+    )
+    assert not r.passed, "« william » et « couture » sont absents du texte reçu"
+
+
+def test_le_drapeau_ne_sallume_que_sur_une_valeur_explicite(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    """Même forme que WARMUP_DISABLED : une faute de frappe ne doit pas ouvrir
+    la garde, et une chaîne vide non plus."""
+    for valeur in ("", "faux", "0", "no", "peut-etre"):
+        monkeypatch.setenv("LCAP_MENTIONS_REDUITES", valeur)
+        r = cc.check_legal_footer(_CORPS_NU, appended_footer=SIGNATURE_COMPTE_INSTANTLY)
+        assert not r.passed, f"valeur {valeur!r} ne doit PAS ouvrir la garde"
+
+
+def test_loi25_sans_le_drapeau_exige_un_canal(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    monkeypatch.delenv("LCAP_MENTIONS_REDUITES", raising=False)
+    r = cc.check_loi25_privacy_contact(
+        _CORPS_NU, appended_footer=SIGNATURE_COMPTE_INSTANTLY
+    )
+    assert not r.passed
+
+
+def test_loi25_avec_le_drapeau_passe(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+    r = cc.check_loi25_privacy_contact(
+        _CORPS_NU, appended_footer=SIGNATURE_COMPTE_INSTANTLY
+    )
+    assert r.passed
+    assert "mentions réduites" in r.message
+
+
 # ---------------- 2. first_person_actions (anti-mensonge) ----------------
 
 @pytest.mark.parametrize("phrase", [

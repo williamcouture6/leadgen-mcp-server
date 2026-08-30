@@ -190,11 +190,41 @@ def check_fake_social_proof(email_body: str, social_proof_count: int) -> CheckRe
     )
 
 
+def _mentions_reduites() -> bool:
+    """Décision William du 2026-08-30, portée telle quelle.
+
+    Le courriel reçu ne porte que la signature du COMPTE d'envoi Instantly
+    (nom, domaine) augmentée du lien de désabonnement. Ce qui tombe :
+    l'adresse postale (identification LCAP) et le canal vie privée explicite
+    (Loi 25). Ce qui reste EXIGÉ, drapeau ou pas : le nom légal et un
+    désabonnement qui fonctionne — les deux que la signature porte réellement,
+    et les deux qui protègent le destinataire.
+
+    Le contexte qui a mené là, parce qu'il est contre-intuitif :
+    `INSTANTLY_CAMPAIGN_FOOTER` n'est qu'une DÉCLARATION, lue par
+    `tools/compliance.py` pour la donner aux checks. Aucun code ne la pousse à
+    l'ESP. Vérifié le 2026-08-30 : aucun pied de page de campagne n'existe côté
+    Instantly, et la variable est vide. La « mesure » de la spec (88 mots de
+    pied de page, 43 % du message) comptait donc un doublon inexistant.
+
+    ⚠️ Doit être posé VOLONTAIREMENT. Absent, le comportement est celui d'avant :
+    l'absence d'adresse BLOQUE. On n'assouplit pas une garde en silence — on
+    nomme l'exception, on la date, et on la rend greppable. Même forme que
+    `WARMUP_DISABLED` : seules des valeurs explicites l'allument.
+    """
+    return os.environ.get("LCAP_MENTIONS_REDUITES", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def check_legal_footer(email_body: str, appended_footer: str = "") -> CheckResult:
     """`appended_footer` couvre le cas où l'ESP (Instantly) injecte un footer
     LCAP (nom légal + adresse + lien désabo) au moment de l'envoi — donc absent
     du `email_body` généré par WF-4 mais présent dans le mail effectivement reçu.
     On scanne body + footer comme un seul texte pour valider les requis LCAP.
+
+    Sous `LCAP_MENTIONS_REDUITES`, l'adresse postale n'est plus exigée (voir
+    `_mentions_reduites`). Le nom légal et le désabonnement le restent.
     """
     combined = (email_body + "\n" + appended_footer) if appended_footer else email_body
     body_low = combined.lower()
@@ -214,23 +244,35 @@ def check_legal_footer(email_body: str, appended_footer: str = "") -> CheckResul
         if absent_tokens:
             missing.append(f"company_name tokens absents: {absent_tokens}")
 
-    if not address:
-        missing.append("address: env var manquante")
-    else:
-        first_chunk = address.split(",")[0].strip().lower()
-        if first_chunk and first_chunk not in body_norm:
-            missing.append(f"adresse postale ({first_chunk}) absente")
+    reduites = _mentions_reduites()
+    if not reduites:
+        if not address:
+            missing.append("address: env var manquante")
+        else:
+            first_chunk = address.split(",")[0].strip().lower()
+            if first_chunk and first_chunk not in body_norm:
+                missing.append(f"adresse postale ({first_chunk}) absente")
 
     if not unsubscribe:
         missing.append("unsubscribe: env var manquante")
     elif unsubscribe.lower() not in body_norm and "stop" not in body_norm:
         missing.append("unsubscribe URL ou mention 'STOP' absente")
 
+    if missing:
+        message = f"{len(missing)} champ(s) LCAP manquant(s)"
+    elif reduites:
+        # La trace vit dans les notes de conformité du message : une décision
+        # assumée doit rester lisible six mois plus tard, sinon elle se lit
+        # comme un bug.
+        message = "footer LCAP — mentions réduites (décision 2026-08-30), adresse postale non exigée"
+    else:
+        message = "footer LCAP complet"
+
     return CheckResult(
         name="legal_footer",
         passed=not missing,
         severity="block",
-        message=f"{len(missing)} champ(s) LCAP manquant(s)" if missing else "footer LCAP complet",
+        message=message,
         matches=missing,
     )
 
@@ -241,12 +283,21 @@ def check_loi25_privacy_contact(email_body: str, appended_footer: str = "") -> C
     dpo = os.environ.get("DPO_EMAIL", "").lower()
     has_dpo = dpo and dpo in body_low
     has_privacy_link = bool(re.search(r"confidentialit[ée]|vie priv[ée]e|/privacy|/confidentialite", body_low))
-    passed = has_dpo or has_privacy_link
+    reduites = _mentions_reduites()
+    passed = has_dpo or has_privacy_link or reduites
+
+    if has_dpo or has_privacy_link:
+        message = "canal vie privée explicite trouvé"
+    elif reduites:
+        message = "mentions réduites (décision 2026-08-30), canal vie privée non exigé"
+    else:
+        message = "aucun canal vie privée explicite (DPO_EMAIL ou lien politique)"
+
     return CheckResult(
         name="loi25_privacy_contact",
         passed=passed,
         severity="warn",
-        message="canal vie privée explicite trouvé" if passed else "aucun canal vie privée explicite (DPO_EMAIL ou lien politique)",
+        message=message,
         matches=[] if passed else ["recommandé: ajouter 'Questions confidentialité : william@couture-ia.com' dans la signature"],
     )
 
