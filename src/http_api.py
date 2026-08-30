@@ -420,6 +420,12 @@ def _ligne_resume_conformite(*, refuses: int, a_relire: int, non_juges: int) -> 
 
 class DailySummaryIn(BaseModel):
     category: str = "summary"          # canal Slack du résumé (SLACK_WEBHOOK_SUMMARY)
+    # `OPT` reste dans ce défaut alors que la piste est gelée depuis le pivot du
+    # 2026-06-07, et c'est VOULU : ce défaut-ci ne fait RIEN générer, il choisit
+    # ce qu'on REGARDE. Une piste gelée qui se remettrait à produire des chiffres
+    # (cron oublié, insert manuel taggé OPT) doit rester visible — la retirer du
+    # défaut reviendrait à décider qu'on ne veut plus le savoir. C'est aussi ce
+    # que le cron n8n passe déjà explicitement (voir le bloc leads chauds).
     tracks: list[str] = ["OPT", "agence-ia"]
     post: bool = True                  # False = renvoie les chiffres sans poster (test)
 
@@ -983,7 +989,10 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
 # ---------------- Sourcing ----------------
 
 @app.get("/sourcing/next-target", dependencies=[Depends(_require_auth)])
-async def next_target(track: str = "OPT") -> dict[str, Any] | None:
+async def next_target(track: str = "agence-ia") -> dict[str, Any] | None:
+    """Prochaine (city, sector) à scraper. Le défaut vise la piste VIVANTE :
+    un appel nu qui rendrait une cible `OPT` enverrait sourcer une piste
+    gelée depuis le pivot du 2026-06-07."""
     t = await db_tools.next_sourcing_target(track=track)
     return t.model_dump() if t else None
 
@@ -1034,7 +1043,10 @@ class RunWf1In(BaseModel):
     icp_segment: str | None = None
     max_pages: int = 3
     dry_run: bool = False
-    track: str = "OPT"  # OPT | REACTI — catalogue + tag à l'insert
+    # Piste VIVANTE par défaut. `OPT` est gelée depuis le pivot du 2026-06-07 :
+    # un /wf1/run nu sourcerait le catalogue gelé ET taguerait les nouvelles
+    # boîtes `OPT` à l'insert — invisibles pour WF-4, qui filtre agence-ia.
+    track: str = "agence-ia"  # catalogue + tag à l'insert
 
 
 class RunWf1Out(BaseModel):
@@ -1816,7 +1828,7 @@ def _contact_for_prompt(contact_row: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/contacts/to-personalize", dependencies=[Depends(_require_auth)])
 async def contacts_to_personalize(
-    limit: int = 20, max_per_company: int = 1, track: str = "OPT",
+    limit: int = 20, max_per_company: int = 1, track: str = "agence-ia",
 ) -> list[dict[str, Any]]:
     """Backlog WF-4 : contacts avec email + company.research_json + sans draft outbound.
 
@@ -1867,7 +1879,13 @@ async def _personalize_one(
         out = await personalize_tools.personalize(
             personalize_tools.PersonalizeIn(
                 research_json=research,
-                track=(company_row.get("track") or "OPT"),
+                # Filet mort en pratique (`companies.track` est NOT NULL
+                # default 'agence-ia', migrations 0003/0020, et les deux
+                # appelants sélectionnent la colonne). S'il tirait quand
+                # même, `OPT` ferait rédiger un corps VOUVOYÉ, que WF-5
+                # relirait ensuite avec le track réel de la base — donc
+                # `agence-ia`, donc registre `tu` attendu, donc refusé.
+                track=(company_row.get("track") or "agence-ia"),
                 company={
                     "name": company_row.get("name"),
                     "website": company_row.get("website"),
@@ -2037,7 +2055,12 @@ class RunWf4In(BaseModel):
     model: str = "claude-sonnet-4-6"
     persist: bool = True
     max_per_company: int = 1
-    track: str = "OPT"  # OPT | REACTI — isole le backlog personalize par track
+    # Isole le backlog personalize par piste. Défaut = la piste VIVANTE :
+    # `OPT` est gelée depuis le pivot du 2026-06-07, et l'alerte de famine
+    # plus bas compte ses restants SUR CE TRACK. Un /wf4/run nu compterait
+    # donc sur une file vide et conclurait « fin de liste » — l'alerte se
+    # tairait exactement quand elle devrait crier.
+    track: str = "agence-ia"
 
 
 class RunWf4Item(BaseModel):
@@ -2394,10 +2417,10 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
     ) if company_id else []
     research_json = (company_rows[0].get("research_json") if company_rows else None) or {}
     # Le track sélectionne le registre attendu par le layer 1 : `agence-ia`
-    # tutoie, `OPT` vouvoie. PAS de `or "OPT"` ici (contrairement à WF-4, où il
-    # sert de défaut de génération) : forcer OPT ferait attendre le vouvoiement
-    # sur des corps tutoyés et bloquerait TOUT le lot agence-ia. `None` laisse
-    # `check_registre` sur son défaut historique, ce qui est fail-closed.
+    # tutoie, `OPT` vouvoie. AUCUN défaut de piste ici (contrairement à WF-4, où
+    # le `or` est un défaut de GÉNÉRATION) : forcer une piste ferait attendre un
+    # registre que le corps n'a peut-être pas. `None` laisse `check_registre`
+    # sur son défaut historique (`vous`), ce qui est fail-closed.
     track = (company_rows[0].get("track") if company_rows else None)
 
     # 2) Charger le contexte du draft (template + slots) depuis agent_runs
