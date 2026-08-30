@@ -387,6 +387,37 @@ def _identite_lead(row: dict[str, Any]) -> str:
     return nom or courriel or "(contact sans courriel)"
 
 
+# Verdicts de conformité qui rendent un draft NON envoyable. `approved` n'y est
+# évidemment pas ; NULL non plus — un draft jamais jugé n'est pas un refus, il
+# attend son tour dans le lot de /wf5/run.
+_VERDICTS_REFUS = ("needs_revision", "blocked")
+
+
+def _ligne_resume_conformite(*, refuses: int, a_relire: int, non_juges: int) -> str:
+    """La ligne « conformité » du résumé quotidien, ou la chaîne vide.
+
+    Le ping #alertes de `/wf5/run` dit l'INSTANT ; cette ligne dit l'ÉTAT. Les
+    deux sont nécessaires et ne se remplacent pas : une alerte se rate (Slack
+    coupé, notification balayée), un résumé se relit le lendemain. C'est
+    exactement le choix déjà fait pour les désabonnements plus haut dans ce même
+    résumé.
+
+    Silencieuse quand il n'y a rien à dire : un « refusés : 0 » quotidien est du
+    bruit, et le bruit finit par cacher la ligne qui compte.
+
+    `non_juges` est annoncé À PART parce qu'il ne dit pas la même chose qu'un
+    refus : le corps n'a PAS été inspecté. Fondu dans `refuses`, le mode d'échec
+    le plus grave (des courriels jamais relus) se déguiserait en travail de
+    relecture ordinaire.
+    """
+    if refuses + non_juges == 0:
+        return ""
+    ligne = f"🚫 *Conformité* — {refuses} drafts refusés (dont {a_relire} à relire)"
+    if non_juges:
+        ligne += f" · ⚠️ {non_juges} jamais inspecté"
+    return ligne
+
+
 class DailySummaryIn(BaseModel):
     category: str = "summary"          # canal Slack du résumé (SLACK_WEBHOOK_SUMMARY)
     tracks: list[str] = ["OPT", "agence-ia"]
@@ -776,6 +807,71 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         + bloc_chauds
         + f"\n📅 RDV bookés: {bookings}"
     )
+
+    # ------------------------------------------- Conformité : l'ÉTAT des drafts
+    # Le ping #alertes de /wf5/run dit l'INSTANT du lot ; cette ligne dit l'ÉTAT.
+    # Les deux sont nécessaires et ne se remplacent pas — une alerte se rate
+    # (Slack coupé, notification balayée), un résumé se relit le lendemain. Même
+    # choix que pour les désabonnements plus haut dans ce même résumé. Sans
+    # elle, un lot entier pouvait mourir sans qu'un seul chiffre le rappelle le
+    # lendemain, et « refusés : 0 » par absence de ligne a l'air excellent —
+    # c'est le trou nommé par la migration 0045.
+    #
+    # SANS FILTRE DE DATE, comme les désabonnés et le bloc 🧱 : la question
+    # posée n'est pas « qu'a fait la passe aujourd'hui ? » mais « qu'est-ce qui
+    # traîne ? ». Un draft refusé il y a trois jours et jamais repris est
+    # précisément celui qu'on veut revoir.
+    #
+    # SANS FILTRE DE TRACK, et ce n'est pas un oubli : la requête du lot de
+    # /wf5/run n'en porte pas non plus. La ligne compte donc exactement ce que
+    # la passe juge — deux définitions du même lot donneraient deux vérités.
+    #
+    # `status=not.in.(failed)` = la définition de « message vivant » déjà posée
+    # par la migration 0037 et par l'éligibilité WF-4. C'est ce qui donne une
+    # SORTIE au compteur (leçon P4.10) : retirer un draft à la main le marque
+    # 'failed', et il quitte la ligne sans qu'on efface l'histoire du refus.
+    #
+    # `count()` et JAMAIS `len(select(...))` : PostgREST plafonne à 1000 lignes
+    # en silence et les agrégats côté serveur sont désactivés ici (PGRST123).
+    vivants = {"direction": "eq.outbound", "status": "not.in.(failed)"}
+    try:
+        refuses = await sb.count(
+            "messages",
+            params={**vivants, "compliance_verdict": f"in.({','.join(_VERDICTS_REFUS)})"},
+        )
+        a_relire = await sb.count(
+            "messages", params={**vivants, "compliance_verdict": "eq.needs_revision"},
+        )
+        non_juges = await sb.count(
+            "messages", params={**vivants, "compliance_verdict": "eq.non_juge"},
+        )
+        lecture_conformite_ok = True
+    except Exception as e:  # noqa: BLE001
+        # Fail-soft, JAMAIS silencieux — même règle que le carnet des leads
+        # chauds et que la condition de la dette WF-7 : une ligne absente pour
+        # cause de panne serait indiscernable d'une journée tout-vert, ce qui
+        # est très exactement le mode d'échec que cette ligne existe pour
+        # éteindre.
+        print(f"[summary] lecture des verdicts de conformité échouée: {e!r}")
+        refuses = a_relire = non_juges = 0
+        lecture_conformite_ok = False
+
+    totals["conformite"] = {
+        "refuses": refuses, "a_relire": a_relire,
+        "non_juges": non_juges, "lu": lecture_conformite_ok,
+    }
+    if not lecture_conformite_ok:
+        text += (
+            "\n🚫 *Conformité* — ⚠️ lecture des verdicts en ÉCHEC : impossible de "
+            "dire si des drafts sont refusés. L'absence de ligne ne veut PAS dire "
+            "« tout vert » aujourd'hui."
+        )
+    else:
+        ligne_conformite = _ligne_resume_conformite(
+            refuses=refuses, a_relire=a_relire, non_juges=non_juges,
+        )
+        if ligne_conformite:
+            text += "\n" + ligne_conformite
 
     # État du PARC, sans filtre de date : c'est l'entreprise coincée depuis six
     # semaines qu'on veut voir, pas l'activité du jour.
