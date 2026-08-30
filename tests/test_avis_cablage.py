@@ -44,6 +44,47 @@ async def test_le_select_des_companies_ramene_les_avis(monkeypatch: pytest.Monke
         assert colonne in select, f"{colonne} absente du select : {select}"
 
 
+# ---------------- Point 2 : le dict `company` passé au rédacteur ----------------
+
+@pytest.mark.asyncio
+async def test_le_dict_company_porte_les_avis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔴 Le point que le fichier ANNONÇAIT couvrir et qui n'avait aucun test.
+
+    Vérifié par mutation le 2026-08-30 : retirer les trois lignes `google_*`
+    du dict `company=` de `_personalize_one` laissait les 1054 tests VERTS.
+    En production, `bloc_faits_verifies` aurait alors annoncé au rédacteur
+    « aucune note et aucun avis en base » pour les 166 entreprises qui en ont —
+    exactement l'issue « le bloc saute 255 fois sur 255 » que la tâche 7 existe
+    pour empêcher. Et le juge, lui, recevait les vraies valeurs, donc rien ne
+    criait.
+    """
+    from src import http_api
+
+    capture: dict[str, Any] = {}
+
+    async def faux_personalize(payload):
+        capture["company"] = payload.company
+        raise RuntimeError("on s'arrête ici, le payload est capturé")
+
+    monkeypatch.setattr(http_api.personalize_tools, "personalize", faux_personalize)
+
+    await http_api._personalize_one(
+        {"id": "ct-1", "email": "a@ex.ca"},
+        {
+            "id": "co-1", "name": "Ex", "website": "https://ex.ca", "city": "Lévis",
+            "research_json": {"x": 1}, "track": "agence-ia",
+            "google_rating": 4.8, "google_reviews_count": 47, "google_place_id": "ChIJ",
+        },
+        template_choice="A", model="m", persist=False,
+        available_slots=[], social_proof=[],
+    )
+
+    company = capture["company"]
+    assert company["google_rating"] == 4.8
+    assert company["google_reviews_count"] == 47
+    assert company["google_place_id"] == "ChIJ"
+
+
 # ---------------- Point 3 : le message envoyé au rédacteur ----------------
 
 def _message_redacteur(**avis: Any) -> str:
@@ -154,6 +195,69 @@ async def test_un_chiffre_faux_bloque_de_bout_en_bout(_env_vert: None) -> None:
     )
     assert out.verdict == "blocked"
     assert "avis_conformes" in [b["name"] for b in out.deterministic_blockers]
+
+
+# ---------------- Le plancher, garde par le determinisme et non par le LLM ----------------
+#
+# Trouve par le conseil du 2026-08-30 : `check_avis_conformes` ne comparait le
+# chiffre qu'a la COLONNE, jamais a l'AUTORISATION. Une note sous le plancher,
+# recopiee fidelement par le modele, passait au vert parce qu'elle etait VRAIE.
+# Le plancher n'etait donc garde que par l'obeissance du LLM -- exactement ce
+# que la docstring du check dit refuser.
+
+@pytest.mark.parametrize(
+    "note,nb_avis,autorise,cas",
+    [
+        (4.8, 47, True, "au-dessus des deux seuils"),
+        (2.3, 27, False, "A.M.G. Neige — note sous 4,0"),
+        (2.9, 504, False, "Groupe Essa — 504 avis mais 2,9"),
+        (5.0, 1, False, "Nettoyage PUR — 5,0 sur UN SEUL avis"),
+        (3.0, 2, False, "Herbofleurs — les deux seuils ratés"),
+        (4.0, 10, True, "exactement aux deux seuils"),
+        (4.0, 9, False, "un avis sous le seuil"),
+        (3.9, 10, False, "un dixième sous le seuil"),
+        (None, None, False, "aucune donnée"),
+        (4.8, None, False, "note sans compte"),
+        (None, 47, False, "compte sans note"),
+    ],
+)
+def test_le_plancher_du_bloc_2(note, nb_avis, autorise, cas) -> None:
+    """Le plancher lui-même : 10 avis ET 4,0. Sans ces cas, une régression de
+    la constante passait inaperçue — vérifié par mutation, la mettre à zéro
+    laissait les 1054 tests verts."""
+    from src.lib.avis import bloc_avis_autorise
+
+    assert bloc_avis_autorise(note, nb_avis) is autorise, cas
+
+
+@pytest.mark.parametrize(
+    "note,nb_avis",
+    [(2.3, 27), (2.9, 504), (5.0, 1), (3.0, 2)],
+)
+def test_une_note_sous_le_plancher_est_BLOQUEE_meme_si_elle_est_vraie(note, nb_avis) -> None:
+    """🔴 Le cœur du correctif. Le chiffre est EXACT — il vient de la colonne —
+    et il doit quand même bloquer, parce que le corps devait servir le repli.
+
+    Sans ça, le prospect reçoit sa propre mauvaise note en pleine face, juste
+    avant « c'est probablement pas parce que le monde t'aime pas », qui se lit
+    alors comme du sarcasme. 83 des 255 envoyables sont dans ce cas.
+    """
+    from src.lib import compliance_checks as cc
+
+    corps = f"Bonjour,\n\nA.M.G. Neige a {str(note).replace('.', ',')} étoiles sur {nb_avis} avis. Dis-moi."
+    r = cc.check_avis_conformes(corps, google_rating=note, google_reviews_count=nb_avis)
+    assert not r.passed, f"{note}/{nb_avis} : chiffre exact mais citation interdite"
+    assert r.severity == "block"
+    assert any("plancher" in m for m in r.matches)
+
+
+def test_le_repli_passe_meme_sous_le_plancher() -> None:
+    """Le corps qui n'annonce AUCUN chiffre est exactement ce que le plancher
+    demande : il doit passer, pas être puni."""
+    from src.lib import compliance_checks as cc
+
+    corps = "Bonjour,\n\nDu monde qui te cherche, t'en as. Dis-moi."
+    assert cc.check_avis_conformes(corps, google_rating=2.3, google_reviews_count=27).passed
 
 
 def test_le_juge_garde_son_retry_sur_les_529() -> None:

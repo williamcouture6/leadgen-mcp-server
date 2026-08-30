@@ -217,6 +217,60 @@ def _mentions_reduites() -> bool:
     )
 
 
+def mentions_manquantes_dans_la_config(appended_footer: str = "") -> list[str]:
+    """Ce qui manque au pied de page DÉCLARÉ, quand les mentions sont réduites.
+
+    🔴 **C'est une faute de CONFIGURATION, jamais une faute du brouillon.**
+
+    Le piège que ça referme, trouvé par le conseil du 2026-08-30 : depuis que le
+    corps ne porte plus de signature, le nom légal et le lien de désabonnement
+    ne vivent QUE dans `INSTANTLY_CAMPAIGN_FOOTER`. Cette variable vide,
+    `check_legal_footer` accusait le CORPS d'un manquement qui venait de
+    l'environnement — verdict `blocked`, donc `compliance_check_passed = false`,
+    donc le brouillon quittait le lot POUR TOUJOURS (la requête ne reprend que
+    les `is.null`) et son contact restait gelé à vie dans la fenêtre WF-4.
+    Vingt contacts brûlés par jour, 255 en deux semaines, zéro courriel envoyé,
+    et la suite de tests verte du début à la fin.
+
+    L'appelant doit donc refuser de LANCER LA PASSE plutôt que de refuser les
+    messages : rien n'est écrit en base, et tout repart tout seul le jour où la
+    variable est remplie.
+
+    Rend la liste vide quand tout va bien, ou quand les mentions ne sont pas
+    réduites (le corps est alors censé tout porter, et `check_legal_footer` est
+    le bon juge).
+    """
+    if not _mentions_reduites():
+        return []
+
+    texte = re.sub(r"\s+", " ", (appended_footer or "").lower())
+    manquants: list[str] = []
+
+    if not texte.strip():
+        return [
+            "INSTANTLY_CAMPAIGN_FOOTER est VIDE alors que LCAP_MENTIONS_REDUITES "
+            "est actif : plus rien ne porte le nom légal ni le désabonnement"
+        ]
+
+    nom = os.environ.get("LEGAL_COMPANY_NAME", "")
+    if not nom:
+        manquants.append("LEGAL_COMPANY_NAME: env var manquante")
+    else:
+        absents = [t.lower() for t in nom.split() if len(t) >= 3 and t.lower() not in texte]
+        if absents:
+            manquants.append(
+                f"INSTANTLY_CAMPAIGN_FOOTER ne porte pas le nom légal (absents: {absents})"
+            )
+
+    desabo = os.environ.get("UNSUBSCRIBE_URL", "")
+    if not desabo:
+        manquants.append("UNSUBSCRIBE_URL: env var manquante")
+    elif desabo.lower() not in texte and "stop" not in texte:
+        manquants.append("INSTANTLY_CAMPAIGN_FOOTER ne porte pas le lien de désabonnement")
+
+    return manquants
+
+
 def check_legal_footer(email_body: str, appended_footer: str = "") -> CheckResult:
     """`appended_footer` couvre le cas où l'ESP (Instantly) injecte un footer
     LCAP (nom légal + adresse + lien désabo) au moment de l'envoi — donc absent
@@ -448,6 +502,8 @@ def check_avis_conformes(
       chiffre que personne n'a lu. Ouvrir une voie « approximative » serait
       exactement l'endroit où un faux vert irait se cacher.
     """
+    from .avis import bloc_avis_autorise
+
     body = _body_without_signature(email_body)
     notes = _NOTE_RE.findall(body)
     comptes = _COMPTE_AVIS_RE.findall(body)
@@ -462,6 +518,20 @@ def check_avis_conformes(
         )
 
     ecarts: list[str] = []
+
+    # 🔴 L'AUTORISATION avant la conformite. Le check ne comparait le chiffre
+    # qu'a la colonne : une note SOUS LE PLANCHER, recopiee fidelement par le
+    # modele, passait au vert parce qu'elle etait VRAIE. Le plancher n'etait
+    # donc garde que par l'obeissance du LLM -- exactement ce que ce fichier
+    # dit refuser. Mesure sur A.M.G. Neige (2,3 sur 27 avis, donnee reelle) :
+    # `check_avis_conformes(corps, 2.3, 27)` rendait passed=True.
+    # 83 des 255 envoyables sont sous le plancher avec des valeurs non nulles.
+    if not bloc_avis_autorise(google_rating, google_reviews_count):
+        ecarts.append(
+            f"citation interdite par le plancher de qualite "
+            f"(note={google_rating}, avis={google_reviews_count}) : le corps "
+            f"devait servir le repli, sans aucun chiffre"
+        )
 
     attendue = round(google_rating, 1) if google_rating is not None else None
     for brute in notes:

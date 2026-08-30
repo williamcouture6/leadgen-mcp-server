@@ -30,7 +30,11 @@ from pydantic import BaseModel
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ..lib.avis import bloc_faits_verifies
-from ..lib.compliance_checks import CheckResult, run_all
+from ..lib.compliance_checks import (
+    CheckResult,
+    mentions_manquantes_dans_la_config,
+    run_all,
+)
 from .research import sans_diagnostic
 
 # ----------------------------------------------------------------------
@@ -201,6 +205,34 @@ async def compliance_check(
     # le scan legal_footer / loi25_privacy le voie. Vide = pas d'ESP footer
     # (mode dev ou tout est dans le body).
     appended_footer = os.environ.get("INSTANTLY_CAMPAIGN_FOOTER", "")
+
+    # Layer 0 — la CONFIGURATION, avant de juger quoi que ce soit.
+    #
+    # Depuis que le corps ne porte plus de signature (decision du 2026-08-30),
+    # le nom legal et le desabonnement ne vivent QUE dans
+    # INSTANTLY_CAMPAIGN_FOOTER. Cette variable vide, `check_legal_footer`
+    # accusait le CORPS d'un manquement venu de l'environnement : verdict
+    # `blocked`, donc `compliance_check_passed = false`, donc le brouillon
+    # quittait le lot POUR TOUJOURS et son contact restait gele a vie.
+    #
+    # On rend donc `error` AVANT toute ecriture : l'appelant ne persiste pas
+    # les `error`, rien ne bouge en base, et tout repart de soi-meme le jour ou
+    # la variable est remplie. La faute est nommee dans `error_text`, avec le
+    # nom de la variable a corriger.
+    manquants = mentions_manquantes_dans_la_config(appended_footer)
+    if manquants:
+        return ComplianceCheckOut(
+            message_id=message_id,
+            verdict="error",
+            send_decision="DO_NOT_SEND",
+            reasoning=(
+                "Configuration LCAP incomplete : la passe est refusee AVANT "
+                "d'avoir juge le brouillon. Le brouillon n'est pas en cause et "
+                "n'est pas marque."
+            ),
+            error_text="config_lcap_incomplete: " + " | ".join(manquants),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
 
     # Layer 1 — deterministic
     det_results: list[CheckResult] = run_all(

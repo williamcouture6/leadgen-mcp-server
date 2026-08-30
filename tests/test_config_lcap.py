@@ -1,0 +1,151 @@
+"""La configuration LCAP en faute ne doit JAMAIS tuer un brouillon.
+
+Le piège, trouvé par le conseil de revue du 2026-08-30 et vérifié par
+exécution : depuis que le corps ne porte plus de signature (décision William du
+même jour), le nom légal et le lien de désabonnement ne vivent QUE dans
+`INSTANTLY_CAMPAIGN_FOOTER`. Cette variable vide,
+`check_legal_footer` accusait le CORPS d'un manquement venu de
+l'environnement :
+
+    verdict `blocked` → `compliance_check_passed = false`
+    → le brouillon QUITTE le lot pour toujours (la requête ne reprend que
+      les `is.null`)
+    → et son contact reste gelé à vie dans la fenêtre WF-4
+      (`already_drafted` compte tout message dont le status n'est pas 'failed')
+
+Soit, au premier go-live : 20 contacts brûlés par jour, 255 en deux semaines,
+zéro courriel envoyé, et la suite de tests verte du début à la fin.
+
+La règle que ces tests figent : **on refuse la PASSE, pas le MESSAGE.**
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from src.lib import compliance_checks as cc
+from src.tools import compliance as comp
+from tests.fixtures.corps_ac1 import CORPS_A, SIGNATURE_COMPTE_INSTANTLY
+
+
+@pytest.fixture(autouse=True)
+def _env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WARMUP_DISABLED", "true")
+    monkeypatch.setenv("LEGAL_COMPANY_NAME", "William Couture")
+    monkeypatch.setenv("LEGAL_COMPANY_ADDRESS", "193 rue de l'Anse, Lévis")
+    monkeypatch.setenv("UNSUBSCRIBE_URL", "https://couture-ia.com/unsubscribe")
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+
+
+async def _passe(**extra: Any) -> comp.ComplianceCheckOut:
+    base: dict[str, Any] = dict(
+        message_id="msg-1", body=CORPS_A, subject="s", template_used="A",
+        research_json={}, social_proof=[], available_slots=[], skip_llm=True,
+        track="agence-ia", google_rating=4.8, google_reviews_count=47,
+    )
+    base.update(extra)
+    return await comp.compliance_check(**base)
+
+
+# ---------------- La detection ----------------
+
+def test_le_pied_de_page_vide_est_une_faute_de_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    manquants = cc.mentions_manquantes_dans_la_config("")
+    assert manquants
+    assert "INSTANTLY_CAMPAIGN_FOOTER" in manquants[0], (
+        "le message doit NOMMER la variable à corriger : sans ça, on cherche "
+        "le défaut dans la copie pendant des heures"
+    )
+
+
+def test_un_pied_de_page_complet_ne_manque_de_rien() -> None:
+    assert cc.mentions_manquantes_dans_la_config(SIGNATURE_COMPTE_INSTANTLY) == []
+
+
+def test_un_pied_de_page_sans_desabonnement_est_detecte() -> None:
+    manquants = cc.mentions_manquantes_dans_la_config("William Couture\ncouture-ia.com")
+    assert any("désabonnement" in m for m in manquants)
+
+
+def test_un_pied_de_page_sans_nom_legal_est_detecte() -> None:
+    manquants = cc.mentions_manquantes_dans_la_config(
+        "couture-ia.com\nPour te désabonner : https://couture-ia.com/unsubscribe"
+    )
+    assert any("nom légal" in m for m in manquants)
+
+
+def test_sans_le_drapeau_la_config_nest_pas_en_cause(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mentions non réduites = le corps est censé tout porter, et
+    `check_legal_footer` est alors le bon juge. Le garde-fou de config se tait."""
+    monkeypatch.delenv("LCAP_MENTIONS_REDUITES", raising=False)
+    assert cc.mentions_manquantes_dans_la_config("") == []
+
+
+# ---------------- La consequence : la passe, pas le message ----------------
+
+@pytest.mark.asyncio
+async def test_la_passe_est_refusee_AVANT_de_juger(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INSTANTLY_CAMPAIGN_FOOTER", "")
+
+    out = await _passe()
+
+    assert out.verdict == "error", (
+        f"verdict={out.verdict!r} — un `blocked` écrirait "
+        "compliance_check_passed=false et sortirait le brouillon du lot POUR "
+        "TOUJOURS, pour une variable d'environnement vide"
+    )
+    assert out.error_text and "config_lcap_incomplete" in out.error_text
+    assert "INSTANTLY_CAMPAIGN_FOOTER" in out.error_text
+    assert out.deterministic_blockers == [], (
+        "la passe doit s'arrêter AVANT le layer 1 : si des bloqueurs sont "
+        "rendus, c'est que le brouillon a été jugé et donc accusé"
+    )
+
+
+@pytest.mark.asyncio
+async def test_le_brouillon_nest_jamais_accuse_dune_faute_de_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Le corps est irréprochable ; seule la variable est vide. Le verdict ne
+    doit rien dire contre lui."""
+    monkeypatch.setenv("INSTANTLY_CAMPAIGN_FOOTER", "")
+
+    out = await _passe()
+
+    assert out.verdict != "blocked"
+    assert out.verdict != "needs_revision"
+    assert "n'est pas en cause" in out.reasoning
+
+
+@pytest.mark.asyncio
+async def test_la_passe_repart_des_que_la_variable_est_remplie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rien n'ayant été écrit en base, le brouillon revient de lui-même dans le
+    lot du lendemain. C'est tout l'intérêt de ne pas l'avoir marqué."""
+    monkeypatch.setenv("INSTANTLY_CAMPAIGN_FOOTER", SIGNATURE_COMPTE_INSTANTLY)
+
+    out = await _passe()
+
+    assert out.verdict == "approved", out.deterministic_blockers
+
+
+# ---------------- Le filet de dernier recours reste arme ----------------
+
+def test_check_legal_footer_bloque_toujours_un_corps_nu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 Le cas que j'avais SUPPRIMÉ des tests en le remplaçant par une valeur
+    remplie, ce qui a rendu le piège invisible. Il est remis ici.
+
+    `check_legal_footer` doit CONTINUER de bloquer un corps sans mentions et
+    sans pied de page : c'est le filet de dernier recours si le garde-fou de
+    configuration venait à être contourné. Ce qui change, c'est qu'on ne
+    l'atteint plus jamais par une variable vide — la passe s'arrête avant.
+    """
+    r = cc.check_legal_footer(CORPS_A, appended_footer="")
+    assert not r.passed
+    assert r.severity == "block"
+    assert any("company_name" in m for m in r.matches)
+    assert any("unsubscribe" in m for m in r.matches)
