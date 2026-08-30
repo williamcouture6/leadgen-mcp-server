@@ -22,17 +22,25 @@ from typing import Any
 import pytest
 
 from src.tools import compliance as comp
-from tests.fixtures.corps_ac1 import CORPS_A
+from tests.fixtures.corps_ac1 import CORPS_A, SIGNATURE_COMPTE_INSTANTLY
 
 
 @pytest.fixture(autouse=True)
 def _env_layer1_vert(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Neutralise les gates d'environnement du layer 1 (fail-closed par défaut)."""
+    """Neutralise les gates d'environnement du layer 1 (fail-closed par défaut).
+
+    L'environnement reproduit la PRODUCTION depuis la décision du 2026-08-30 :
+    le corps ne porte plus de signature, et `INSTANTLY_CAMPAIGN_FOOTER` porte
+    la signature du compte d'envoi. Sans `LCAP_MENTIONS_REDUITES`, l'adresse
+    postale manquerait et `legal_footer` bloquerait avant le juge — le test
+    prouverait alors le fail-closed du footer au lieu de celui du juge.
+    """
     monkeypatch.setenv("WARMUP_DISABLED", "true")
     monkeypatch.setenv("LEGAL_COMPANY_NAME", "Couture IA")
     monkeypatch.setenv("LEGAL_COMPANY_ADDRESS", "193 rue de l'Anse")
     monkeypatch.setenv("UNSUBSCRIBE_URL", "https://couture-ia.com/unsubscribe")
-    monkeypatch.setenv("INSTANTLY_CAMPAIGN_FOOTER", "")
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+    monkeypatch.setenv("INSTANTLY_CAMPAIGN_FOOTER", SIGNATURE_COMPTE_INSTANTLY)
 
 
 def _juge_qui_tombe(*args: Any, **kwargs: Any) -> dict[str, Any]:

@@ -310,7 +310,13 @@ def check_loi25_privacy_contact(email_body: str, appended_footer: str = "") -> C
 _BORNES_LONGUEUR = {
     ("agence-ia", "A"): (180, 250),
     ("agence-ia", "B"): (180, 250),
-    ("agence-ia", "RELANCE"): (40, 100),
+    # 🔧 Borne haute montée de 100 à 120 le 2026-08-30 (AC1b). Les 100 avaient
+    # été posés sur une ESTIMATION (« ≈ 88 mots ») qui ne comptait pas de vrai
+    # ouvreur — or l'ouvreur généré fait jusqu'à 45 mots à lui seul. Mesuré sur
+    # les corps réels : 97 et 98 mots, et la variante sans site à 102, donc
+    # DÉJÀ en échec. La spec interdit explicitement de laisser une marge d'un
+    # mot ; 120 donne ~20 mots de jeu à chacune.
+    ("agence-ia", "RELANCE"): (40, 120),
 }
 _BORNES_DEFAUT = (60, 95)
 
