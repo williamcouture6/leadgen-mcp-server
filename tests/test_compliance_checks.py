@@ -425,29 +425,46 @@ def test_banned_words_isolated_ia_blocked_but_couture_ia_allowed() -> None:
     assert r_ok.passed, f"'Couture IA' doit passer: {r_ok.matches}"
 
 
-# ---------------- 8. check_length (bornes par gabarit, mesurées 2026-08-30) ----------------
+# ---------------- 8. check_length (bornes par (track, gabarit), mesurées 2026-08-30) ----------------
 
 def test_length_accepte_le_corps_a_du_pivot():
-    assert check_length(CORPS_A, template="A").passed
+    assert check_length(CORPS_A, template="A", track="agence-ia").passed
 
 
 def test_length_accepte_le_corps_b_du_pivot():
-    assert check_length(CORPS_B, template="B").passed
+    assert check_length(CORPS_B, template="B", track="agence-ia").passed
 
 
 def test_length_accepte_une_relance():
     corps = "Bonjour,\n\n" + " ".join(["mot"] * 70) + "\n\n---\nWilliam"
-    assert check_length(corps, template="RELANCE").passed
+    assert check_length(corps, template="RELANCE", track="agence-ia").passed
 
 
 def test_length_refuse_une_relance_trop_longue():
     corps = "Bonjour,\n\n" + " ".join(["mot"] * 150) + "\n\n---\nWilliam"
-    assert not check_length(corps, template="RELANCE").passed
+    assert not check_length(corps, template="RELANCE", track="agence-ia").passed
 
 
 def test_length_refuse_un_corps_de_tri_trop_court():
     corps = "Bonjour,\n\n" + " ".join(["mot"] * 100) + "\n\n---\nWilliam"
-    assert not check_length(corps, template="A").passed
+    assert not check_length(corps, template="A", track="agence-ia").passed
+
+
+def test_length_opt_garde_ses_anciennes_bornes():
+    """Le prompt OPT vise 60-90 mots avec des gabarits nommes A et B, comme le
+    pivot. Indexer sur le seul gabarit ferait echouer 100 % des brouillons OPT."""
+    corps = "Bonjour,\n\n" + " ".join(["mot"] * 75) + "\n\n---\nWilliam"
+    assert check_length(corps, template="A", track="OPT").passed
+
+
+def test_length_opt_refuse_un_corps_du_pivot():
+    """Symetrique : 206 mots est hors bornes pour OPT."""
+    assert not check_length(CORPS_A, template="A", track="OPT").passed
+
+
+def test_length_track_inconnu_retombe_sur_les_bornes_historiques():
+    corps = "Bonjour,\n\n" + " ".join(["mot"] * 75) + "\n\n---\nWilliam"
+    assert check_length(corps, template="A", track=None).passed
 
 
 # ---------------- 9. check_tics_de_langage (budget du « pis ») ----------------

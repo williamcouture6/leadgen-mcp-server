@@ -251,14 +251,17 @@ def check_loi25_privacy_contact(email_body: str, appended_footer: str = "") -> C
     )
 
 
-# Bornes par famille de gabarit. Le tri du pivot fait 206 (A) et 224 (B) mots ;
-# les relances, 40 à 100. Les valeurs viennent d'une MESURE sur les fixtures, et
-# toute édition d'un corps oblige à remesurer dans le même commit.
+# Bornes par (track, gabarit). Le pivot `agence-ia` fait 206 (A) et 224 (B)
+# mots ; ses relances, 40 à 100. La piste OPT vise 60 à 90 mots et porte des
+# gabarits qui s'appellent AUSSI « A » et « B » — indexer sur le seul gabarit
+# ferait échouer 100 % des brouillons OPT, alors que la spec exige que le
+# prompt OPT reste intact.
 _BORNES_LONGUEUR = {
-    "A": (180, 250),
-    "B": (180, 250),
-    "RELANCE": (40, 100),
+    ("agence-ia", "A"): (180, 250),
+    ("agence-ia", "B"): (180, 250),
+    ("agence-ia", "RELANCE"): (40, 100),
 }
+_BORNES_DEFAUT = (60, 95)
 
 
 def check_length(
@@ -266,8 +269,10 @@ def check_length(
     template: str | None = None,
     min_words: int | None = None,
     max_words: int | None = None,
+    track: str | None = None,
 ) -> CheckResult:
-    defaut_min, defaut_max = _BORNES_LONGUEUR.get((template or "").upper(), (60, 95))
+    cle = (track or "", (template or "").upper())
+    defaut_min, defaut_max = _BORNES_LONGUEUR.get(cle, _BORNES_DEFAUT)
     if min_words is None:
         min_words = defaut_min
     if max_words is None:
@@ -527,7 +532,7 @@ def run_all(
         check_subject_fake_social_proof(email_subject or "", social_proof_count),
         check_legal_footer(email_body, appended_footer=appended_footer),
         check_loi25_privacy_contact(email_body, appended_footer=appended_footer),
-        check_length(email_body, template=template),
+        check_length(email_body, template=template, track=track),
         check_cta_present(email_body),
         check_cta_slots_real(email_body, available_slots),
         check_registre(email_body, track=track),
