@@ -54,8 +54,8 @@ veut faire faire. Le système reste actif 24/7, le soir, la fin de semaine,
 quand t'es pas disponible. Toi, tu reçois un texto avec tout dedans qui te
 simplifie la vie.
 
-En regardant ton site, je me suis dit que je pourrais t'en faire une
-version rafraîchie. Je te charge rien pour ça, c'est pour que tu voies
+En regardant ton site, je me suis aussi dit que je pourrais t'en faire
+une version rafraîchie. Je te charge rien pour ça, c'est pour que tu voies
 comment je travaille avant qu'on parle du reste.
 
 Dis-moi juste si tu veux le voir.
@@ -82,11 +82,11 @@ système qui répond à tout ce qui rentre en moins de 60 secondes. Un appel
 que tu peux pas prendre, un texto, un message sur ton site ou sur
 Facebook. Il demande l'adresse, la grandeur du terrain, ce que le client
 veut faire faire. Avec ce système tu réponds plus vite au client, et ça
-t'évite de le rappeler à six heures pour qu'il te dise qu'il a déjà appelé
-une autre compagnie.
+t'évite de le rappeler à 18h pour qu'il te dise qu'il a déjà appelé une
+autre compagnie.
 
-En regardant ton site, je me suis dit que je pourrais t'en faire une
-version rafraîchie. Je te charge rien pour ça.
+En regardant ton site, je me suis aussi dit que je pourrais t'en faire
+une version rafraîchie. Je te charge rien pour ça.
 
 Dis-moi juste si tu veux le voir.
 
@@ -186,8 +186,8 @@ CORPS_B_REPLI_AVIS = _sans(
 
 CORPS_A_SANS_SITE = _sans(
     CORPS_A,
-    "En regardant ton site, je me suis dit que je pourrais t'en faire une\n"
-    "version rafraîchie. Je te charge rien pour ça, c'est pour que tu voies\n"
+    "En regardant ton site, je me suis aussi dit que je pourrais t'en faire\n"
+    "une version rafraîchie. Je te charge rien pour ça, c'est pour que tu voies\n"
     "comment je travaille avant qu'on parle du reste.",
     "Pendant que je regardais ton entreprise, j'ai vu que t'as pas de site\n"
     "web. Je pourrais t'en monter un. Je te charge rien pour ça, c'est pour\n"
@@ -196,8 +196,8 @@ CORPS_A_SANS_SITE = _sans(
 
 CORPS_B_SANS_SITE = _sans(
     CORPS_B,
-    "En regardant ton site, je me suis dit que je pourrais t'en faire une\n"
-    "version rafraîchie. Je te charge rien pour ça.",
+    "En regardant ton site, je me suis aussi dit que je pourrais t'en faire\n"
+    "une version rafraîchie. Je te charge rien pour ça.",
     "Pendant que je regardais ton entreprise, j'ai vu que t'as pas de site\n"
     "web. Je pourrais t'en monter un. Je te charge rien pour ça.",
 )
