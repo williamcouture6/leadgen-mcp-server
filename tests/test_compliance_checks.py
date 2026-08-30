@@ -23,7 +23,12 @@ from datetime import date
 import pytest
 
 from src.lib import compliance_checks as cc
-from tests.fixtures.corps_ac1 import CORPS_A, CORPS_B
+from tests.fixtures.corps_ac1 import (
+    CORPS_A,
+    CORPS_A_SANS_CTA,
+    CORPS_A_SANS_RENVOI,
+    CORPS_B,
+)
 
 
 # ---------------- 1. legal_footer (LCAP) ----------------
@@ -190,6 +195,33 @@ def test_cta_present_fails_when_no_invite_and_no_question() -> None:
     """Pas d'invitation à un appel ni de question → CTA faible."""
     r = cc.check_cta_present("Bonjour, voici une idée pour votre clinique.\n\n—\nWilliam")
     assert not r.passed
+
+
+# ---------------- check_cta_present — faux vert à deux moitiés (CORPS_A) ----------------
+#
+# Mesuré : le check passait sur CORPS_A pour deux mauvaises raisons — le bloc
+# service ("Un appel que tu peux pas prendre, un texto...") satisfaisait
+# has_call_invite, et la ligne de renvoi ("...tu peux-tu me pointer la bonne
+# personne?") satisfaisait has_question. Le vrai CTA ("Dis-moi juste si tu
+# veux le voir.") ne portait ni l'un ni l'autre et n'était jamais regardé.
+
+def test_cta_passe_sur_le_corps_complet() -> None:
+    assert cc.check_cta_present(CORPS_A).passed
+
+
+def test_cta_passe_meme_sans_la_ligne_de_renvoi() -> None:
+    """Le CTA seul doit suffire — sinon le check verdit sur la mauvaise phrase."""
+    assert cc.check_cta_present(CORPS_A_SANS_RENVOI).passed
+
+
+def test_cta_echoue_quand_on_retire_le_vrai_CTA() -> None:
+    """La ligne de renvoi porte un « ? » : si le check passe encore, il est faux vert."""
+    assert not cc.check_cta_present(CORPS_A_SANS_CTA).passed
+
+
+def test_cta_retrocompat_opt_avec_question() -> None:
+    corps = "Bonjour,\n\nUn appel rapide pour en parler?\n\n---\nWilliam"
+    assert cc.check_cta_present(corps).passed
 
 
 # ---------------- 4. cta_slots_real (anti-créneau-inventé) ----------------

@@ -271,25 +271,58 @@ def check_length(
     )
 
 
+# Ligne de RENVOI vers la bonne personne ("...tu peux-tu me pointer la bonne
+# personne?") — présente dans TOUS les gabarits `agence-ia` et TOUTES les
+# relances. C'est un routage ("est-ce bien toi le bon interlocuteur ?"), pas
+# une demande de réponse au sujet de l'offre. Son "?" ne doit JAMAIS suffire
+# seul à faire passer check_cta_present, sinon le check ne peut plus jamais
+# échouer (il verdirait sur un corps sans aucun CTA).
+_ROUTING_LINE_RE = re.compile(r"(?im)^.*\bbonne personne\b.*$")
+
+# Invitation explicite à répondre, indépendante de "un appel" (qui décrit
+# aussi le CANAL du bloc service, pas une action) et du "?" (que la ligne de
+# renvoi porte déjà). Formules réellement utilisées par le prompt `agence-ia`
+# (ex. "Dis-moi juste si tu veux le voir.") pour le CTA du corps généré.
+_EXPLICIT_INVITE_RE = re.compile(
+    r"dis[\s-]moi|juste[\s-][àa][\s-]me[\s-]dire|fais[\s-]moi[\s-]signe|"
+    r"me[\s-]le[\s-]dire|fais[\s-]moi[\s-]savoir"
+)
+
+
 def check_cta_present(email_body: str) -> CheckResult:
+    """Le paragraphe GÉNÉRÉ demande-t-il quelque chose au lecteur ?
+
+    Ancienne règle : `has_question ET (has_call_invite OU has_time_ask)`.
+    Mesurée FAUSSE VERTE à DEUX MOITIÉS sur CORPS_A (voir
+    tests/fixtures/corps_ac1.py) : `has_call_invite` verdissait sur le bloc
+    SERVICE ("Un appel que tu peux pas prendre, un texto...") qui décrit un
+    CANAL, pas une action ; `has_question` verdissait sur la ligne de RENVOI
+    ("...tu peux-tu me pointer la bonne personne?"), présente dans tous les
+    gabarits/relances et donc incapable de faire jamais échouer le check. Le
+    vrai CTA ("Dis-moi juste si tu veux le voir.") ne portait ni l'un ni
+    l'autre et n'était jamais regardé.
+
+    Nouvelle règle : `question (hors ligne de renvoi) OU invitation
+    explicite à répondre`. On ne garantit plus qu'un CTA précis existe —
+    celui-là vit dans le texte FIXE du gabarit, que le rédacteur automatique
+    ne peut pas retirer. Le check n'est plus qu'un garde-fou sur le
+    paragraphe généré : il demande juste que CE paragraphe sollicite une
+    réponse, sans compter la question de routage qui accompagne toujours
+    le vrai CTA (et masquerait donc sa disparition).
+    """
     body = _body_without_signature(email_body).lower()
-    has_question = "?" in body
-    # Le prompt (personalize.md) génère le CTA sous la forme "...un appel rapide ?"
-    # — avec ou sans jour/heure piochés dans Cal.com — et JAMAIS sous la forme
-    # "X minutes". On accepte donc l'invitation à un appel, OU une demande
-    # explicitement temps-bornée ("15/20/25/30 minutes") pour rétrocompat.
-    has_call_invite = bool(re.search(r"\bun appel\b", body))
-    has_time_ask = bool(re.search(r"\b(15|20|25|30)\s*minutes?\b", body))
-    passed = has_question and (has_call_invite or has_time_ask)
+    body_sans_renvoi = _ROUTING_LINE_RE.sub("", body)
+    has_question = "?" in body_sans_renvoi
+    has_explicit_invite = bool(_EXPLICIT_INVITE_RE.search(body))
+    passed = has_question or has_explicit_invite
     return CheckResult(
         name="cta_present",
         passed=passed,
         severity="warn",
-        message="CTA (invitation à un appel + question) présent" if passed else "CTA faible ou absent",
+        message="CTA (question hors renvoi, ou invitation explicite) présent" if passed else "CTA faible ou absent",
         matches=[] if passed else [
-            f"call_invite={has_call_invite}",
-            f"time_ask={has_time_ask}",
-            f"question={has_question}",
+            f"question_hors_renvoi={has_question}",
+            f"invitation_explicite={has_explicit_invite}",
         ],
     )
 
