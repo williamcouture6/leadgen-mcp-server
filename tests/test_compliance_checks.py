@@ -7,7 +7,7 @@ not regress, in priority order :
 2. first_person_actions — anti-mensonge: "j'ai testé/appelé/visité" bloqué
 3. fake_social_proof  — anti-preuve-sociale-inventée quand social_proof_count=0
 4. cta_slots_real     — anti-créneau-inventé (doit matcher Cal.com)
-5. vouvoiement        — culture business QC: vous/votre ≥2, jamais tutoiement
+5. registre           — cohérence tu/vous dérivée du track, pas un registre imposé
 6. warmup_window      — gate délivrabilité avant fin warmup Instantly
 7. banned_words       — détection vocabulaire IA-generated / sales-y
 
@@ -23,6 +23,13 @@ from datetime import date
 import pytest
 
 from src.lib import compliance_checks as cc
+from src.lib.compliance_checks import check_length, check_tics_de_langage, run_all
+from tests.fixtures.corps_ac1 import (
+    CORPS_A,
+    CORPS_A_SANS_CTA,
+    CORPS_A_SANS_RENVOI,
+    CORPS_B,
+)
 
 
 # ---------------- 1. legal_footer (LCAP) ----------------
@@ -191,6 +198,44 @@ def test_cta_present_fails_when_no_invite_and_no_question() -> None:
     assert not r.passed
 
 
+# ---------------- check_cta_present — faux vert à deux moitiés (CORPS_A) ----------------
+#
+# Mesuré : le check passait sur CORPS_A pour deux mauvaises raisons — le bloc
+# service ("Un appel que tu peux pas prendre, un texto...") satisfaisait
+# has_call_invite, et la ligne de renvoi ("...tu peux-tu me pointer la bonne
+# personne?") satisfaisait has_question. Le vrai CTA ("Dis-moi juste si tu
+# veux le voir.") ne portait ni l'un ni l'autre et n'était jamais regardé.
+
+def test_cta_passe_sur_le_corps_complet() -> None:
+    assert cc.check_cta_present(CORPS_A).passed
+
+
+def test_cta_passe_meme_sans_la_ligne_de_renvoi() -> None:
+    """Le CTA seul doit suffire — sinon le check verdit sur la mauvaise phrase."""
+    assert cc.check_cta_present(CORPS_A_SANS_RENVOI).passed
+
+
+def test_cta_echoue_quand_on_retire_le_vrai_CTA() -> None:
+    """La ligne de renvoi porte un « ? » : si le check passe encore, il est faux vert."""
+    assert not cc.check_cta_present(CORPS_A_SANS_CTA).passed
+
+
+def test_cta_retrocompat_opt_avec_question() -> None:
+    corps = "Bonjour,\n\nUn appel rapide pour en parler?\n\n---\nWilliam"
+    assert cc.check_cta_present(corps).passed
+
+
+def test_cta_echoue_sur_une_question_rhetorique_sans_demande() -> None:
+    """Un « ? » dans l'ouvreur généré ne prouve pas qu'on demande quelque chose."""
+    corps = (
+        "Bonjour,\n\n"
+        "Est-ce que ça t'arrive souvent de manquer des appels le soir?\n\n"
+        "Si c'est pas toi qui gères ça, tu peux-tu me pointer la bonne personne?\n"
+        "\n---\nWilliam"
+    )
+    assert not cc.check_cta_present(corps).passed
+
+
 # ---------------- 4. cta_slots_real (anti-créneau-inventé) ----------------
 
 def test_cta_slots_real_skipped_when_no_slots_provided() -> None:
@@ -233,33 +278,53 @@ def test_cta_slots_real_blocks_wrong_day() -> None:
     assert not r.passed
 
 
-# ---------------- 5. vouvoiement (culture business QC) ----------------
+# ---------------- 5. registre (cohérence tu/vous, pas un registre imposé) ----------------
 
-def test_vouvoiement_passes_proper_form() -> None:
-    body = "Bonjour, votre clinique m'intéresse. Avez-vous 15 minutes ?"
-    r = cc.check_vouvoiement(body)
-    assert r.passed
+def test_registre_agence_ia_accepte_le_tutoiement_coherent() -> None:
+    r = cc.check_registre(CORPS_A, track="agence-ia")
+    assert r.passed, r.message
 
 
-def test_vouvoiement_blocks_tutoiement() -> None:
-    body = "Salut, ta clinique m'intéresse. T'as 15 minutes ?"
-    r = cc.check_vouvoiement(body)
+def test_registre_agence_ia_accepte_le_template_b() -> None:
+    assert cc.check_registre(CORPS_B, track="agence-ia").passed
+
+
+def test_registre_opt_exige_le_vouvoiement() -> None:
+    corps = "Bonjour,\n\nVous avez sûrement remarqué que votre site.\n\n---\nWilliam"
+    assert cc.check_registre(corps, track="OPT").passed
+
+
+def test_registre_bloque_le_melange() -> None:
+    corps = "Bonjour,\n\nTon site est beau mais vous pouvez faire mieux, votre équipe.\n\n---\nWilliam"
+    r = cc.check_registre(corps, track="agence-ia")
     assert not r.passed
     assert r.severity == "block"
 
 
-def test_vouvoiement_blocks_insufficient_vous() -> None:
-    """Moins de 2 occurrences vous/votre → ton trop neutre, pas business."""
-    body = "Bonjour, intéressant. 15 minutes ?"  # 0 vous/votre
-    r = cc.check_vouvoiement(body)
-    assert not r.passed
+def test_registre_bloque_le_vouvoiement_sur_agence_ia() -> None:
+    corps = "Bonjour,\n\nVous avez sûrement remarqué que votre site.\n\n---\nWilliam"
+    assert not cc.check_registre(corps, track="agence-ia").passed
 
 
-def test_vouvoiement_blocks_mixed_with_tu() -> None:
-    """Même si 'vous' présent, un seul 'tu' brise le registre."""
-    body = "Bonjour, votre site est super. Tu as 15 minutes ? Votre équipe."
-    r = cc.check_vouvoiement(body)
-    assert not r.passed
+def test_registre_sans_track_retombe_sur_vous() -> None:
+    corps = "Bonjour,\n\nVous avez sûrement remarqué que votre site.\n\n---\nWilliam"
+    assert cc.check_registre(corps, track=None).passed
+
+
+def test_registre_ne_bloque_pas_sur_rendez_vous() -> None:
+    """« rendez-vous » contient le token « vous » — il ne doit pas compter."""
+    corps = "Bonjour,\n\nTon client veut un rendez-vous pis tu peux pas répondre.\n\n---\nWilliam"
+    assert cc.check_registre(corps, track="agence-ia").passed
+
+
+def test_registre_compte_toujours_un_vrai_vous_apres_rendez_vous() -> None:
+    corps = "Bonjour,\n\nTon rendez-vous, vous pouvez le déplacer, votre équipe.\n\n---\nWilliam"
+    assert not cc.check_registre(corps, track="agence-ia").passed
+
+
+def test_registre_reconnait_te_toi_et_ten() -> None:
+    corps = "Bonjour,\n\nÇa te permet d'en faire plus. Toi, t'en profites.\n\n---\nWilliam"
+    assert cc.check_registre(corps, track="agence-ia").passed
 
 
 # ---------------- 6. warmup_window (gate délivrabilité) ----------------
@@ -360,11 +425,75 @@ def test_banned_words_isolated_ia_blocked_but_couture_ia_allowed() -> None:
     assert r_ok.passed, f"'Couture IA' doit passer: {r_ok.matches}"
 
 
+# ---------------- 8. check_length (bornes par (track, gabarit), mesurées 2026-08-30) ----------------
+
+def test_length_accepte_le_corps_a_du_pivot():
+    assert check_length(CORPS_A, template="A", track="agence-ia").passed
+
+
+def test_length_accepte_le_corps_b_du_pivot():
+    assert check_length(CORPS_B, template="B", track="agence-ia").passed
+
+
+def test_length_accepte_une_relance():
+    corps = "Bonjour,\n\n" + " ".join(["mot"] * 70) + "\n\n---\nWilliam"
+    assert check_length(corps, template="RELANCE", track="agence-ia").passed
+
+
+def test_length_refuse_une_relance_trop_longue():
+    corps = "Bonjour,\n\n" + " ".join(["mot"] * 150) + "\n\n---\nWilliam"
+    assert not check_length(corps, template="RELANCE", track="agence-ia").passed
+
+
+def test_length_refuse_un_corps_de_tri_trop_court():
+    corps = "Bonjour,\n\n" + " ".join(["mot"] * 100) + "\n\n---\nWilliam"
+    assert not check_length(corps, template="A", track="agence-ia").passed
+
+
+def test_length_opt_garde_ses_anciennes_bornes():
+    """Le prompt OPT vise 60-90 mots avec des gabarits nommes A et B, comme le
+    pivot. Indexer sur le seul gabarit ferait echouer 100 % des brouillons OPT."""
+    corps = "Bonjour,\n\n" + " ".join(["mot"] * 75) + "\n\n---\nWilliam"
+    assert check_length(corps, template="A", track="OPT").passed
+
+
+def test_length_opt_refuse_un_corps_du_pivot():
+    """Symetrique : 206 mots est hors bornes pour OPT."""
+    assert not check_length(CORPS_A, template="A", track="OPT").passed
+
+
+def test_length_track_inconnu_retombe_sur_les_bornes_historiques():
+    corps = "Bonjour,\n\n" + " ".join(["mot"] * 75) + "\n\n---\nWilliam"
+    assert check_length(corps, template="A", track=None).passed
+
+
+# ---------------- 9. check_tics_de_langage (budget du « pis ») ----------------
+
+def test_tics_accepte_les_corps_du_pivot():
+    assert check_tics_de_langage(CORPS_A).passed
+    assert check_tics_de_langage(CORPS_B).passed
+
+
+def test_tics_bloque_au_dela_de_quatre_pis():
+    corps = "Bonjour,\n\npis pis pis pis pis\n\n---\nWilliam"
+    r = check_tics_de_langage(corps)
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_tics_accepte_exactement_quatre():
+    corps = "Bonjour,\n\npis pis pis pis\n\n---\nWilliam"
+    assert check_tics_de_langage(corps).passed
+
+
 # ---------------- run_all integration ----------------
 
 def test_run_all_returns_13_checks() -> None:
     """run_all doit toujours retourner tous les checks (pour audit), même
-    quand certains sont 'passed=True ignoré'."""
+    quand certains sont 'passed=True ignoré'.
+
+    MAJ 2026-08-30 : 14 checks depuis l'ajout de `check_tics_de_langage`
+    (tâche AC1a, garde-fou sur le paragraphe généré)."""
     results = cc.run_all(
         email_body="Bonjour,\nVotre clinique m'intéresse. 15 minutes ?\n\n—\nWilliam",
         social_proof_count=0,
@@ -372,12 +501,22 @@ def test_run_all_returns_13_checks() -> None:
         template="A",
         email_subject="Question rapide",
     )
-    # 13 checks expected: warmup + 6 body + 3 subject + length + cta_present
-    # + cta_slots_real + vouvoiement
-    assert len(results) == 13, f"attendu 13 checks, eu {len(results)}"
+    # 14 checks expected: warmup + 6 body + 3 subject + length + cta_present
+    # + cta_slots_real + registre + tics_de_langage
+    assert len(results) == 14, f"attendu 14 checks, eu {len(results)}"
     names = [r.name for r in results]
     # Sanity: pas de doublon
-    assert len(set(names)) == 13
+    assert len(set(names)) == 14
+
+
+def test_run_all_retourne_14_checks():
+    assert len(run_all(CORPS_A, 0, template="A", track="agence-ia")) == 14
+
+
+def test_run_all_ne_bloque_pas_le_corps_du_pivot():
+    resultats = run_all(CORPS_A, 0, template="A", track="agence-ia")
+    bloquants = [r.name for r in resultats if not r.passed and r.severity == "block"]
+    assert bloquants == ["warmup_window", "legal_footer"], bloquants
 
 
 def test_run_all_clean_legit_email_no_blockers(

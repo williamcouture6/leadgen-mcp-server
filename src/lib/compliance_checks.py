@@ -251,14 +251,32 @@ def check_loi25_privacy_contact(email_body: str, appended_footer: str = "") -> C
     )
 
 
+# Bornes par (track, gabarit). Le pivot `agence-ia` fait 206 (A) et 224 (B)
+# mots ; ses relances, 40 à 100. La piste OPT vise 60 à 90 mots et porte des
+# gabarits qui s'appellent AUSSI « A » et « B » — indexer sur le seul gabarit
+# ferait échouer 100 % des brouillons OPT, alors que la spec exige que le
+# prompt OPT reste intact.
+_BORNES_LONGUEUR = {
+    ("agence-ia", "A"): (180, 250),
+    ("agence-ia", "B"): (180, 250),
+    ("agence-ia", "RELANCE"): (40, 100),
+}
+_BORNES_DEFAUT = (60, 95)
+
+
 def check_length(
     email_body: str,
     template: str | None = None,
-    min_words: int = 60,
+    min_words: int | None = None,
     max_words: int | None = None,
+    track: str | None = None,
 ) -> CheckResult:
+    cle = (track or "", (template or "").upper())
+    defaut_min, defaut_max = _BORNES_LONGUEUR.get(cle, _BORNES_DEFAUT)
+    if min_words is None:
+        min_words = defaut_min
     if max_words is None:
-        max_words = 115 if (template or "").upper() == "B" else 95
+        max_words = defaut_max
     body = _body_without_signature(email_body)
     n = len(body.split())
     in_range = min_words <= n <= max_words
@@ -271,26 +289,64 @@ def check_length(
     )
 
 
+# Invitation explicite à répondre. Formules réellement utilisées par les
+# prompts `agence-ia`/OPT (ex. "Dis-moi juste si tu veux le voir.",
+# "...un appel rapide ?") pour le CTA du corps généré. "un appel rapide" est
+# DISTINCT de "Un appel que tu peux pas prendre" (bloc service, canal — pas
+# une action) : ce dernier ne matche pas.
+# "(15|20|25|30) minutes" : rétrocompat OPT — motif FERMÉ et spécifique
+# (pas un "?" générique), donc il ne recrée pas le faux vert : ni le bloc
+# service ni la ligne de renvoi ne contiennent cette formule numérique.
+_EXPLICIT_INVITE_RE = re.compile(
+    r"dis[\s-]moi|juste[\s-][àa][\s-]me[\s-]dire|fais[\s-]moi[\s-]signe|"
+    r"me[\s-]le[\s-]dire|fais[\s-]moi[\s-]savoir|un appel rapide|"
+    r"\b(15|20|25|30)\s*minutes?\b"
+)
+
+
 def check_cta_present(email_body: str) -> CheckResult:
+    """Le corps entier (hors signature) contient-il une invitation explicite
+    à répondre ?
+
+    Ancienne règle (v1) : `has_question ET (has_call_invite OU has_time_ask)`.
+    Mesurée FAUSSE VERTE à DEUX MOITIÉS sur CORPS_A (voir
+    tests/fixtures/corps_ac1.py) : `has_call_invite` verdissait sur le bloc
+    SERVICE ("Un appel que tu peux pas prendre, un texto...") qui décrit un
+    CANAL, pas une action ; `has_question` verdissait sur la ligne de RENVOI
+    ("...tu peux-tu me pointer la bonne personne?"), présente dans tous les
+    gabarits/relances et donc incapable de faire jamais échouer le check. Le
+    vrai CTA ("Dis-moi juste si tu veux le voir.") ne portait ni l'un ni
+    l'autre et n'était jamais regardé.
+
+    v2 : `question (hors ligne de renvoi) OU invitation explicite`. Encore
+    FAUSSE VERTE : une question RHÉTORIQUE dans l'ouvreur généré (ex. "Est-ce
+    que ça t'arrive souvent de manquer des appels le soir?") porte un "?" qui
+    n'est pas dans la ligne de renvoi, donc `has_question` verdit — alors que
+    ce corps ne demande rien. Un "?" ne distingue pas une DEMANDE d'une
+    question rhétorique.
+
+    v3 (actuelle) : on abandonne `has_question` entièrement — le "?" seul ne
+    prouve jamais qu'on sollicite une réponse. On exige une FORMULE
+    d'invitation explicite. Ça rend la regex d'exclusion de la ligne de
+    renvoi (v2) inutile : plus de "?" compté, plus besoin de l'exclure —
+    supprimée.
+
+    Compromis assumé : une future formulation du CTA absente de la liste
+    produirait un FAUX REFUS (brouillon envoyé en relecture manuelle plutôt
+    qu'auto-approuvé), pas un faux vert. C'est le bon sens d'erreur : un faux
+    refus est VISIBLE (le brouillon atterrit dans la file « à relire » du
+    résumé quotidien) alors qu'un faux vert expédie un courriel que personne
+    n'a lu. On choisit délibérément l'erreur récupérable.
+    """
     body = _body_without_signature(email_body).lower()
-    has_question = "?" in body
-    # Le prompt (personalize.md) génère le CTA sous la forme "...un appel rapide ?"
-    # — avec ou sans jour/heure piochés dans Cal.com — et JAMAIS sous la forme
-    # "X minutes". On accepte donc l'invitation à un appel, OU une demande
-    # explicitement temps-bornée ("15/20/25/30 minutes") pour rétrocompat.
-    has_call_invite = bool(re.search(r"\bun appel\b", body))
-    has_time_ask = bool(re.search(r"\b(15|20|25|30)\s*minutes?\b", body))
-    passed = has_question and (has_call_invite or has_time_ask)
+    has_explicit_invite = bool(_EXPLICIT_INVITE_RE.search(body))
+    passed = has_explicit_invite
     return CheckResult(
         name="cta_present",
         passed=passed,
         severity="warn",
-        message="CTA (invitation à un appel + question) présent" if passed else "CTA faible ou absent",
-        matches=[] if passed else [
-            f"call_invite={has_call_invite}",
-            f"time_ask={has_time_ask}",
-            f"question={has_question}",
-        ],
+        message="CTA (invitation explicite) présent" if passed else "CTA faible ou absent",
+        matches=[] if passed else [f"invitation_explicite={has_explicit_invite}"],
     )
 
 
@@ -392,23 +448,68 @@ def check_cta_slots_real(email_body: str, available_slots: list[dict] | None) ->
     )
 
 
-def check_vouvoiement(email_body: str) -> CheckResult:
-    body = _body_without_signature(email_body)
-    body_low = body.lower()
-    vous_count = len(re.findall(r"\bvous\b", body_low))
-    votre_count = len(re.findall(r"\b(votre|vos)\b", body_low))
-    tu_hits = re.findall(r"\b(tu|t'as|t'es|tes|ton|ta)\b", body_low)
-    has_vouv = vous_count + votre_count >= 2
-    passed = has_vouv and not tu_hits
-    msg_parts = [f"vous={vous_count}", f"votre/vos={votre_count}"]
-    if tu_hits:
-        msg_parts.append(f"tutoiement={tu_hits}")
+_REGISTRE_PAR_TRACK = {"agence-ia": "tu", "OPT": "vous"}
+
+
+def check_registre(email_body: str, track: str | None = None) -> CheckResult:
+    """Exige la COHÉRENCE du registre, pas un registre en particulier.
+
+    Le défaut réel est le mélange (« ton site » puis « vous pouvez »), qui
+    révèle un gabarit mal assemblé. Le registre attendu se dérive du track :
+    `agence-ia` tutoie (décision du pivot), `OPT` vouvoie. Un track inconnu
+    retombe sur `vous` — le comportement historique.
+
+    Le seuil diffère entre les deux branches, et c'est voulu : la conjugaison
+    à la 2e personne du singulier se répète naturellement dans un corps
+    tutoyé (14 occurrences dans le gabarit A), alors que le vouvoiement peut
+    tenir en deux mots. Le `>= 2` côté `vous` vient de l'ancien check et
+    protège contre un corps trop neutre où une occurrence isolée ne prouve
+    rien.
+    """
+    body_low = _body_without_signature(email_body).lower()
+    # (?<!rendez-) : « rendez-vous » contient le token « vous » parce que le
+    # trait d'union n'est pas un caractère de mot. Sans ce garde-fou, un seul
+    # « rendez-vous » — le vocabulaire même du produit — bloque un corps
+    # tutoyé, et un refus fige le contact à vie.
+    vous_hits = re.findall(r"(?<!rendez-)\b(vous|votre|vos)\b", body_low)
+    tu_hits = re.findall(r"\b(tu|t'as|t'es|t'en|tes|ton|ta|te|toi)\b", body_low)
+    attendu = _REGISTRE_PAR_TRACK.get(track or "", "vous")
+
+    if attendu == "tu":
+        passed = bool(tu_hits) and not vous_hits
+        intrus = vous_hits
+    else:
+        passed = len(vous_hits) >= 2 and not tu_hits
+        intrus = tu_hits
+
     return CheckResult(
-        name="vouvoiement",
+        name="registre",
         passed=passed,
         severity="block",
-        message=" ".join(msg_parts),
-        matches=tu_hits if tu_hits else ([] if has_vouv else ["vouvoiement insuffisant"]),
+        message=f"registre attendu={attendu} tu={len(tu_hits)} vous={len(vous_hits)}",
+        matches=[] if passed else (intrus or [f"registre {attendu} insuffisant"]),
+    )
+
+
+_MAX_PIS = 4
+
+
+def check_tics_de_langage(email_body: str) -> CheckResult:
+    """Le budget de « pis ».
+
+    La voix québécoise de la copie en utilise, c'est voulu. Ce qui ne l'est
+    pas, c'est la dérive du paragraphe GÉNÉRÉ sur des centaines de leads. Le
+    seuil est haut exprès : les corps de référence en portent 1 et 3.
+    """
+    body = _body_without_signature(email_body).lower()
+    hits = re.findall(r"\bpis\b", body)
+    passed = len(hits) <= _MAX_PIS
+    return CheckResult(
+        name="tics_de_langage",
+        passed=passed,
+        severity="block",
+        message=f"{len(hits)} « pis » (max {_MAX_PIS})",
+        matches=[] if passed else [f"{len(hits)} occurrences de « pis »"],
     )
 
 
@@ -419,6 +520,7 @@ def run_all(
     template: str | None = None,
     email_subject: str | None = None,
     appended_footer: str = "",
+    track: str | None = None,
 ) -> list[CheckResult]:
     return [
         check_warmup_window(),
@@ -430,8 +532,9 @@ def run_all(
         check_subject_fake_social_proof(email_subject or "", social_proof_count),
         check_legal_footer(email_body, appended_footer=appended_footer),
         check_loi25_privacy_contact(email_body, appended_footer=appended_footer),
-        check_length(email_body, template=template),
+        check_length(email_body, template=template, track=track),
         check_cta_present(email_body),
         check_cta_slots_real(email_body, available_slots),
-        check_vouvoiement(email_body),
+        check_registre(email_body, track=track),
+        check_tics_de_langage(email_body),
     ]

@@ -22,6 +22,12 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
 3. **Le modèle commission/risque-zéro** : « vous me payez une commission par contrat re-signé, rien d'avance, rien à perdre ». C'est la **description du modèle d'affaires**, PAS une garantie de résultat.
 4. **Question rhétorique sur leur situation** : « combien de vos clients ne sont jamais revenus? ». Une question n'affirme rien.
 5. **Le prénom / nom / titre du destinataire** quand ils figurent dans la **fiche contact vérifiée** fournie (bloc « Destinataire »). Cette fiche est la **source de vérité de l'identité**, distincte du `research_json` (qui décrit l'ENTREPRISE, souvent scrapé du site/page équipe). Un contact `website_scrape` (ou `apollo` hérité) est LÉGITIME **même si son nom n'apparaît pas dans le research_json**. Ne JAMAIS flagger « contact inventé / introuvable dans le research » ni `contact_mismatch` pour un nom présent dans la fiche contact.
+- **Consulter les pages publiques du prospect** (son site, ses avis Google) est une action
+  RÉELLEMENT posée par le pipeline avant la rédaction : le workflow de recherche scrape le
+  site et les avis. « Pendant que je regardais ton entreprise » ou « En regardant ton site »
+  sont donc VRAIES.
+  ⚠️ Restent interdits, parce que le pipeline ne les pose pas : tester un formulaire,
+  appeler, écrire au prospect.
 
 **Principe** : bloque les **mensonges** (faits inventés, preuve sociale, garanties chiffrées, actions inventées), pas le **langage de vente honnête**.
 
@@ -42,6 +48,8 @@ Toute affirmation factuelle sur l'**ENTREPRISE** prospect doit être ancrée dan
 - "Selon nos données" → William n'a pas de "données".
 - "L'industrie montre que..." (avec stat précise non sourcée) → potentiel mensonge.
 - "78% des leads quittent en 60 minutes" → vérifier si la stat est plausible/sourcable. Si pas dans le research_json, demander reformulation au conditionnel.
+  ⚠️ Contre-exemple : « on répond en moins de 60 secondes » n'est PAS une statistique
+  inventée — c'est la DESCRIPTION du service vendu, pas une affirmation sur le marché.
 
 ### 4. Surcoque émotionnelle / flagornerie subtile
 - "Votre travail extraordinaire" → flagornerie, casse le ton sobre.
@@ -56,7 +64,9 @@ Toute affirmation factuelle sur l'**ENTREPRISE** prospect doit être ancrée dan
 
 ### 6. Ton/registre incorrect pour le segment (PME québécoises)
 - Trop corporate ("transformation digitale", "écosystème" — déjà bannis mais surveille les paraphrases).
-- Trop familier — vouvoiement strict pour propriétaire PME 35-60 ans.
+- **Registre cohérent.** Le tutoiement est ASSUMÉ pour la piste `agence-ia` (contracteurs
+  québécois). Ce qui est un défaut, c'est le MÉLANGE dans un même corps (« ton site » puis
+  « vous pouvez »). Ne flagge pas le tutoiement en soi.
 - Termes français de France au lieu de québécois (ex: "courriel" vs "email" — les deux sont OK; "ramener" au lieu de "rapporter", etc.).
 
 ### 7. Mismatch entre contact et company (NOUVEAU)
