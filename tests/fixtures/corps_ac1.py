@@ -73,8 +73,24 @@ Dis-moi juste si tu veux le voir.
 Si c'est pas toi qui gères ça, tu peux-tu me pointer la bonne personne?
 """ + SIGNATURE
 
+def _sans(corps: str, cible: str) -> str:
+    """Retire `cible` de `corps`, une seule fois — échoue si `cible` est absente
+    ou dupliquée.
+
+    str.replace() ne lève jamais d'erreur si `cible` est introuvable : il rend
+    la chaîne inchangée. Sans cette garde, un futur edit de CORPS_A qui touche
+    `cible` (une virgule, un accent, un retour de ligne) rendrait la variante
+    silencieusement identique à l'original, et le test qui s'en sert passerait
+    sans plus rien prouver.
+    """
+    n = corps.count(cible)
+    if n != 1:
+        raise ValueError(f"cible absente ou dupliquée ({n}x) dans CORPS_A : {cible!r}")
+    return corps.replace(cible, "", 1)
+
+
 # Variantes servant à prouver qu'un check regarde la BONNE phrase.
-CORPS_A_SANS_CTA = CORPS_A.replace("Dis-moi juste si tu veux le voir.\n\n", "")
-CORPS_A_SANS_RENVOI = CORPS_A.replace(
-    "Si c'est pas toi qui gères ça, tu peux-tu me pointer la bonne personne?\n", ""
+CORPS_A_SANS_CTA = _sans(CORPS_A, "Dis-moi juste si tu veux le voir.\n\n")
+CORPS_A_SANS_RENVOI = _sans(
+    CORPS_A, "Si c'est pas toi qui gères ça, tu peux-tu me pointer la bonne personne?\n"
 )
