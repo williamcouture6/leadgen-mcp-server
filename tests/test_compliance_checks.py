@@ -220,6 +220,109 @@ def test_loi25_avec_le_drapeau_passe(
     assert "mentions réduites" in r.message
 
 
+# ---------------- 1ter. check_avis_conformes ----------------
+#
+# 🔴 Sans ce check, le modèle peut écrire « 5 étoiles sur 47 avis » et LE JUGE
+# EST AVEUGLE PAR CONSTRUCTION : il ne voit pas la valeur de la colonne, donc il
+# n'a aucun moyen de savoir que le chiffre est faux. C'est exactement le bug
+# déjà payé une fois (0732d20 — le juge ne voyait pas la fiche contact et
+# produisait des faux positifs).
+#
+# Un chiffre ne doit jamais dépendre du jugement d'un LLM.
+
+_AVEC_NOTE = "Bonjour,\n\nPaysagement Rivard a 4,8 étoiles sur 47 avis. Dis-moi."
+_SANS_NOTE = "Bonjour,\n\nDu monde qui te cherche, t'en as. Dis-moi."
+
+
+def test_avis_conformes_passe_quand_le_chiffre_correspond() -> None:
+    r = cc.check_avis_conformes(_AVEC_NOTE, google_rating=4.8, google_reviews_count=47)
+    assert r.passed, r.matches
+
+
+def test_avis_conformes_bloque_une_note_qui_ne_correspond_pas() -> None:
+    r = cc.check_avis_conformes(_AVEC_NOTE, google_rating=4.9, google_reviews_count=47)
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_avis_conformes_bloque_un_compte_qui_ne_correspond_pas() -> None:
+    r = cc.check_avis_conformes(_AVEC_NOTE, google_rating=4.8, google_reviews_count=48)
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_avis_conformes_bloque_une_note_entiere_inventee() -> None:
+    """L'exemple exact que la spec donne du risque : « 5 étoiles sur 47 avis ».
+    Un motif qui n'accepterait qu'une décimale le laisserait passer."""
+    corps = "Bonjour,\n\nPaysagement Rivard a 5 étoiles sur 47 avis. Dis-moi."
+    r = cc.check_avis_conformes(corps, google_rating=4.8, google_reviews_count=47)
+    assert not r.passed
+
+
+def test_avis_conformes_bloque_tout_chiffre_quand_la_colonne_est_vide() -> None:
+    """Le cas « inventé » : aucune donnée en base et un chiffre dans le corps.
+    C'est le scénario où le bloc 2 aurait dû sauter et où le modèle a écrit
+    quand même."""
+    r = cc.check_avis_conformes(_AVEC_NOTE, google_rating=None, google_reviews_count=None)
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_avis_conformes_passe_sur_le_repli() -> None:
+    """Le repli du bloc 2 retire la citation : plus aucun chiffre, donc plus
+    rien à vérifier. 89 boîtes sur 255 sont dans ce cas."""
+    assert cc.check_avis_conformes(_SANS_NOTE, google_rating=None, google_reviews_count=None).passed
+    assert cc.check_avis_conformes(_SANS_NOTE, google_rating=2.3, google_reviews_count=27).passed
+
+
+def test_avis_conformes_accepte_le_point_comme_le_virgule() -> None:
+    corps = "Bonjour,\n\nPaysagement Rivard a 4.8 étoiles sur 47 avis. Dis-moi."
+    assert cc.check_avis_conformes(corps, google_rating=4.8, google_reviews_count=47).passed
+
+
+def test_avis_conformes_arrondit_la_note_a_une_decimale() -> None:
+    """Google rend parfois 4.75 ; la copie écrit une décimale. L'arrondi est
+    une écriture, pas une invention."""
+    assert cc.check_avis_conformes(_AVEC_NOTE, google_rating=4.75, google_reviews_count=47).passed
+
+
+def test_avis_conformes_refuse_un_compte_approximatif() -> None:
+    """« plus de 40 avis » est REFUSÉ, même si c'est vrai.
+
+    Choix assumé : un faux refus est visible (le brouillon atterrit dans la file
+    « à relire » du résumé quotidien) alors qu'un faux vert expédie un chiffre
+    que personne n'a vérifié. Ouvrir une voie « approximative » serait
+    exactement l'endroit où un faux vert irait se cacher.
+    """
+    corps = "Bonjour,\n\nPaysagement Rivard a plus de 40 avis. Dis-moi."
+    assert not cc.check_avis_conformes(corps, google_rating=4.8, google_reviews_count=47).passed
+
+
+def test_avis_conformes_ne_confond_pas_les_autres_chiffres_du_corps() -> None:
+    """« 60 secondes » et « 24/7 » sont dans tous les corps. Un motif trop
+    large les prendrait pour des avis et bloquerait 100 % des brouillons."""
+    corps = (
+        "Bonjour,\n\nUn système qui répond en moins de 60 secondes. Il reste "
+        "actif 24/7, le soir, la fin de semaine. Dis-moi."
+    )
+    assert cc.check_avis_conformes(corps, google_rating=None, google_reviews_count=None).passed
+
+
+def test_avis_conformes_est_dans_run_all() -> None:
+    """Un check qui existe mais que personne n'appelle ne protège rien."""
+    noms = {r.name for r in run_all(_AVEC_NOTE, 0, template="A", track="agence-ia")}
+    assert "avis_conformes" in noms
+
+
+def test_run_all_bloque_un_corps_dont_la_note_est_inventee() -> None:
+    resultats = run_all(
+        _AVEC_NOTE, 0, template="A", track="agence-ia",
+        google_rating=None, google_reviews_count=None,
+    )
+    avis = next(r for r in resultats if r.name == "avis_conformes")
+    assert not avis.passed and avis.severity == "block"
+
+
 # ---------------- 2. first_person_actions (anti-mensonge) ----------------
 
 @pytest.mark.parametrize("phrase", [
@@ -601,12 +704,13 @@ def test_tics_accepte_exactement_quatre():
 
 # ---------------- run_all integration ----------------
 
-def test_run_all_returns_13_checks() -> None:
+def test_run_all_retourne_tous_les_checks() -> None:
     """run_all doit toujours retourner tous les checks (pour audit), même
     quand certains sont 'passed=True ignoré'.
 
     MAJ 2026-08-30 : 14 checks depuis l'ajout de `check_tics_de_langage`
-    (tâche AC1a, garde-fou sur le paragraphe généré)."""
+    (tâche AC1a, garde-fou sur le paragraphe généré), puis 15 depuis
+    `check_avis_conformes` (AC1b, garde-fou sur le chiffre d'avis)."""
     results = cc.run_all(
         email_body="Bonjour,\nVotre clinique m'intéresse. 15 minutes ?\n\n—\nWilliam",
         social_proof_count=0,
@@ -614,20 +718,30 @@ def test_run_all_returns_13_checks() -> None:
         template="A",
         email_subject="Question rapide",
     )
-    # 14 checks expected: warmup + 6 body + 3 subject + length + cta_present
-    # + cta_slots_real + registre + tics_de_langage
-    assert len(results) == 14, f"attendu 14 checks, eu {len(results)}"
+    # 15 checks : warmup + avis_conformes + 6 body + 3 subject + length
+    # + cta_present + cta_slots_real + registre + tics_de_langage
+    assert len(results) == 15, f"attendu 15 checks, eu {len(results)}"
     names = [r.name for r in results]
     # Sanity: pas de doublon
-    assert len(set(names)) == 14
+    assert len(set(names)) == 15
 
 
-def test_run_all_retourne_14_checks():
-    assert len(run_all(CORPS_A, 0, template="A", track="agence-ia")) == 14
+def test_run_all_retourne_15_checks():
+    assert len(run_all(CORPS_A, 0, template="A", track="agence-ia")) == 15
 
 
 def test_run_all_ne_bloque_pas_le_corps_du_pivot():
-    resultats = run_all(CORPS_A, 0, template="A", track="agence-ia")
+    """Les deux bloqueurs restants sont des gates d'ENVIRONNEMENT, pas de copie :
+    le warmup et les variables LCAP, tous deux couverts par la checklist go-live.
+
+    ⚠️ `avis_conformes` n'est PAS dans la liste, et seulement parce que les
+    valeurs de colonne sont passées : CORPS_A annonce « 4,8 étoiles sur 47 avis ».
+    Sans elles il bloquerait, ce qui est voulu — voir
+    `test_run_all_bloque_un_corps_dont_la_note_est_inventee`."""
+    resultats = run_all(
+        CORPS_A, 0, template="A", track="agence-ia",
+        google_rating=4.8, google_reviews_count=47,
+    )
     bloquants = [r.name for r in resultats if not r.passed and r.severity == "block"]
     assert bloquants == ["warmup_window", "legal_footer"], bloquants
 

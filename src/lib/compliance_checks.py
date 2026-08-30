@@ -415,6 +415,87 @@ def _warmup_disabled() -> bool:
     )
 
 
+# Tout ce qui ressemble à une note ou à un compte d'avis dans le corps. Les
+# motifs sont ANCRÉS sur leur mot (« étoiles », « avis ») : sans ça, « 60
+# secondes » et « 24/7 », présents dans tous les corps, seraient pris pour des
+# chiffres d'avis et bloqueraient 100 % des brouillons.
+_NOTE_RE = re.compile(r"(\d+(?:[,.]\d)?)\s*étoiles?", re.IGNORECASE)
+_COMPTE_AVIS_RE = re.compile(r"(\d+)\s*avis\b", re.IGNORECASE)
+
+
+def check_avis_conformes(
+    email_body: str,
+    google_rating: float | None = None,
+    google_reviews_count: int | None = None,
+) -> CheckResult:
+    """Tout chiffre d'avis présent dans le corps doit correspondre à la colonne.
+
+    🔴 **Un chiffre ne dépend jamais du jugement d'un LLM.** Sans ce check, le
+    modèle peut écrire « 5 étoiles sur 47 avis » et le juge est aveugle PAR
+    CONSTRUCTION : il ne voit pas la valeur de la colonne, donc rien ne lui
+    permet de savoir que le chiffre est faux. C'est le bug déjà payé une fois
+    (`0732d20`, le juge ne voyait pas la fiche contact).
+
+    Trois décisions, toutes du côté de l'erreur récupérable :
+
+    - **Un chiffre sans donnée en colonne BLOQUE.** C'est le cas « inventé » :
+      le bloc 2 aurait dû sauter et le modèle a écrit quand même.
+    - **Aucun chiffre PASSE.** C'est le repli du bloc 2, servi à 89 boîtes sur
+      255 : la citation saute, il n'y a plus rien à vérifier.
+    - **Un compte approximatif (« plus de 40 avis ») BLOQUE**, même s'il est
+      vrai. Un faux refus est VISIBLE — le brouillon atterrit dans la file
+      « à relire » du résumé quotidien — alors qu'un faux vert expédie un
+      chiffre que personne n'a lu. Ouvrir une voie « approximative » serait
+      exactement l'endroit où un faux vert irait se cacher.
+    """
+    body = _body_without_signature(email_body)
+    notes = _NOTE_RE.findall(body)
+    comptes = _COMPTE_AVIS_RE.findall(body)
+
+    if not notes and not comptes:
+        return CheckResult(
+            name="avis_conformes",
+            passed=True,
+            severity="block",
+            message="aucun chiffre d'avis dans le corps (repli du bloc 2)",
+            matches=[],
+        )
+
+    ecarts: list[str] = []
+
+    attendue = round(google_rating, 1) if google_rating is not None else None
+    for brute in notes:
+        if attendue is None:
+            ecarts.append(f"note « {brute} » annoncée alors qu'aucune note n'est en base")
+            continue
+        try:
+            annoncee = round(float(brute.replace(",", ".")), 1)
+        except ValueError:  # pragma: no cover - la regex garantit le format
+            ecarts.append(f"note « {brute} » illisible")
+            continue
+        if annoncee != attendue:
+            ecarts.append(f"note annoncée {annoncee} ≠ colonne {attendue}")
+
+    for brut in comptes:
+        if google_reviews_count is None:
+            ecarts.append(f"« {brut} avis » annoncés alors qu'aucun compte n'est en base")
+            continue
+        if int(brut) != int(google_reviews_count):
+            ecarts.append(f"compte annoncé {brut} ≠ colonne {google_reviews_count}")
+
+    return CheckResult(
+        name="avis_conformes",
+        passed=not ecarts,
+        severity="block",
+        message=(
+            f"{len(ecarts)} chiffre(s) d'avis non conforme(s)"
+            if ecarts
+            else "chiffres d'avis conformes à la colonne"
+        ),
+        matches=ecarts,
+    )
+
+
 def check_warmup_window(today: date | None = None) -> CheckResult:
     # Désactivation explicite et volontaire du gate.
     if _warmup_disabled():
@@ -578,9 +659,12 @@ def run_all(
     email_subject: str | None = None,
     appended_footer: str = "",
     track: str | None = None,
+    google_rating: float | None = None,
+    google_reviews_count: int | None = None,
 ) -> list[CheckResult]:
     return [
         check_warmup_window(),
+        check_avis_conformes(email_body, google_rating, google_reviews_count),
         check_banned_words(email_body),
         check_subject_banned_words(email_subject or ""),
         check_first_person_actions(email_body),
