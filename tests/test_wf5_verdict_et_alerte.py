@@ -1,4 +1,4 @@
-"""WF-5 : câblage du verdict `non_juge` et persistance du verdict.
+"""WF-5 : câblage du verdict `non_juge` et alerte de fin de passe.
 
 `compliance_check` (le tool) sait rendre `non_juge` depuis la livraison
 précédente, mais la route qui l'appelle ne lui passait ni `track` ni
@@ -20,7 +20,13 @@ from typing import Any
 import pytest
 
 from src import http_api
-from src.http_api import ComplianceCheckIn, _patch_verdict_conformite
+from src.http_api import (
+    ComplianceCheckIn,
+    RunWf5In,
+    _doit_alerter_wf5,
+    _patch_verdict_conformite,
+    _regle_qui_a_tranche,
+)
 from src.tools import compliance as compliance_tools
 
 
@@ -56,6 +62,83 @@ def test_patch_incremente_toujours_les_tentatives():
 def test_patch_tolere_des_tentatives_nulles():
     """`compliance_tentatives` absent d'un SELECT rend None : `None + 1` lèverait."""
     assert _patch_verdict_conformite("approved", tentatives_avant=None)["compliance_tentatives"] == 1
+
+
+# =====================================================================
+# B1 — la condition d'alerte
+# =====================================================================
+
+def test_alerte_wf5_se_declenche_sur_non_juge_seul():
+    assert _doit_alerter_wf5(needs_revision=0, blocked=0, non_juge=1)
+
+
+def test_alerte_wf5_silencieuse_quand_tout_est_approuve():
+    assert not _doit_alerter_wf5(needs_revision=0, blocked=0, non_juge=0)
+
+
+def test_alerte_wf5_se_declenche_sur_refus():
+    assert _doit_alerter_wf5(needs_revision=3, blocked=0, non_juge=0)
+
+
+def test_alerte_wf5_se_declenche_sur_blocage():
+    assert _doit_alerter_wf5(needs_revision=0, blocked=2, non_juge=0)
+
+
+# =====================================================================
+# La règle qui a tranché (ce que l'alerte nomme)
+# =====================================================================
+
+def _out(**kw: Any) -> compliance_tools.ComplianceCheckOut:
+    base: dict[str, Any] = dict(
+        message_id="m", verdict="approved", send_decision="SEND",
+    )
+    base.update(kw)
+    return compliance_tools.ComplianceCheckOut(**base)
+
+
+def test_regle_nomme_le_bloqueur_deterministe():
+    out = _out(
+        verdict="blocked", send_decision="DO_NOT_SEND",
+        deterministic_blockers=[{"name": "legal_footer", "message": "x", "matches": []}],
+    )
+    assert _regle_qui_a_tranche(out) == "legal_footer"
+
+
+def test_regle_nomme_la_panne_du_juge_sur_non_juge():
+    out = _out(
+        verdict="non_juge", send_decision="DO_NOT_SEND",
+        llm_judge={"error": "LLM judge failed: RuntimeError: overloaded"},
+    )
+    assert _regle_qui_a_tranche(out) == "juge_llm_injoignable"
+
+
+def test_regle_nomme_la_panne_meme_au_plafond_des_tentatives():
+    """3e tentative : le verdict devient `needs_revision`, la cause reste la panne."""
+    out = _out(
+        verdict="needs_revision", send_decision="REVIEW_THEN_SEND",
+        llm_judge={"error": "LLM judge failed: RuntimeError: overloaded"},
+    )
+    assert _regle_qui_a_tranche(out) == "juge_llm_injoignable"
+
+
+def test_regle_nomme_le_juge_quand_il_a_repondu_bloque():
+    out = _out(
+        verdict="blocked", send_decision="DO_NOT_SEND",
+        llm_judge={"send_decision": "DO_NOT_SEND"},
+    )
+    assert _regle_qui_a_tranche(out) == "juge_llm"
+
+
+def test_regle_nomme_le_warning_deterministe():
+    out = _out(
+        verdict="needs_revision", send_decision="REVIEW_THEN_SEND",
+        deterministic_warnings=[{"name": "length", "message": "x", "matches": []}],
+    )
+    assert _regle_qui_a_tranche(out) == "length"
+
+
+def test_regle_retombe_sur_le_verdict_si_rien_ne_le_nomme():
+    assert _regle_qui_a_tranche(_out(verdict="approved")) == "approved"
 
 
 # =====================================================================
@@ -218,3 +301,142 @@ async def test_message_sans_contact_ne_juge_rien(monkeypatch):
     assert out.verdict == "error"
     assert out.error_text == "contact_not_found"
     assert cap["maj"] == [], "aucun verdict ne s'écrit sur une erreur de fetch"
+
+
+# =====================================================================
+# B2 — /wf5/run compte les non_juge et crie sur #alertes
+# =====================================================================
+
+def _socle_wf5(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    verdicts: list[tuple[str, compliance_tools.ComplianceCheckOut | None]],
+    slack_ok: bool = True,
+) -> dict[str, Any]:
+    from src import supabase_client as sb
+    from src.lib import slack as slack_mod
+
+    capture: dict[str, Any] = {"pings": []}
+
+    async def fake_select(table, *, params=None, schema=None, **kw):
+        if table == "messages":
+            return [{"id": mid, "subject": f"sujet {mid}"} for mid, _ in verdicts]
+        return []
+
+    par_id = dict(verdicts)
+
+    async def fake_check(payload: ComplianceCheckIn):
+        res = par_id[payload.message_id]
+        if res is None:
+            raise RuntimeError("boom")
+        return res
+
+    async def fake_notify(**kw):
+        capture["pings"].append(kw)
+        return slack_ok
+
+    monkeypatch.setattr(sb, "select", fake_select)
+    monkeypatch.setattr(http_api, "compliance_check", fake_check)
+    monkeypatch.setattr(slack_mod, "notify", fake_notify)
+    return capture
+
+
+def _res(mid: str, verdict: str, **kw: Any) -> compliance_tools.ComplianceCheckOut:
+    return _out(message_id=mid, verdict=verdict,
+                send_decision="SEND" if verdict == "approved" else "DO_NOT_SEND", **kw)
+
+
+@pytest.mark.asyncio
+async def test_wf5_compte_les_non_juge_a_part_des_erreurs(monkeypatch):
+    _socle_wf5(monkeypatch, verdicts=[
+        ("a", _res("a", "approved")),
+        ("b", _res("b", "non_juge", llm_judge={"error": "x"})),
+    ])
+    out = await http_api.run_wf5(RunWf5In(limit=10))
+    assert out.non_juge == 1
+    assert out.errors == 0
+    assert out.approved == 1
+
+
+@pytest.mark.asyncio
+async def test_wf5_alerte_sur_non_juge_seul(monkeypatch):
+    """Sans `non_juge` dans la condition, la panne la plus grave serait muette."""
+    cap = _socle_wf5(monkeypatch, verdicts=[
+        ("id-approuve", _res("id-approuve", "approved")),
+        ("id-non-juge", _res("id-non-juge", "non_juge", llm_judge={"error": "overloaded"})),
+    ])
+    out = await http_api.run_wf5(RunWf5In(limit=10))
+    assert len(cap["pings"]) == 1
+    ping = cap["pings"][0]
+    assert ping["category"] == "alerts"
+    assert "non_juge : 1" in ping["text"]
+    assert "id-non-juge" in ping["text"]
+    assert "id-approuve" not in ping["text"], "un draft approuvé n'a rien à faire dans l'alerte"
+    assert "juge_llm_injoignable" in ping["text"]
+    assert out.alerte_envoyee is True
+
+
+@pytest.mark.asyncio
+async def test_wf5_silencieux_quand_tout_est_approuve(monkeypatch):
+    cap = _socle_wf5(monkeypatch, verdicts=[("a", _res("a", "approved"))])
+    out = await http_api.run_wf5(RunWf5In(limit=10))
+    assert cap["pings"] == []
+    assert out.alerte_envoyee is None
+
+
+@pytest.mark.asyncio
+async def test_wf5_alerte_porte_les_trois_compteurs(monkeypatch):
+    cap = _socle_wf5(monkeypatch, verdicts=[
+        ("a", _res("a", "needs_revision",
+                   deterministic_warnings=[{"name": "length", "message": "m", "matches": []}])),
+        ("b", _res("b", "blocked",
+                   deterministic_blockers=[{"name": "legal_footer", "message": "m", "matches": []}])),
+        ("c", _res("c", "non_juge", llm_judge={"error": "x"})),
+    ])
+    await http_api.run_wf5(RunWf5In(limit=10))
+    texte = cap["pings"][0]["text"]
+    assert "needs_revision : 1" in texte
+    assert "blocked : 1" in texte
+    assert "non_juge : 1" in texte
+    assert "length" in texte and "legal_footer" in texte and "juge_llm_injoignable" in texte
+
+
+@pytest.mark.asyncio
+async def test_wf5_alerte_liste_au_plus_cinq_message_id(monkeypatch):
+    cap = _socle_wf5(monkeypatch, verdicts=[
+        (f"m{i}", _res(f"m{i}", "blocked",
+                       deterministic_blockers=[{"name": "legal_footer", "message": "m", "matches": []}]))
+        for i in range(8)
+    ])
+    await http_api.run_wf5(RunWf5In(limit=10))
+    texte = cap["pings"][0]["text"]
+    assert texte.count("legal_footer") == 5
+    assert "m5" not in texte and "m7" not in texte
+
+
+@pytest.mark.asyncio
+async def test_wf5_lit_le_retour_de_slack(monkeypatch):
+    """Une alerte non partie qui se croit partie est le mode d'échec de 57edcaf."""
+    _socle_wf5(monkeypatch, slack_ok=False, verdicts=[
+        ("a", _res("a", "non_juge", llm_judge={"error": "x"})),
+    ])
+    out = await http_api.run_wf5(RunWf5In(limit=10))
+    assert out.alerte_envoyee is False
+
+
+@pytest.mark.asyncio
+async def test_wf5_lot_vide_ne_crie_pas(monkeypatch):
+    cap = _socle_wf5(monkeypatch, verdicts=[])
+    out = await http_api.run_wf5(RunWf5In(limit=10))
+    assert cap["pings"] == []
+    assert out.processed == 0
+    assert out.alerte_envoyee is None
+
+
+@pytest.mark.asyncio
+async def test_wf5_exception_de_passe_reste_comptee_en_erreurs(monkeypatch):
+    cap = _socle_wf5(monkeypatch, verdicts=[("a", None)])
+    out = await http_api.run_wf5(RunWf5In(limit=10))
+    assert out.errors == 1
+    assert out.non_juge == 0
+    assert cap["pings"] == [], "une exception de passe n'est pas un verdict de refus"

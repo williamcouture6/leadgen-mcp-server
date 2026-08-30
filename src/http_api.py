@@ -2050,6 +2050,36 @@ def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dic
     return patch
 
 
+def _doit_alerter_wf5(*, needs_revision: int, blocked: int, non_juge: int) -> bool:
+    """`non_juge` est dans la condition, et ce n'est pas un détail.
+
+    Sans lui, la panne la plus grave — celle qui laisse passer des courriels
+    jamais relus — serait la seule à ne pas crier : elle ne produit ni
+    `needs_revision` ni `blocked`.
+    """
+    return (needs_revision + blocked + non_juge) > 0
+
+
+def _regle_qui_a_tranche(out: compliance_tools.ComplianceCheckOut) -> str:
+    """Nom court de ce qui a décidé du verdict, pour l'alerte #alertes.
+
+    L'ordre suit la cascade de `compliance_check` : la panne du juge se teste
+    en premier parce qu'au plafond des tentatives elle se déguise en
+    `needs_revision`, et « length » à la place de « juge injoignable »
+    enverrait chercher le défaut dans le mauvais fichier.
+    """
+    juge = out.llm_judge or {}
+    if juge.get("error"):
+        return "juge_llm_injoignable"
+    if out.deterministic_blockers:
+        return str(out.deterministic_blockers[0].get("name") or "layer1")
+    if juge.get("send_decision") in ("DO_NOT_SEND", "REVIEW_THEN_SEND"):
+        return "juge_llm"
+    if out.deterministic_warnings:
+        return str(out.deterministic_warnings[0].get("name") or "layer1")
+    return out.verdict
+
+
 class ComplianceCheckIn(BaseModel):
     """Lance les 2 layers de compliance sur un draft.
 
@@ -2255,6 +2285,9 @@ class RunWf5Item(BaseModel):
     send_decision: str
     duration_ms: int | None = None
     error_text: str | None = None
+    # Ce qui a tranché (nom du check déterministe, `juge_llm`,
+    # `juge_llm_injoignable`). Repris tel quel dans l'alerte #alertes.
+    regle: str | None = None
 
 
 class RunWf5Out(BaseModel):
@@ -2262,8 +2295,70 @@ class RunWf5Out(BaseModel):
     approved: int
     needs_revision: int
     blocked: int
+    # Juge LLM injoignable : le corps n'a PAS été inspecté. Comptait dans
+    # `errors` avant, où il se confondait avec une panne de la passe elle-même.
+    non_juge: int = 0
     errors: int
+    # True/False = l'alerte #alertes est partie / s'est perdue. None = il n'y
+    # avait rien à annoncer. Lire le retour évite l'alerte qui se croit partie.
+    alerte_envoyee: bool | None = None
     items: list[RunWf5Item]
+
+
+_WF5_MAX_ITEMS_ALERTE = 5
+
+
+async def _alerter_wf5(
+    *,
+    processed: int,
+    needs_revision: int,
+    blocked: int,
+    non_juge: int,
+    items: list[RunWf5Item],
+) -> bool:
+    """Crie sur #alertes quand un lot de conformité n'est pas tout vert.
+
+    Avant, `/wf5/run` calculait ses compteurs et les jetait : le lot entier
+    pouvait mourir sans qu'une seule ligne l'annonce nulle part. Rend le retour
+    de Slack — une alerte perdue qui se croit partie est le même mode d'échec
+    que le verdict non persisté d'à côté.
+    """
+    from .lib import slack as slack_lib
+
+    fautifs = [i for i in items if i.verdict in ("needs_revision", "blocked", "non_juge")]
+    lignes = [
+        f"• `{i.message_id}` — {i.verdict} [{i.regle or '?'}]"
+        for i in fautifs[:_WF5_MAX_ITEMS_ALERTE]
+    ]
+    reste = len(fautifs) - len(lignes)
+    if reste > 0:
+        lignes.append(f"… et {reste} de plus (voir la réponse de /wf5/run).")
+
+    corps = [
+        f"🚨 WF-5 conformité — {len(fautifs)} draft(s) non envoyable(s) "
+        f"sur {processed} jugé(s)",
+        f"needs_revision : {needs_revision} · blocked : {blocked} · "
+        f"non_juge : {non_juge}",
+    ]
+    if non_juge:
+        corps.append(
+            "⚠️ non_juge = le juge LLM n'a pas répondu, le corps n'a PAS été "
+            "inspecté. `compliance_check_passed` reste NULL : rien ne part, et "
+            "le draft revient de lui-même dans le lot de demain (3 tentatives "
+            "max, puis refus)."
+        )
+    corps.extend(lignes)
+
+    envoyee = await slack_lib.notify(
+        text="\n".join(corps), context="wf5_lot", category="alerts",
+    )
+    if not envoyee:
+        logging.getLogger("wf5").error(
+            "alerte #alertes NON partie — needs_revision=%s blocked=%s non_juge=%s ids=%s",
+            needs_revision, blocked, non_juge,
+            ",".join(i.message_id for i in fautifs[:_WF5_MAX_ITEMS_ALERTE]),
+        )
+    return envoyee
 
 
 @app.post("/wf5/run", dependencies=[Depends(_require_auth)], response_model=RunWf5Out)
@@ -2309,14 +2404,14 @@ async def run_wf5(payload: RunWf5In) -> RunWf5Out:
     results = await asyncio.gather(*(_judge_one(d) for d in drafts))
 
     items: list[RunWf5Item] = []
-    approved = needs_revision = blocked = errors = 0
+    approved = needs_revision = blocked = non_juge = errors = 0
     for draft, res, err in results:
         if res is None:
             errors += 1
             items.append(RunWf5Item(
                 message_id=draft["id"], subject=draft.get("subject"),
                 verdict="error", send_decision="DO_NOT_SEND",
-                error_text=err,
+                error_text=err, regle="exception_passe",
             ))
             continue
         if res.verdict == "approved":
@@ -2325,18 +2420,37 @@ async def run_wf5(payload: RunWf5In) -> RunWf5Out:
             needs_revision += 1
         elif res.verdict == "blocked":
             blocked += 1
+        elif res.verdict == "non_juge":
+            # Compté à part : un corps NON INSPECTÉ n'est ni un refus ni une
+            # panne de la passe. Noyé dans `errors`, il disparaissait dans le
+            # bruit des exceptions réseau.
+            non_juge += 1
         else:
             errors += 1
         items.append(RunWf5Item(
             message_id=draft["id"], subject=draft.get("subject"),
             verdict=res.verdict, send_decision=res.send_decision,
             duration_ms=res.duration_ms, error_text=res.error_text,
+            regle=_regle_qui_a_tranche(res),
         ))
+
+    # L'alerte vit ICI, côté serveur, et pas dans le workflow n8n : l'abonnement
+    # est en pause et un WF modifié doit être ré-importé pour prendre effet —
+    # une alerte qui dépend d'un ré-import est une alerte qu'on oubliera.
+    alerte_envoyee: bool | None = None
+    if _doit_alerter_wf5(
+        needs_revision=needs_revision, blocked=blocked, non_juge=non_juge
+    ):
+        alerte_envoyee = await _alerter_wf5(
+            processed=len(items), needs_revision=needs_revision,
+            blocked=blocked, non_juge=non_juge, items=items,
+        )
 
     return RunWf5Out(
         processed=len(items), approved=approved,
-        needs_revision=needs_revision, blocked=blocked, errors=errors,
-        items=items,
+        needs_revision=needs_revision, blocked=blocked,
+        non_juge=non_juge, errors=errors,
+        alerte_envoyee=alerte_envoyee, items=items,
     )
 
 
