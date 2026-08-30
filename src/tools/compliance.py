@@ -122,7 +122,10 @@ class ComplianceCheckIn(BaseModel):
 
 class ComplianceCheckOut(BaseModel):
     message_id: str
-    verdict: str  # "approved" | "needs_revision" | "blocked" | "error"
+    # "non_juge" = le juge LLM n'a pas répondu, le draft n'a PAS été inspecté.
+    # Distinct de "error" (la passe elle-même a échoué) et de NULL en base
+    # (jamais tenté). Voir migration 0045.
+    verdict: str  # "approved" | "needs_revision" | "blocked" | "non_juge" | "error"
     send_decision: str  # "SEND" | "REVIEW_THEN_SEND" | "DO_NOT_SEND"
     deterministic_blockers: list[dict[str, Any]] = []
     deterministic_warnings: list[dict[str, Any]] = []
@@ -144,11 +147,26 @@ async def compliance_check(
     contact: dict[str, Any] | None = None,
     skip_llm: bool = False,
     model: str = _DEFAULT_MODEL,
+    track: str | None = None,
+    tentatives: int = 0,
 ) -> ComplianceCheckOut:
-    """Lance les 2 layers de compliance sur un draft donné."""
+    """Lance les 2 layers de compliance sur un draft donné.
+
+    `track` sélectionne les critères du layer 1 qui en dépendent (registre
+    tu/vous, bornes de longueur). Sans lui, `check_registre` retombe sur
+    `vous` et bloque TOUS les corps `agence-ia`, qui tutoient.
+
+    `tentatives` = valeur de `messages.compliance_tentatives` AVANT cette
+    passe. Sert de garde anti-boucle quand le juge LLM tombe : voir la
+    cascade de verdict plus bas.
+    """
     import asyncio
 
     started = time.monotonic()
+
+    # `compliance_tentatives` absent d'un SELECT rend None côté appelant, et
+    # `None >= 2` lève un TypeError qui ferait avorter toute la passe.
+    tentatives = tentatives or 0
 
     # Footer LCAP injecté par l'ESP (Instantly) au moment de l'envoi — pas dans
     # le body généré par WF-4. On le passe aux checks déterministes pour que
@@ -164,6 +182,7 @@ async def compliance_check(
         template=template_used,
         email_subject=subject,
         appended_footer=appended_footer,
+        track=track,
     )
     det_blockers = [r for r in det_results if not r.passed and r.severity == "block"]
     det_warnings = [r for r in det_results if not r.passed and r.severity == "warn"]
@@ -190,8 +209,24 @@ async def compliance_check(
         except Exception as e:  # noqa: BLE001
             llm_verdict = {"error": f"LLM judge failed: {type(e).__name__}: {e}"}
 
-    # Verdict final combinant warnings déterministes + LLM
-    if llm_verdict and llm_verdict.get("send_decision") == "DO_NOT_SEND":
+    # Verdict final combinant warnings déterministes + LLM.
+    #
+    # L'ORDRE COMPTE : la panne du juge se teste AVANT tout le reste, parce
+    # qu'un courriel non inspecté n'est pas un courriel approuvé. Le cron est
+    # quotidien par lots de 20 : quelques minutes d'indisponibilité chez
+    # Anthropic suffisaient à approuver le lot du jour, et l'alerte (qui
+    # compte `needs_revision + blocked`) restait muette.
+    juge_en_panne = bool(llm_verdict and llm_verdict.get("error"))
+
+    if juge_en_panne and tentatives >= 2:
+        # 3e tentative : un échec permanent doit réveiller quelqu'un, pas
+        # tourner en rond. Devient un vrai refus, donc sort du lot du lendemain.
+        final_verdict = "needs_revision"
+        final_decision = "REVIEW_THEN_SEND"
+    elif juge_en_panne:
+        final_verdict = "non_juge"
+        final_decision = "DO_NOT_SEND"
+    elif llm_verdict and llm_verdict.get("send_decision") == "DO_NOT_SEND":
         final_verdict = "blocked"
         final_decision = "DO_NOT_SEND"
     elif llm_verdict and llm_verdict.get("send_decision") == "REVIEW_THEN_SEND":
@@ -204,10 +239,20 @@ async def compliance_check(
         final_verdict = "approved"
         final_decision = "SEND"
 
-    reasoning = (
-        (llm_verdict or {}).get("reasoning_one_line")
-        or (f"{len(det_warnings)} warning(s) déterministe(s)" if det_warnings else "Aucune violation détectée.")
-    )
+    if juge_en_panne:
+        # Surtout PAS « Aucune violation détectée » : rien n'a été inspecté.
+        # `compliance_notes` se lit à l'œil nu, et cette phrase-là rassurerait
+        # à tort sur le seul cas où il ne faut pas être rassuré.
+        reasoning = (
+            f"Juge LLM injoignable — corps NON inspecté (tentative {tentatives + 1}). "
+            + ("Plafond atteint : passe en refus." if tentatives >= 2
+               else "Sera rejugé à la prochaine passe.")
+        )
+    else:
+        reasoning = (
+            (llm_verdict or {}).get("reasoning_one_line")
+            or (f"{len(det_warnings)} warning(s) déterministe(s)" if det_warnings else "Aucune violation détectée.")
+        )
 
     return ComplianceCheckOut(
         message_id=message_id,
