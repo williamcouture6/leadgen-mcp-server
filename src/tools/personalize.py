@@ -15,6 +15,7 @@ import json
 import os
 import re
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,8 @@ from anthropic import Anthropic
 from pydantic import BaseModel
 
 from ..lib.avis import bloc_faits_verifies, nom_commercial
+from ..lib.lexique_metiers import lexique_pour
+from ..lib.metiers import resoudre_metiers
 from . import research as research_tools
 
 # ----------------------------------------------------------------------
@@ -48,6 +51,103 @@ class LLMUsage(BaseModel):
 # Construction du user message
 # ----------------------------------------------------------------------
 
+def bloc_metiers_resolus(
+    services_offered: list[str] | None, aujourdhui: date
+) -> str:
+    """Ce que le rédacteur reçoit sur les métiers. **Il ne classe rien.**
+
+    Tout est décidé par du code déterministe : quel métier fournit la scène
+    (celui dont la fenêtre est ouverte et dont la saison arrive le plus tôt),
+    lesquels sont les autres, quelle FORMULATION employer pour le 2ᵉ temps, et
+    quel lexique gouverne le bloc service.
+
+    🔴 La formulation n'est pas laissée au modèle. « Pour le reste de l'année »
+    affirme un contraste temporel qui devient un MENSONGE quand les métiers
+    partagent la même saison — la tonte et le paysagement, c'est le même été.
+    « Tu fais X aussi » n'affirme rien de temporel et ne peut pas être faux.
+    """
+    r = resoudre_metiers(services_offered, aujourdhui)
+    lex = lexique_pour(r.dominant)
+
+    lignes = ["## Métiers résolus (déjà classés — tu ne recalcules RIEN)"]
+
+    # ⚠️ Deux cas TRÈS différents se cachent derrière `scene is None`, et les
+    # confondre coûte un courriel générique à une entreprise dont on connaît
+    # parfaitement le métier :
+    #   · aucun métier RECONNU  → on n'a rien à nommer, ouvreur générique.
+    #   · métiers reconnus mais TOUS hors saison → on sait quoi nommer, c'est
+    #     le MOMENT qui est mauvais. La scène retombe sur le dominant, et le
+    #     hors-saison se signale.
+    hors_saison = r.scene is None and bool(r.metiers)
+    scene = r.scene or (r.dominant if hors_saison else None)
+
+    if scene is None:
+        lignes += [
+            "- **Aucun métier reconnu dans `services_offered`.**",
+            "  Écris un ouvreur **générique** : ne nomme aucun métier, garde la",
+            "  supposition de l'appel manqué. N'invente surtout pas un métier.",
+            "- Pas de 2ᵉ temps.",
+        ]
+    else:
+        lignes.append(f"- **Métier de la scène** (l'ouvreur) : {scene}")
+        if hors_saison:
+            lignes.append(
+                "  ⚠️ **Aucune de ses fenêtres saisonnières n'est ouverte ce mois-ci.** "
+                "La scène retombe sur son métier dominant. Ajoute le warning "
+                "« hors fenêtre saisonnière »."
+            )
+        autres_metiers = [m for m in r.metiers if m != scene]
+        if autres_metiers:
+            autres = (
+                " pis ".join(autres_metiers)
+                if len(autres_metiers) <= 2
+                else ", ".join(autres_metiers)
+            )
+            formule = (
+                f"Tu fais {_avec_article(autres)} aussi."
+                if r.meme_saison
+                else f"Pour le reste de l'année, tu fais {_avec_article(autres)}."
+            )
+            lignes.append(f"- **Ses autres métiers** : {', '.join(autres_metiers)}")
+            lignes.append(
+                f"- **2ᵉ temps OBLIGATOIRE**, formulation imposée : « {formule} »"
+            )
+            if r.scene_est_minoritaire:
+                lignes.append(
+                    f"  ⚠️ Le métier de la scène pèse ≤ 25 % de ses libellés : le 2ᵉ temps "
+                    f"doit NOMMER son métier dominant ({r.dominant}) en premier."
+                )
+        else:
+            lignes.append("- **Entreprise mono-métier : aucun 2ᵉ temps.** Ne l'invente pas.")
+
+    lignes += [
+        "",
+        "## Lexique (choisi par une table — recopie-le TEL QUEL)",
+        f"- Où il est : **{lex.ou_il_est}**",
+        f"- Les trois questions : **{lex.questions[0]}, {lex.questions[1]}, {lex.questions[2]}**",
+    ]
+    if lex.est_repli:
+        lignes.append(
+            "  (lexique de repli : aucun métier reconnu, formulations neutres)"
+        )
+    return "\n".join(lignes)
+
+
+def _avec_article(metiers: str) -> str:
+    """« déneigement » → « du déneigement », « tonte » → « de la tonte ».
+
+    Petit, mais c'est la différence entre « tu fais tonte » et une phrase que
+    le prospect lit sans buter.
+    """
+    feminins = ("tonte", "toiture", "excavation", "extermination")
+    for f in feminins:
+        if metiers.startswith(f):
+            return f"de la {metiers}"
+    if metiers[:1].lower() in "aeiouéè":
+        return f"de l'{metiers}"
+    return f"du {metiers}"
+
+
 def _format_input_for_llm(
     *,
     research: dict[str, Any],
@@ -56,6 +156,8 @@ def _format_input_for_llm(
     social_proof: list[dict[str, Any]],
     template_choice: str,
     slots_block: str,
+    track: str = "OPT",
+    aujourdhui: date | None = None,
 ) -> str:
     """Reprend exactement le format du proto CLI (`agents/personalize_agent.py`)."""
     # Coupe au premier separateur : les noms en base sont des fiches Google
@@ -71,6 +173,9 @@ def _format_input_for_llm(
     parts = [
         f"## Template à utiliser\n{template_choice}",
         f"\n## Entreprise ciblée\nname: {place_name}\nwebsite: {website}",
+        "\n" + bloc_metiers_resolus(
+            research.get("services_offered"), aujourdhui or date.today()
+        ),
         "\n" + bloc_faits_verifies(
             company.get("google_rating"), company.get("google_reviews_count")
         ),
@@ -103,7 +208,15 @@ def _format_input_for_llm(
             "L'email doit être convaincant sans aucune référence à d'autres clients."
         )
 
-    parts.append("\n" + slots_block)
+    # 🔴 Cal.com sort du chemin pour `agence-ia`, et le VIDER n'aurait pas
+    # suffi : sur liste vide, `format_slots_for_prompt` dit encore « utilise un
+    # CTA générique type "15 minutes cette semaine ?" ». Or la règle nº11 du
+    # prompt interdit TOUT rendez-vous, tout créneau, toute heure — le
+    # rendez-vous se propose dans la réponse au oui, jamais dans le froid.
+    # Le tour UTILISATEUR étant plus récent que le système, c'est lui que le
+    # modèle suit : le bloc gagnait contre la règle.
+    if track != "agence-ia":
+        parts.append("\n" + slots_block)
     return "\n".join(parts)
 
 
@@ -200,13 +313,47 @@ async def personalize(payload: PersonalizeIn) -> PersonalizeOut:
         social_proof=payload.social_proof,
         template_choice=payload.template_choice,
         slots_block=slots_block,
+        track=payload.track,
     )
 
-    email_json, usage = await asyncio.to_thread(_call_llm, user_message, payload.model, 2500, payload.track)
+    # 4000 et non 2500 : la piste `agence-ia` rend TROIS corps (le courriel et
+    # ses deux relances) au lieu d'un. Une troncature du modèle est silencieuse
+    # — elle rendrait une relance vide, refusée au push bien plus tard, sans que
+    # rien ne dise pourquoi.
+    max_tokens = 4000 if payload.track == "agence-ia" else 2500
+    email_json, usage = await asyncio.to_thread(
+        _call_llm, user_message, payload.model, max_tokens, payload.track
+    )
+
+    # 🔴 La variante RÉELLEMENT écrite, jamais le paramètre. Avec
+    # `template_choice="AB"`, le paramètre vaut « AB » : la colonne
+    # `messages.template_choice` porterait « AB » sur 100 % des lignes, et il
+    # n'y aurait pas de test A/B — juste deux textes et aucune trace de qui a
+    # reçu quoi.
+    template_used = (email_json.get("template_used") or "").strip().upper()
+    if template_used not in ("A", "B"):
+        template_used = payload.template_choice
+        if template_used not in ("A", "B"):
+            # Dernier recours : le modèle n'a pas dit sa variante ET le
+            # paramètre était « AB ». On refuse de deviner, mais on le DIT.
+            email_json.setdefault("warnings", []).append(
+                "template_used absent de la sortie et template_choice='AB' : "
+                "la variante envoyée n'est pas traçable"
+            )
+
+    # Les relances manquantes se signalent ICI, à la génération, et pas au push
+    # trois étapes plus loin.
+    if payload.track == "agence-ia":
+        for cle in ("relance_1", "relance_2"):
+            if not (email_json.get(cle) or "").strip():
+                email_json.setdefault("warnings", []).append(
+                    f"{cle} vide ou absente — le triplet sera refusé au push "
+                    f"(troncature du modèle ?)"
+                )
 
     return PersonalizeOut(
         email=email_json,
-        template_used=payload.template_choice,
+        template_used=template_used,
         contact_used=payload.contact is not None,
         social_proof_count=len(payload.social_proof),
         available_slots_at_generation=payload.available_slots,
