@@ -2056,7 +2056,123 @@ class RunWf4Out(BaseModel):
     skipped: int
     failed: int
     slots_available: int  # nb total créneaux Cal.com fetched
+    # True/False = l'alerte de famine est partie / s'est perdue. None = il
+    # n'y avait rien à annoncer. Lire le retour évite l'alerte qui se croit
+    # partie, comme RunWf5Out.alerte_envoyee.
+    alerte_famine_envoyee: bool | None = None
     items: list[RunWf4Item]
+
+
+def _doit_alerter_famine(*, processed: int, envoyables_restants: int) -> bool:
+    """Un `/wf4/run` qui ne rédige rien alors qu'il reste des leads est une
+    panne, pas une journée calme.
+
+    Ce projet a déjà payé cinq semaines de silence sur un défaut de cette
+    famille : la clé Google Places désactivée pour cause de facturation, tout
+    le WF-1 en échec, et rien nulle part parce que tout est fail-soft. Un
+    pipeline fail-soft DOIT crier quand il ne produit plus rien.
+
+    Le deuxième terme est ce qui distingue les deux « zéro » : zéro sur une
+    file vide est une fin de liste (rien à dire), zéro sur une file pleine est
+    la famine.
+    """
+    return processed == 0 and envoyables_restants > 0
+
+
+async def _compter_envoyables_restants(track: str) -> tuple[int, bool]:
+    """Combien de contacts restent à approcher sur ce track. Rend (compte, lu).
+
+    Deux `count()` exacts côté serveur — jamais `len(select(...))` : PostgREST
+    plafonne à 1000 lignes sans rien signaler et les agrégats côté serveur sont
+    désactivés ici (PGRST123). Un compte tronqué à 1000 dirait « il en reste »
+    pour toujours.
+
+      file    = contacts joignables et pas encore écartés (courriel présent,
+                statut new/ready) ;
+      servis  = messages sortants ENCORE VIVANTS (`status != 'failed'`), la
+                même définition qu'utilise l'éligibilité de WF-4 pour décider
+                qu'un contact est déjà pris.
+
+    ⚠️ C'est une ESTIMATION, et le message d'alerte l'écrit « ~ ». Elle repose
+    sur l'invariant que le pipeline maintient — au plus un message vivant par
+    contact (`already_drafted` dans `list_contacts_to_personalize`) — et elle
+    penche du côté prudent : les messages adressés à des contacts depuis
+    désabonnés sont soustraits d'une file qui ne les contient plus, donc le
+    reste est plutôt SOUS-estimé. Un chiffre approché suffit à trancher la
+    seule question posée ici : panne ou fin de liste ?
+
+    `lu=False` quand la lecture tombe. L'appelant traite ce cas comme suspect
+    plutôt que comme un zéro rassurant.
+    """
+    from . import supabase_client as sb
+
+    try:
+        file_active = await sb.count(
+            "contacts",
+            params={
+                "email": "not.is.null",
+                "status": "in.(new,ready)",
+                "track": f"eq.{track}",
+            },
+        )
+        servis = await sb.count(
+            "messages",
+            params={
+                "direction": "eq.outbound",
+                "status": "not.in.(failed)",
+                "track": f"eq.{track}",
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger("wf4").error("comptage des restants échoué — %r", e)
+        return 0, False
+    return max(0, file_active - servis), True
+
+
+async def _alerter_famine_wf4(
+    *, track: str, restants: int, compte_lu: bool, limite: int
+) -> bool:
+    """Crie sur #alertes qu'un lot WF-4 est reparti les mains vides.
+
+    Le message NOMME le nombre de leads restants : sans lui, « 0 draft » ne
+    distingue pas une panne d'une fin de liste, et une alerte qu'on ne peut pas
+    interpréter finit ignorée.
+
+    Rend le retour de Slack, comme `_alerter_wf5` : une alerte perdue qui se
+    croit partie est le pire des deux mondes.
+    """
+    from .lib import slack as slack_lib
+
+    if compte_lu:
+        corps = [
+            f"🚨 WF-4 famine — 0 draft rédigé alors qu'il reste ~{restants} "
+            f"contact(s) à approcher (track {track}).",
+            "Un lot vide sur une file qui ne l'est PAS est une panne, pas une "
+            "fin de liste.",
+            f"Piste connue : la sélection sur-lit les {limite * 5} plus vieux "
+            "contacts, et si tous ont déjà un draft le lot revient vide alors "
+            "que la file est pleine (famine WF-4, correctif à part).",
+        ]
+    else:
+        # Le nombre de restants est illisible : on crie quand même. Se taire
+        # ici, ce serait faire dépendre l'alerte de la santé de la lecture qui
+        # sert à la justifier.
+        corps = [
+            f"🚨 WF-4 famine — 0 draft rédigé (track {track}) et le nombre de "
+            "contacts restants est ILLISIBLE (lecture en échec, voir les logs).",
+            "Impossible de dire si c'est une panne ou une fin de liste : "
+            "traiter comme une panne.",
+        ]
+
+    envoyee = await slack_lib.notify(
+        text="\n".join(corps), context="wf4_famine", category="alerts",
+    )
+    if not envoyee:
+        logging.getLogger("wf4").error(
+            "alerte famine #alertes NON partie — track=%s restants=%s lu=%s",
+            track, restants, compte_lu,
+        )
+    return envoyee
 
 
 @app.post("/wf4/run", dependencies=[Depends(_require_auth)], response_model=RunWf4Out)
@@ -2115,10 +2231,30 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
             error_text=res.error_text,
         ))
 
+    # ------------------------------------------------------- Alerte de famine
+    # Zéro draft rédigé n'est pas forcément une bonne nouvelle : c'est soit la
+    # fin de la liste, soit une panne. On ne paie les deux `count()` que dans ce
+    # cas précis — un lot qui tourne n'a rien à demander de plus à la base.
+    alerte_famine_envoyee: bool | None = None
+    if len(items) == 0:
+        restants, compte_lu = await _compter_envoyables_restants(payload.track)
+        # `not compte_lu` d'ABORD : si le compte est illisible, on crie quand
+        # même. Sans ça, une panne de lecture ferait rendre 0, donc « fin de
+        # liste », donc silence — l'alerte se saborderait elle-même exactement
+        # au moment où quelque chose ne va pas.
+        if not compte_lu or _doit_alerter_famine(
+            processed=len(items), envoyables_restants=restants
+        ):
+            alerte_famine_envoyee = await _alerter_famine_wf4(
+                track=payload.track, restants=restants,
+                compte_lu=compte_lu, limite=payload.limit,
+            )
+
     return RunWf4Out(
         processed=len(items), drafts_created=drafts,
         skipped=skipped, failed=failed,
         slots_available=total_slots, items=items,
+        alerte_famine_envoyee=alerte_famine_envoyee,
     )
 
 
