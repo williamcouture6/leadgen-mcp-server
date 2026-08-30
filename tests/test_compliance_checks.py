@@ -23,6 +23,7 @@ from datetime import date
 import pytest
 
 from src.lib import compliance_checks as cc
+from tests.fixtures.corps_ac1 import CORPS_A, CORPS_B
 
 
 # ---------------- 1. legal_footer (LCAP) ----------------
@@ -233,33 +234,37 @@ def test_cta_slots_real_blocks_wrong_day() -> None:
     assert not r.passed
 
 
-# ---------------- 5. vouvoiement (culture business QC) ----------------
+# ---------------- 5. registre (cohérence tu/vous, pas un registre imposé) ----------------
 
-def test_vouvoiement_passes_proper_form() -> None:
-    body = "Bonjour, votre clinique m'intéresse. Avez-vous 15 minutes ?"
-    r = cc.check_vouvoiement(body)
-    assert r.passed
+def test_registre_agence_ia_accepte_le_tutoiement_coherent() -> None:
+    r = cc.check_registre(CORPS_A, track="agence-ia")
+    assert r.passed, r.message
 
 
-def test_vouvoiement_blocks_tutoiement() -> None:
-    body = "Salut, ta clinique m'intéresse. T'as 15 minutes ?"
-    r = cc.check_vouvoiement(body)
+def test_registre_agence_ia_accepte_le_template_b() -> None:
+    assert cc.check_registre(CORPS_B, track="agence-ia").passed
+
+
+def test_registre_opt_exige_le_vouvoiement() -> None:
+    corps = "Bonjour,\n\nVous avez sûrement remarqué que votre site.\n\n---\nWilliam"
+    assert cc.check_registre(corps, track="OPT").passed
+
+
+def test_registre_bloque_le_melange() -> None:
+    corps = "Bonjour,\n\nTon site est beau mais vous pouvez faire mieux, votre équipe.\n\n---\nWilliam"
+    r = cc.check_registre(corps, track="agence-ia")
     assert not r.passed
     assert r.severity == "block"
 
 
-def test_vouvoiement_blocks_insufficient_vous() -> None:
-    """Moins de 2 occurrences vous/votre → ton trop neutre, pas business."""
-    body = "Bonjour, intéressant. 15 minutes ?"  # 0 vous/votre
-    r = cc.check_vouvoiement(body)
-    assert not r.passed
+def test_registre_bloque_le_vouvoiement_sur_agence_ia() -> None:
+    corps = "Bonjour,\n\nVous avez sûrement remarqué que votre site.\n\n---\nWilliam"
+    assert not cc.check_registre(corps, track="agence-ia").passed
 
 
-def test_vouvoiement_blocks_mixed_with_tu() -> None:
-    """Même si 'vous' présent, un seul 'tu' brise le registre."""
-    body = "Bonjour, votre site est super. Tu as 15 minutes ? Votre équipe."
-    r = cc.check_vouvoiement(body)
-    assert not r.passed
+def test_registre_sans_track_retombe_sur_vous() -> None:
+    corps = "Bonjour,\n\nVous avez sûrement remarqué que votre site.\n\n---\nWilliam"
+    assert cc.check_registre(corps, track=None).passed
 
 
 # ---------------- 6. warmup_window (gate délivrabilité) ----------------

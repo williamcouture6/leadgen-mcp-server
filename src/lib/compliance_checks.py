@@ -392,23 +392,35 @@ def check_cta_slots_real(email_body: str, available_slots: list[dict] | None) ->
     )
 
 
-def check_vouvoiement(email_body: str) -> CheckResult:
-    body = _body_without_signature(email_body)
-    body_low = body.lower()
-    vous_count = len(re.findall(r"\bvous\b", body_low))
-    votre_count = len(re.findall(r"\b(votre|vos)\b", body_low))
+_REGISTRE_PAR_TRACK = {"agence-ia": "tu", "OPT": "vous"}
+
+
+def check_registre(email_body: str, track: str | None = None) -> CheckResult:
+    """Exige la COHÉRENCE du registre, pas un registre en particulier.
+
+    Le défaut réel est le mélange (« ton site » puis « vous pouvez »), qui
+    révèle un gabarit mal assemblé. Le registre attendu se dérive du track :
+    `agence-ia` tutoie (décision du pivot), `OPT` vouvoie. Un track inconnu
+    retombe sur `vous` — le comportement historique.
+    """
+    body_low = _body_without_signature(email_body).lower()
+    vous_hits = re.findall(r"\b(vous|votre|vos)\b", body_low)
     tu_hits = re.findall(r"\b(tu|t'as|t'es|tes|ton|ta)\b", body_low)
-    has_vouv = vous_count + votre_count >= 2
-    passed = has_vouv and not tu_hits
-    msg_parts = [f"vous={vous_count}", f"votre/vos={votre_count}"]
-    if tu_hits:
-        msg_parts.append(f"tutoiement={tu_hits}")
+    attendu = _REGISTRE_PAR_TRACK.get(track or "", "vous")
+
+    if attendu == "tu":
+        passed = bool(tu_hits) and not vous_hits
+        intrus = vous_hits
+    else:
+        passed = len(vous_hits) >= 2 and not tu_hits
+        intrus = tu_hits
+
     return CheckResult(
-        name="vouvoiement",
+        name="registre",
         passed=passed,
         severity="block",
-        message=" ".join(msg_parts),
-        matches=tu_hits if tu_hits else ([] if has_vouv else ["vouvoiement insuffisant"]),
+        message=f"registre attendu={attendu} tu={len(tu_hits)} vous={len(vous_hits)}",
+        matches=[] if passed else (intrus or [f"registre {attendu} insuffisant"]),
     )
 
 
@@ -419,6 +431,7 @@ def run_all(
     template: str | None = None,
     email_subject: str | None = None,
     appended_footer: str = "",
+    track: str | None = None,
 ) -> list[CheckResult]:
     return [
         check_warmup_window(),
@@ -433,5 +446,5 @@ def run_all(
         check_length(email_body, template=template),
         check_cta_present(email_body),
         check_cta_slots_real(email_body, available_slots),
-        check_vouvoiement(email_body),
+        check_registre(email_body, track=track),
     ]
