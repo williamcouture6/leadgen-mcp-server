@@ -643,7 +643,15 @@ async def list_contacts_to_personalize(
     companies = await db.select(
         "companies",
         params={
-            "select": "id,name,domain,website,city,icp_segment,industry,research_json,track",
+            # google_rating / google_reviews_count : l'ancre factuelle du bloc 2
+            # (AC1b). Sans elles ici, tout le reste du câblage lit None en
+            # silence et le bloc saute 255 fois sur 255.
+            # google_place_id : la garde « sans site » (une entreprise sans
+            # website n'est démarchée que si sa fiche Google est exploitable).
+            "select": (
+                "id,name,domain,website,city,icp_segment,industry,research_json,track,"
+                "google_rating,google_reviews_count,google_place_id"
+            ),
             "id": f"in.({','.join(company_ids)})",
         },
     )

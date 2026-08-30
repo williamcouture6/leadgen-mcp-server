@@ -29,6 +29,7 @@ from anthropic import Anthropic, APIConnectionError, APIStatusError, RateLimitEr
 from pydantic import BaseModel
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from ..lib.avis import bloc_faits_verifies
 from ..lib.compliance_checks import CheckResult, run_all
 from .research import sans_diagnostic
 
@@ -53,6 +54,43 @@ def _is_transient_anthropic_error(exc: BaseException) -> bool:
     return False
 
 
+def _message_utilisateur_juge(
+    body: str,
+    subject: str,
+    research_json: dict[str, Any] | None,
+    social_proof: list[dict[str, Any]] | None,
+    contact: dict[str, Any] | None = None,
+    google_rating: float | None = None,
+    google_reviews_count: int | None = None,
+) -> str:
+    """Ce que le juge voit. Extrait en fonction pure pour être testable sans
+    appeler Anthropic — un bloc qui disparaît du prompt doit casser un test,
+    pas une campagne."""
+    return (
+        f"## Email à juger\n\n"
+        f"**Sujet**: {subject}\n\n"
+        f"**Corps**:\n{body}\n\n"
+        # 🔴 Les avis AVANT tout le reste. Sans la valeur de colonne sous les
+        # yeux, le juge ne peut pas déclarer un chiffre inventé : il n'a aucun
+        # moyen de savoir. C'est le bug de 0732d20, où il ne voyait pas la
+        # fiche contact et criait au contact_mismatch sur des noms vrais.
+        f"{bloc_faits_verifies(google_rating, google_reviews_count)}\n\n"
+        f"## Destinataire (contact vérifié — source de vérité de l'identité)\n"
+        f"```json\n{json.dumps(contact or {}, ensure_ascii=False, indent=2)}\n```\n"
+        f"Le prénom/nom/titre ci-dessus viennent de la fiche contact vérifiée "
+        f"(`email_source`: website_scrape = site officiel ; apollo = contact vérifié hérité). "
+        f"Ils sont ANCRÉS par cette fiche — ne les traite JAMAIS comme un fait inventé "
+        f"ni un contact_mismatch même s'ils n'apparaissent pas dans le research_json.\n\n"
+        f"## research_json (faits vérifiables sur l'ENTREPRISE — pas l'identité du contact)\n"
+        # `sans_diagnostic` retire la télémétrie du scraper d'emails : le juge
+        # n'a pas à voir des compteurs de rejets ni des adresses tierces jetées
+        # (bruit + risque de faux contact_mismatch).
+        f"```json\n{json.dumps(sans_diagnostic(research_json), ensure_ascii=False, indent=2)}\n```\n\n"
+        f"## social_proof disponible\n"
+        f"```json\n{json.dumps(social_proof or [], ensure_ascii=False, indent=2)}\n```\n"
+    )
+
+
 @retry(
     retry=retry_if_exception(_is_transient_anthropic_error),
     wait=wait_exponential(multiplier=2, min=4, max=60),
@@ -67,29 +105,17 @@ def _llm_judge(
     contact: dict[str, Any] | None = None,
     model: str = _DEFAULT_MODEL,
     max_tokens: int = 2500,
+    google_rating: float | None = None,
+    google_reviews_count: int | None = None,
 ) -> dict[str, Any]:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY non défini")
     client = Anthropic(api_key=api_key)
     system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
-    user = (
-        f"## Email à juger\n\n"
-        f"**Sujet**: {subject}\n\n"
-        f"**Corps**:\n{body}\n\n"
-        f"## Destinataire (contact vérifié — source de vérité de l'identité)\n"
-        f"```json\n{json.dumps(contact or {}, ensure_ascii=False, indent=2)}\n```\n"
-        f"Le prénom/nom/titre ci-dessus viennent de la fiche contact vérifiée "
-        f"(`email_source`: website_scrape = site officiel ; apollo = contact vérifié hérité). "
-        f"Ils sont ANCRÉS par cette fiche — ne les traite JAMAIS comme un fait inventé "
-        f"ni un contact_mismatch même s'ils n'apparaissent pas dans le research_json.\n\n"
-        f"## research_json (faits vérifiables sur l'ENTREPRISE — pas l'identité du contact)\n"
-        # `sans_diagnostic` retire la télémétrie du scraper d'emails : le juge
-        # n'a pas à voir des compteurs de rejets ni des adresses tierces jetées
-        # (bruit + risque de faux contact_mismatch).
-        f"```json\n{json.dumps(sans_diagnostic(research_json), ensure_ascii=False, indent=2)}\n```\n\n"
-        f"## social_proof disponible\n"
-        f"```json\n{json.dumps(social_proof or [], ensure_ascii=False, indent=2)}\n```\n"
+    user = _message_utilisateur_juge(
+        body, subject, research_json, social_proof, contact,
+        google_rating, google_reviews_count,
     )
     resp = client.messages.create(
         model=model,
@@ -149,6 +175,8 @@ async def compliance_check(
     model: str = _DEFAULT_MODEL,
     track: str | None = None,
     tentatives: int = 0,
+    google_rating: float | None = None,
+    google_reviews_count: int | None = None,
 ) -> ComplianceCheckOut:
     """Lance les 2 layers de compliance sur un draft donné.
 
@@ -183,6 +211,8 @@ async def compliance_check(
         email_subject=subject,
         appended_footer=appended_footer,
         track=track,
+        google_rating=google_rating,
+        google_reviews_count=google_reviews_count,
     )
     det_blockers = [r for r in det_results if not r.passed and r.severity == "block"]
     det_warnings = [r for r in det_results if not r.passed and r.severity == "warn"]
@@ -205,6 +235,7 @@ async def compliance_check(
         try:
             llm_verdict = await asyncio.to_thread(
                 _llm_judge, body, subject, research_json, social_proof, contact, model,
+                2500, google_rating, google_reviews_count,
             )
         except Exception as e:  # noqa: BLE001
             llm_verdict = {"error": f"LLM judge failed: {type(e).__name__}: {e}"}

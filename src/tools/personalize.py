@@ -21,6 +21,7 @@ from typing import Any
 from anthropic import Anthropic
 from pydantic import BaseModel
 
+from ..lib.avis import bloc_faits_verifies
 from . import research as research_tools
 
 # ----------------------------------------------------------------------
@@ -68,6 +69,9 @@ def _format_input_for_llm(
     parts = [
         f"## Template à utiliser\n{template_choice}",
         f"\n## Entreprise ciblée\nname: {place_name}\nwebsite: {website}",
+        "\n" + bloc_faits_verifies(
+            company.get("google_rating"), company.get("google_reviews_count")
+        ),
         f"\n## research_json (Research Agent output)\n```json\n{json.dumps(research, ensure_ascii=False, indent=2)}\n```",
     ]
 

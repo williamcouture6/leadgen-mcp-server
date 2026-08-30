@@ -1917,6 +1917,12 @@ async def _personalize_one(
                     "city": company_row.get("city"),
                     "icp_segment": company_row.get("icp_segment"),
                     "industry": company_row.get("industry"),
+                    # L'ancre factuelle du bloc 2 (AC1b). Absentes ici, le
+                    # redacteur n'a aucun chiffre a citer et le bloc saute
+                    # 255 fois sur 255 -- ou pire, il en invente un.
+                    "google_rating": company_row.get("google_rating"),
+                    "google_reviews_count": company_row.get("google_reviews_count"),
+                    "google_place_id": company_row.get("google_place_id"),
                 },
                 contact=_contact_for_prompt(contact_row),
                 social_proof=social_proof,
@@ -2548,7 +2554,12 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
     company_rows = await db.select(
         "companies",
         params={
-            "select": "research_json,track",
+            # google_rating / google_reviews_count : le juge et
+            # `check_avis_conformes` en ont besoin pour savoir si un chiffre
+            # annonce dans le corps est vrai. Sans elles ici, ils arrivent a
+            # None et TOUT corps portant une note est bloque -- fail-closed,
+            # mais aucun courriel ne part.
+            "select": "research_json,track,google_rating,google_reviews_count",
             "id": f"eq.{company_id}",
             "limit": "1",
         },
@@ -2560,6 +2571,10 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
     # registre que le corps n'a peut-être pas. `None` laisse `check_registre`
     # sur son défaut historique (`vous`), ce qui est fail-closed.
     track = (company_rows[0].get("track") if company_rows else None)
+    google_rating = (company_rows[0].get("google_rating") if company_rows else None)
+    google_reviews_count = (
+        company_rows[0].get("google_reviews_count") if company_rows else None
+    )
 
     # 2) Charger le contexte du draft (template + slots) depuis agent_runs
     template_used: str | None = None
@@ -2610,6 +2625,8 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             model=payload.model,
             track=track,
             tentatives=msg.get("compliance_tentatives"),
+            google_rating=google_rating,
+            google_reviews_count=google_reviews_count,
         )
     except Exception as e:  # noqa: BLE001
         return compliance_tools.ComplianceCheckOut(
