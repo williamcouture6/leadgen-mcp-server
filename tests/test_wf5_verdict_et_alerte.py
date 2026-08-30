@@ -51,6 +51,15 @@ def test_patch_pose_passed_true_sur_approved():
     assert _patch_verdict_conformite("approved", tentatives_avant=0)["compliance_check_passed"] is True
 
 
+def test_patch_sort_l_orphelin_du_lot():
+    """Un message orphelin est une anomalie de DONNÉES : le re-juger cent fois
+    ne le réparera jamais. `passed = false` est ce qui le sort du lot, dont la
+    requête ne cherche que `is.null`."""
+    p = _patch_verdict_conformite("orphelin", tentatives_avant=0)
+    assert p["compliance_check_passed"] is False
+    assert p["compliance_verdict"] == "orphelin"
+
+
 def test_patch_pose_passed_false_sur_refus():
     assert _patch_verdict_conformite("needs_revision", tentatives_avant=1)["compliance_check_passed"] is False
 
@@ -82,6 +91,12 @@ def test_alerte_wf5_se_declenche_sur_refus():
 
 def test_alerte_wf5_se_declenche_sur_blocage():
     assert _doit_alerter_wf5(needs_revision=0, blocked=2, non_juge=0)
+
+
+def test_alerte_wf5_se_declenche_sur_orphelin_seul():
+    """Sortir un orphelin du lot SANS le dire le rendrait invisible pour
+    toujours : c'est la dernière passe qui le voit."""
+    assert _doit_alerter_wf5(needs_revision=0, blocked=0, non_juge=0, orphelins=1)
 
 
 # =====================================================================
@@ -137,6 +152,14 @@ def test_regle_nomme_le_warning_deterministe():
     assert _regle_qui_a_tranche(out) == "length"
 
 
+def test_regle_nomme_le_motif_de_l_orphelin():
+    """« orphelin [orphelin] » n'apprendrait rien à qui lit l'alerte : c'est le
+    MOTIF qui dit où chercher en base."""
+    out = _out(verdict="orphelin", send_decision="DO_NOT_SEND",
+               error_text="contact_not_found")
+    assert _regle_qui_a_tranche(out) == "contact_not_found"
+
+
 def test_regle_retombe_sur_le_verdict_si_rien_ne_le_nomme():
     assert _regle_qui_a_tranche(_out(verdict="approved")) == "approved"
 
@@ -161,6 +184,7 @@ def _socle_check(
     track_en_base: str | None = "agence-ia",
     company_absente: bool = False,
     contact_absent: bool = False,
+    message_absent: bool = False,
     update_leve: bool = False,
     update_rend_vide: bool = False,
 ) -> dict[str, Any]:
@@ -186,7 +210,7 @@ def _socle_check(
 
     async def fake_select(table, *, params=None, schema=None, **kw):
         if table == "messages":
-            return [_projeter(ligne_message, params)]
+            return [] if message_absent else [_projeter(ligne_message, params)]
         if table == "contacts":
             return [] if contact_absent else [_projeter(ligne_contact, params)]
         if table == "companies":
@@ -294,13 +318,94 @@ async def test_ecriture_reussie_ne_salit_pas_le_journal(monkeypatch):
     assert out.error_text is None
 
 
+# =====================================================================
+# Le message orphelin : la boucle infinie du lot quotidien
+# =====================================================================
+#
+# Le défaut mesuré : quand un message n'a pas de contact rattaché, la route
+# sortait tôt avec `verdict="error"` SANS RIEN ÉCRIRE. `compliance_tentatives`
+# n'était jamais incrémenté et `compliance_check_passed` restait NULL — or la
+# requête du lot ne cherche QUE `is.null`. Le message revenait donc tous les
+# jours, indéfiniment, sans jamais atteindre le plafond des 3 tentatives, en
+# consommant une place du lot à chaque passe et sans que rien ne le dise.
+
+
 @pytest.mark.asyncio
 async def test_message_sans_contact_ne_juge_rien(monkeypatch):
+    """Le juge n'est pas appelé : sans contact, il n'y a rien à inspecter."""
     cap = _socle_check(monkeypatch, contact_absent=True)
+    await http_api.compliance_check(ComplianceCheckIn(message_id="msg-1"))
+    assert cap["appels"] == {}, "le juge LLM ne doit pas être payé pour ça"
+
+
+@pytest.mark.asyncio
+async def test_message_sans_contact_sort_du_lot(monkeypatch):
+    """`compliance_check_passed = false` est ce qui ferme la boucle : la
+    requête du lot ne cherche que `is.null`."""
+    cap = _socle_check(monkeypatch, contact_absent=True)
+    await http_api.compliance_check(ComplianceCheckIn(message_id="msg-1"))
+    assert len(cap["maj"]) == 1, "le verdict d'un orphelin DOIT s'écrire"
+    patch = cap["maj"][0]["patch"]
+    assert patch["compliance_check_passed"] is False
+    assert patch["compliance_verdict"] == "orphelin"
+    assert patch["compliance_tentatives"] == 1
+
+
+@pytest.mark.asyncio
+async def test_orphelin_est_un_verdict_a_lui_seul(monkeypatch):
+    """Pas `error` (la passe n'a pas planté) et pas `needs_revision` (la copie
+    n'est pas en cause) : c'est une anomalie de DONNÉES."""
+    _socle_check(monkeypatch, contact_absent=True)
     out = await http_api.compliance_check(ComplianceCheckIn(message_id="msg-1"))
-    assert out.verdict == "error"
+    assert out.verdict == "orphelin"
+    assert out.send_decision == "DO_NOT_SEND"
     assert out.error_text == "contact_not_found"
-    assert cap["maj"] == [], "aucun verdict ne s'écrit sur une erreur de fetch"
+
+
+@pytest.mark.asyncio
+async def test_la_note_de_l_orphelin_dit_pourquoi(monkeypatch):
+    """La trace durable : `compliance_notes` se relit en base des mois plus
+    tard, quand le ping Slack du jour est oublié depuis longtemps."""
+    cap = _socle_check(monkeypatch, contact_absent=True)
+    await http_api.compliance_check(ComplianceCheckIn(message_id="msg-1"))
+    notes = cap["maj"][0]["patch"]["compliance_notes"]
+    assert "ORPHELIN" in notes
+    assert "contact_not_found" in notes
+
+
+@pytest.mark.asyncio
+async def test_orphelin_en_dry_run_n_ecrit_rien(monkeypatch):
+    cap = _socle_check(monkeypatch, contact_absent=True)
+    await http_api.compliance_check(
+        ComplianceCheckIn(message_id="msg-1", persist=False)
+    )
+    assert cap["maj"] == []
+
+
+@pytest.mark.asyncio
+async def test_message_disparu_ne_tente_pas_d_ecrire(monkeypatch):
+    """La ligne n'existe plus : il n'y a rien à marquer, et un `update` sur
+    zéro ligne ne ferait qu'ajouter un faux « persist_failed » au journal. Le
+    verdict reste `orphelin` pour que la passe le NOMME quand même."""
+    cap = _socle_check(monkeypatch, message_absent=True)
+    out = await http_api.compliance_check(ComplianceCheckIn(message_id="msg-1"))
+    assert out.verdict == "orphelin"
+    assert out.error_text == "message_not_found"
+    assert cap["maj"] == []
+
+
+@pytest.mark.asyncio
+async def test_le_non_juge_lui_revient_toujours_dans_le_lot(monkeypatch):
+    """Les deux cas DOIVENT coexister : le juge en panne repasse demain
+    (`passed` reste NULL), l'orphelin sort pour de bon (`passed = false`).
+    Fermer la boucle de l'un ne doit pas fermer celle de l'autre."""
+    cap_panne = _socle_check(monkeypatch, verdict="non_juge")
+    await http_api.compliance_check(ComplianceCheckIn(message_id="msg-1"))
+    assert "compliance_check_passed" not in cap_panne["maj"][0]["patch"]
+
+    cap_orphelin = _socle_check(monkeypatch, contact_absent=True)
+    await http_api.compliance_check(ComplianceCheckIn(message_id="msg-1"))
+    assert cap_orphelin["maj"][0]["patch"]["compliance_check_passed"] is False
 
 
 # =====================================================================
@@ -431,6 +536,38 @@ async def test_wf5_lot_vide_ne_crie_pas(monkeypatch):
     assert cap["pings"] == []
     assert out.processed == 0
     assert out.alerte_envoyee is None
+
+
+@pytest.mark.asyncio
+async def test_wf5_compte_les_orphelins_a_part(monkeypatch):
+    """Ni `errors` (la passe n'a pas planté) ni `blocked` (la copie n'est pas
+    en cause) : fondu dans l'un ou l'autre, un orphelin enverrait relire un
+    courriel alors que le défaut est en base."""
+    _socle_wf5(monkeypatch, verdicts=[
+        ("a", _res("a", "approved")),
+        ("b", _res("b", "orphelin", error_text="contact_not_found")),
+    ])
+    out = await http_api.run_wf5(RunWf5In(limit=10))
+    assert out.orphelins == 1
+    assert out.errors == 0
+    assert out.blocked == 0
+    assert out.approved == 1
+
+
+@pytest.mark.asyncio
+async def test_wf5_crie_le_message_id_de_l_orphelin(monkeypatch):
+    """La boucle se ferme ET se dit : c'est la dernière fois que ce message
+    passe devant la conformité, donc la dernière occasion de le nommer."""
+    cap = _socle_wf5(monkeypatch, verdicts=[
+        ("id-orphelin", _res("id-orphelin", "orphelin", error_text="contact_not_found")),
+    ])
+    out = await http_api.run_wf5(RunWf5In(limit=10))
+    assert len(cap["pings"]) == 1
+    texte = cap["pings"][0]["text"]
+    assert "id-orphelin" in texte
+    assert "contact_not_found" in texte
+    assert "orphelin : 1" in texte
+    assert out.alerte_envoyee is True
 
 
 @pytest.mark.asyncio

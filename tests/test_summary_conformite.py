@@ -53,6 +53,27 @@ def test_ligne_resume_conformite_sans_non_juge():
     )
 
 
+def test_un_orphelin_seul_parle_quand_meme():
+    """L'orphelin sort du lot pour de bon (`passed = false`), donc `/wf5/run`
+    ne le reverra jamais et ne le criera qu'UNE fois. Si ce ping-là se rate,
+    cette ligne est la seule chose qui reste — sinon fermer la boucle rendrait
+    l'anomalie MOINS visible que la boucle qu'elle remplace."""
+    ligne = _ligne_resume_conformite(refuses=0, a_relire=0, non_juges=0, orphelins=1)
+    assert ligne == (
+        "🚫 *Conformité* — 0 drafts refusés (dont 0 à relire) · "
+        "🧩 1 sans contact rattaché"
+    )
+
+
+def test_l_orphelin_n_est_pas_fondu_dans_les_refuses():
+    """Un refus est un défaut de COPIE, réparable en réécrivant. Un orphelin
+    est un défaut de DONNÉES : envoyer relire le courriel serait envoyer
+    chercher dans le mauvais fichier."""
+    ligne = _ligne_resume_conformite(refuses=2, a_relire=2, non_juges=0, orphelins=3)
+    assert "2 drafts refusés" in ligne
+    assert "3 sans contact rattaché" in ligne
+
+
 def test_un_non_juge_seul_parle_quand_meme():
     """Zéro refus mais un corps jamais inspecté : c'est la panne la plus grave
     (des courriels qui partiraient sans relecture) et c'est la seule qui ne
@@ -65,7 +86,7 @@ def test_un_non_juge_seul_parle_quand_meme():
 # A2 — le câblage dans /summary/daily
 # =====================================================================
 
-def _socle(monkeypatch, *, refuses=0, a_relire=0, non_juges=0,
+def _socle(monkeypatch, *, refuses=0, a_relire=0, non_juges=0, orphelins=0,
            lecture_leve=False, appels=None):
     """Les compteurs de conformité sont les SEULS que ce socle sert : tout le
     reste du résumé rend 0 pour que le texte reste lisible."""
@@ -88,6 +109,8 @@ def _socle(monkeypatch, *, refuses=0, a_relire=0, non_juges=0,
             return a_relire
         if verdict == "eq.non_juge":
             return non_juges
+        if verdict == "eq.orphelin":
+            return orphelins
         raise AssertionError(f"filtre de verdict inattendu: {verdict}")
 
     async def fake_select_all(table, order=None, params=None, schema=None, **kw):
@@ -120,8 +143,14 @@ async def test_la_ligne_apparait_dans_le_resume(monkeypatch):
         in out["text"]
     )
     assert out["totals"]["conformite"] == {
-        "refuses": 4, "a_relire": 3, "non_juges": 1, "lu": True,
+        "refuses": 4, "a_relire": 3, "non_juges": 1, "orphelins": 0, "lu": True,
     }
+
+
+async def test_l_orphelin_apparait_dans_le_resume(monkeypatch):
+    out = await _resume(_socle(monkeypatch, orphelins=2))
+    assert "🧩 2 sans contact rattaché" in out["text"]
+    assert out["totals"]["conformite"]["orphelins"] == 2
 
 
 async def test_rien_a_dire_rien_d_affiche(monkeypatch):
@@ -149,7 +178,7 @@ async def test_le_compte_passe_par_count_et_jamais_par_len_select(monkeypatch):
     monkeypatch.setattr(sb, "select", espion_select)
     await _resume(http_api)
 
-    assert len(appels) == 3, "trois compteurs, trois count() exacts"
+    assert len(appels) == 4, "quatre compteurs, quatre count() exacts"
     assert all(a["table"] == "messages" for a in appels)
     assert not any(t == "messages" for t in selects), (
         "aucun select sur messages : le compte se fait côté serveur"

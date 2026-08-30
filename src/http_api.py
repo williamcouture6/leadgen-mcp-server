@@ -390,10 +390,21 @@ def _identite_lead(row: dict[str, Any]) -> str:
 # Verdicts de conformité qui rendent un draft NON envoyable. `approved` n'y est
 # évidemment pas ; NULL non plus — un draft jamais jugé n'est pas un refus, il
 # attend son tour dans le lot de /wf5/run.
+#
+# `orphelin` n'y est pas non plus, et c'est délibéré : un refus est un défaut de
+# COPIE, réparable en réécrivant le courriel ; un orphelin est un défaut de
+# DONNÉES. Fondus ensemble, ils enverraient relire un corps alors que le défaut
+# est en base. Il a sa propre ligne dans le résumé, comme `non_juge`.
 _VERDICTS_REFUS = ("needs_revision", "blocked")
 
+# Le message n'a pas de quoi être jugé : pas de contact rattaché, ou sa propre
+# ligne a disparu. Voir `_out_orphelin` pour la boucle que ça referme.
+_VERDICT_ORPHELIN = "orphelin"
 
-def _ligne_resume_conformite(*, refuses: int, a_relire: int, non_juges: int) -> str:
+
+def _ligne_resume_conformite(
+    *, refuses: int, a_relire: int, non_juges: int, orphelins: int = 0
+) -> str:
     """La ligne « conformité » du résumé quotidien, ou la chaîne vide.
 
     Le ping #alertes de `/wf5/run` dit l'INSTANT ; cette ligne dit l'ÉTAT. Les
@@ -409,12 +420,20 @@ def _ligne_resume_conformite(*, refuses: int, a_relire: int, non_juges: int) -> 
     refus : le corps n'a PAS été inspecté. Fondu dans `refuses`, le mode d'échec
     le plus grave (des courriels jamais relus) se déguiserait en travail de
     relecture ordinaire.
+
+    `orphelins` est annoncé à part pour la raison symétrique : le corps est
+    peut-être parfait, c'est la DONNÉE qui manque (pas de contact rattaché). Et
+    surtout, c'est le seul compteur des trois dont l'alerte ne se répétera
+    jamais : un orphelin sort du lot dès la première passe, donc `/wf5/run` ne
+    le criera qu'une fois. Cette ligne-ci est ce qui reste après.
     """
-    if refuses + non_juges == 0:
+    if refuses + non_juges + orphelins == 0:
         return ""
     ligne = f"🚫 *Conformité* — {refuses} drafts refusés (dont {a_relire} à relire)"
     if non_juges:
         ligne += f" · ⚠️ {non_juges} jamais inspecté"
+    if orphelins:
+        ligne += f" · 🧩 {orphelins} sans contact rattaché"
     return ligne
 
 
@@ -851,6 +870,10 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         non_juges = await sb.count(
             "messages", params={**vivants, "compliance_verdict": "eq.non_juge"},
         )
+        orphelins = await sb.count(
+            "messages",
+            params={**vivants, "compliance_verdict": f"eq.{_VERDICT_ORPHELIN}"},
+        )
         lecture_conformite_ok = True
     except Exception as e:  # noqa: BLE001
         # Fail-soft, JAMAIS silencieux — même règle que le carnet des leads
@@ -859,12 +882,13 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         # est très exactement le mode d'échec que cette ligne existe pour
         # éteindre.
         print(f"[summary] lecture des verdicts de conformité échouée: {e!r}")
-        refuses = a_relire = non_juges = 0
+        refuses = a_relire = non_juges = orphelins = 0
         lecture_conformite_ok = False
 
     totals["conformite"] = {
         "refuses": refuses, "a_relire": a_relire,
-        "non_juges": non_juges, "lu": lecture_conformite_ok,
+        "non_juges": non_juges, "orphelins": orphelins,
+        "lu": lecture_conformite_ok,
     }
     if not lecture_conformite_ok:
         text += (
@@ -875,6 +899,7 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     else:
         ligne_conformite = _ligne_resume_conformite(
             refuses=refuses, a_relire=a_relire, non_juges=non_juges,
+            orphelins=orphelins,
         )
         if ligne_conformite:
             text += "\n" + ligne_conformite
@@ -2293,6 +2318,11 @@ def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dic
     anti-boucle des 3 tentatives ne serait jamais atteinte et une panne
     passagère du juge deviendrait un refus définitif.
 
+    `orphelin` prend la route inverse de `non_juge` — `passed = false`, donc le
+    message QUITTE le lot. C'est voulu : il n'a pas de quoi être jugé (pas de
+    contact rattaché), et ça ne se réparera pas tout seul. `non_juge` attend une
+    panne passagère ; l'orphelin attend une correction en base.
+
     `tentatives_avant` tolère `None` : `compliance_tentatives` absent d'un
     SELECT rend None, et `None + 1` ferait avorter toute la passe.
     """
@@ -2305,14 +2335,21 @@ def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dic
     return patch
 
 
-def _doit_alerter_wf5(*, needs_revision: int, blocked: int, non_juge: int) -> bool:
+def _doit_alerter_wf5(
+    *, needs_revision: int, blocked: int, non_juge: int, orphelins: int = 0
+) -> bool:
     """`non_juge` est dans la condition, et ce n'est pas un détail.
 
     Sans lui, la panne la plus grave — celle qui laisse passer des courriels
     jamais relus — serait la seule à ne pas crier : elle ne produit ni
     `needs_revision` ni `blocked`.
+
+    `orphelins` y est pour une raison encore plus dure : c'est le seul verdict
+    dont le message ne repassera JAMAIS devant la conformité (il en sort avec
+    `passed = false`). Hors de cette condition, l'unique occasion de le nommer
+    serait manquée et l'anomalie deviendrait invisible.
     """
-    return (needs_revision + blocked + non_juge) > 0
+    return (needs_revision + blocked + non_juge + orphelins) > 0
 
 
 def _regle_qui_a_tranche(out: compliance_tools.ComplianceCheckOut) -> str:
@@ -2323,6 +2360,10 @@ def _regle_qui_a_tranche(out: compliance_tools.ComplianceCheckOut) -> str:
     `needs_revision`, et « length » à la place de « juge injoignable »
     enverrait chercher le défaut dans le mauvais fichier.
     """
+    if out.verdict == _VERDICT_ORPHELIN:
+        # « orphelin [orphelin] » n'apprendrait rien : c'est le MOTIF qui dit
+        # où chercher (le contact rattaché ? la ligne du message ?).
+        return out.error_text or _VERDICT_ORPHELIN
     juge = out.llm_judge or {}
     if juge.get("error"):
         return "juge_llm_injoignable"
@@ -2333,6 +2374,77 @@ def _regle_qui_a_tranche(out: compliance_tools.ComplianceCheckOut) -> str:
     if out.deterministic_warnings:
         return str(out.deterministic_warnings[0].get("name") or "layer1")
     return out.verdict
+
+
+_MOTIFS_ORPHELIN = {
+    "contact_not_found": "aucun contact rattaché à ce message",
+    "message_not_found": "la ligne du message n'existe plus",
+}
+
+
+def _out_orphelin(message_id: str, motif: str) -> compliance_tools.ComplianceCheckOut:
+    """Le verdict d'un message qui n'a pas de quoi être jugé.
+
+    Ni `error` (la passe n'a pas planté, elle a très bien fonctionné) ni
+    `needs_revision` (la copie n'est pas en cause) : c'est une anomalie de
+    DONNÉES, et la nommer autrement enverrait chercher le défaut dans le
+    mauvais fichier.
+    """
+    detail = _MOTIFS_ORPHELIN.get(motif, "le message n'a pas de quoi être jugé")
+    return compliance_tools.ComplianceCheckOut(
+        message_id=message_id,
+        verdict=_VERDICT_ORPHELIN,
+        send_decision="DO_NOT_SEND",
+        reasoning=(
+            f"{motif} : {detail}. Anomalie de DONNÉES, pas de copie — le "
+            "re-juger cent fois ne le réparerait jamais. Sorti du lot de "
+            "conformité (compliance_check_passed=false) : à réparer en base, "
+            "ou à retirer en passant le message en status='failed'."
+        ),
+        error_text=motif,
+    )
+
+
+async def _persister_verdict_conformite(
+    out: compliance_tools.ComplianceCheckOut,
+    *,
+    message_id: str,
+    tentatives_avant: int | None,
+) -> compliance_tools.ComplianceCheckOut:
+    """Écrit le verdict sur `messages`, et RAPPORTE l'échec dans `out.error_text`.
+
+    Le retour de l'écriture se LIT. L'ancien `except: pass` rendait un verdict
+    qui se croyait persisté alors que rien n'avait bougé en base — le mode
+    d'échec exact que 1bfb918 et 57edcaf ont déjà eu à refermer côté WF-7.
+    Ici c'est fail-safe côté envoi (une écriture ratée laisse `passed` NULL,
+    donc rien ne part), mais l'invisible reste invisible : le `message_id`
+    doit finir dans le journal de la passe, que `run_wf5` recopie dans ses
+    items et dans l'alerte.
+    """
+    from . import supabase_client as db
+
+    echec_persist: str | None = None
+    try:
+        patch = _patch_verdict_conformite(out.verdict, tentatives_avant)
+        patch["compliance_notes"] = compliance_tools.format_compliance_notes(out)
+        lignes = await db.update(
+            "messages", patch, filters={"id": f"eq.{message_id}"},
+        )
+        # PostgREST rend [] quand AUCUNE ligne n'a matché : pas d'exception,
+        # pas d'erreur, mais rien d'écrit non plus.
+        if not lignes:
+            echec_persist = "aucune ligne touchée"
+    except Exception as e:  # noqa: BLE001
+        echec_persist = repr(e)
+
+    if echec_persist:
+        logging.getLogger("wf5").error(
+            "persist_failed message_id=%s verdict=%s — %s",
+            message_id, out.verdict, echec_persist,
+        )
+        marqueur = f"persist_failed: {echec_persist}"
+        out.error_text = f"{out.error_text} · {marqueur}" if out.error_text else marqueur
+    return out
 
 
 class ComplianceCheckIn(BaseModel):
@@ -2373,11 +2485,15 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
         },
     )
     if not msgs:
-        return compliance_tools.ComplianceCheckOut(
-            message_id=payload.message_id, verdict="error",
-            send_decision="DO_NOT_SEND",
-            error_text="message_not_found",
+        # Rien à marquer : la ligne n'existe plus, et un `update` sur zéro ligne
+        # n'ajouterait qu'un faux « persist_failed » au journal. Le verdict est
+        # quand même `orphelin` (et pas `error`) pour que la passe le NOMME dans
+        # son alerte — c'est la seule trace possible quand il n'y a plus de
+        # ligne où en laisser une.
+        logging.getLogger("wf5").error(
+            "orphelin message_id=%s — message_not_found", payload.message_id,
         )
+        return _out_orphelin(payload.message_id, "message_not_found")
     msg = msgs[0]
 
     contact_id = msg.get("contact_id")
@@ -2390,11 +2506,33 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
         },
     ) if contact_id else []
     if not contact_rows:
-        return compliance_tools.ComplianceCheckOut(
-            message_id=payload.message_id, verdict="error",
-            send_decision="DO_NOT_SEND",
-            error_text="contact_not_found",
+        # LA BOUCLE QUE ÇA REFERME. Avant, on sortait ici avec `verdict="error"`
+        # SANS RIEN ÉCRIRE : `compliance_tentatives` n'était jamais incrémenté et
+        # `compliance_check_passed` restait NULL. Or la requête du lot ne cherche
+        # QUE `is.null` — le message revenait donc tous les jours, indéfiniment,
+        # en consommant une place du lot quotidien à chaque passe, sans jamais
+        # atteindre le plafond des 3 tentatives censé l'en sortir, et sans que
+        # rien nulle part ne le dise.
+        #
+        # On le sort tout de suite au lieu de le re-juger trois fois : un
+        # orphelin est une anomalie de DONNÉES, et trois passes n'en répareront
+        # aucune. Mais le sortir SANS LE DIRE le rendrait invisible, d'où la
+        # trace en trois endroits qui se relisent tous : `compliance_notes` +
+        # `compliance_verdict` en base, le `message_id` dans l'alerte #alertes
+        # de /wf5/run, et le compteur 🧩 du résumé quotidien — le seul des trois
+        # qui reparle le lendemain, et le seul filet si le ping se perd.
+        logging.getLogger("wf5").error(
+            "orphelin message_id=%s — contact_not_found (sorti du lot)",
+            payload.message_id,
         )
+        out = _out_orphelin(payload.message_id, "contact_not_found")
+        if payload.persist:
+            await _persister_verdict_conformite(
+                out,
+                message_id=payload.message_id,
+                tentatives_avant=msg.get("compliance_tentatives"),
+            )
+        return out
     company_id = contact_rows[0].get("company_id")
     # Destinataire vérifié = source de vérité de l'identité (prénom/titre), distincte du
     # research_json (scrape du site/page équipe). Sans ça, le juge LLM flagge à tort un
@@ -2480,37 +2618,14 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             error_text=repr(e),
         )
 
-    # 4) Persist verdict
-    #
-    # Le retour de l'écriture se LIT. L'ancien `except: pass` rendait un verdict
-    # qui se croyait persisté alors que rien n'avait bougé en base — le mode
-    # d'échec exact que 1bfb918 et 57edcaf ont déjà eu à refermer côté WF-7.
-    # Ici c'est fail-safe côté envoi (une écriture ratée laisse `passed` NULL,
-    # donc rien ne part), mais l'invisible reste invisible : le `message_id`
-    # doit finir dans le journal de la passe, que `run_wf5` recopie dans ses
-    # items et dans l'alerte.
+    # 4) Persist verdict — même chemin d'écriture que la sortie « orphelin »
+    # plus haut, pour qu'aucune des deux ne puisse dériver sans l'autre.
     if payload.persist:
-        echec_persist: str | None = None
-        try:
-            patch = _patch_verdict_conformite(out.verdict, msg.get("compliance_tentatives"))
-            patch["compliance_notes"] = compliance_tools.format_compliance_notes(out)
-            lignes = await db.update(
-                "messages", patch, filters={"id": f"eq.{payload.message_id}"},
-            )
-            # PostgREST rend [] quand AUCUNE ligne n'a matché : pas d'exception,
-            # pas d'erreur, mais rien d'écrit non plus.
-            if not lignes:
-                echec_persist = "aucune ligne touchée"
-        except Exception as e:  # noqa: BLE001
-            echec_persist = repr(e)
-
-        if echec_persist:
-            logging.getLogger("wf5").error(
-                "persist_failed message_id=%s verdict=%s — %s",
-                payload.message_id, out.verdict, echec_persist,
-            )
-            marqueur = f"persist_failed: {echec_persist}"
-            out.error_text = f"{out.error_text} · {marqueur}" if out.error_text else marqueur
+        await _persister_verdict_conformite(
+            out,
+            message_id=payload.message_id,
+            tentatives_avant=msg.get("compliance_tentatives"),
+        )
 
     return out
 
@@ -2524,6 +2639,13 @@ class RunWf5In(BaseModel):
     `compliance_check_passed` à NULL exprès, donc le draft revient de lui-même
     dans le lot du lendemain, sans requête nouvelle. À la 3e tentative il
     devient un vrai refus et sort du lot.
+
+    Le message ORPHELIN prend l'autre porte : sans contact rattaché, il n'y a
+    rien à juger, et le re-juger trois fois ne réparerait pas la donnée. Il
+    reçoit `compliance_check_passed = false` dès la première passe et quitte le
+    lot immédiatement — sinon il y revenait tous les jours pour toujours, en
+    consommant une place à chaque fois, sans jamais atteindre le plafond des
+    3 tentatives.
 
     `concurrency` : nb de drafts jugés en parallèle (sémaphore bornée). Garde
     l'appel `/wf5/run` court — 20 en série ≈ 130s déclenchait un 502 edge Railway.
@@ -2557,6 +2679,10 @@ class RunWf5Out(BaseModel):
     # Juge LLM injoignable : le corps n'a PAS été inspecté. Comptait dans
     # `errors` avant, où il se confondait avec une panne de la passe elle-même.
     non_juge: int = 0
+    # Message sans contact rattaché (ou dont la ligne a disparu) : il n'y avait
+    # rien à juger. Compté à part de `errors` — la passe n'a pas planté — et de
+    # `blocked` — la copie n'est pas en cause.
+    orphelins: int = 0
     errors: int
     # True/False = l'alerte #alertes est partie / s'est perdue. None = il n'y
     # avait rien à annoncer. Lire le retour évite l'alerte qui se croit partie.
@@ -2573,6 +2699,7 @@ async def _alerter_wf5(
     needs_revision: int,
     blocked: int,
     non_juge: int,
+    orphelins: int,
     items: list[RunWf5Item],
 ) -> bool:
     """Crie sur #alertes quand un lot de conformité n'est pas tout vert.
@@ -2584,7 +2711,10 @@ async def _alerter_wf5(
     """
     from .lib import slack as slack_lib
 
-    fautifs = [i for i in items if i.verdict in ("needs_revision", "blocked", "non_juge")]
+    fautifs = [
+        i for i in items
+        if i.verdict in ("needs_revision", "blocked", "non_juge", _VERDICT_ORPHELIN)
+    ]
     lignes = [
         f"• `{i.message_id}` — {i.verdict} [{i.regle or '?'}]"
         for i in fautifs[:_WF5_MAX_ITEMS_ALERTE]
@@ -2597,8 +2727,17 @@ async def _alerter_wf5(
         f"🚨 WF-5 conformité — {len(fautifs)} draft(s) non envoyable(s) "
         f"sur {processed} jugé(s)",
         f"needs_revision : {needs_revision} · blocked : {blocked} · "
-        f"non_juge : {non_juge}",
+        f"non_juge : {non_juge} · orphelin : {orphelins}",
     ]
+    if orphelins:
+        corps.append(
+            "🧩 orphelin = le message n'avait pas de quoi être jugé (contact "
+            "rattaché absent, ou ligne disparue). Anomalie de DONNÉES, pas de "
+            "copie : relire le courriel n'y changera rien. "
+            "`compliance_check_passed=false` — il SORT du lot pour de bon, donc "
+            "c'est la dernière fois qu'il est nommé ici. Réparer en base, ou "
+            "passer le message en status='failed'."
+        )
     if non_juge:
         corps.append(
             "⚠️ non_juge = le juge LLM n'a pas répondu, le corps n'a PAS été "
@@ -2613,8 +2752,9 @@ async def _alerter_wf5(
     )
     if not envoyee:
         logging.getLogger("wf5").error(
-            "alerte #alertes NON partie — needs_revision=%s blocked=%s non_juge=%s ids=%s",
-            needs_revision, blocked, non_juge,
+            "alerte #alertes NON partie — needs_revision=%s blocked=%s non_juge=%s "
+            "orphelins=%s ids=%s",
+            needs_revision, blocked, non_juge, orphelins,
             ",".join(i.message_id for i in fautifs[:_WF5_MAX_ITEMS_ALERTE]),
         )
     return envoyee
@@ -2663,7 +2803,7 @@ async def run_wf5(payload: RunWf5In) -> RunWf5Out:
     results = await asyncio.gather(*(_judge_one(d) for d in drafts))
 
     items: list[RunWf5Item] = []
-    approved = needs_revision = blocked = non_juge = errors = 0
+    approved = needs_revision = blocked = non_juge = orphelins = errors = 0
     for draft, res, err in results:
         if res is None:
             errors += 1
@@ -2684,6 +2824,10 @@ async def run_wf5(payload: RunWf5In) -> RunWf5Out:
             # panne de la passe. Noyé dans `errors`, il disparaissait dans le
             # bruit des exceptions réseau.
             non_juge += 1
+        elif res.verdict == _VERDICT_ORPHELIN:
+            # Même raison, à l'envers : la donnée manque, pas la relecture.
+            # Et contrairement à `non_juge`, celui-là ne repassera jamais.
+            orphelins += 1
         else:
             errors += 1
         items.append(RunWf5Item(
@@ -2698,17 +2842,18 @@ async def run_wf5(payload: RunWf5In) -> RunWf5Out:
     # une alerte qui dépend d'un ré-import est une alerte qu'on oubliera.
     alerte_envoyee: bool | None = None
     if _doit_alerter_wf5(
-        needs_revision=needs_revision, blocked=blocked, non_juge=non_juge
+        needs_revision=needs_revision, blocked=blocked, non_juge=non_juge,
+        orphelins=orphelins,
     ):
         alerte_envoyee = await _alerter_wf5(
             processed=len(items), needs_revision=needs_revision,
-            blocked=blocked, non_juge=non_juge, items=items,
+            blocked=blocked, non_juge=non_juge, orphelins=orphelins, items=items,
         )
 
     return RunWf5Out(
         processed=len(items), approved=approved,
         needs_revision=needs_revision, blocked=blocked,
-        non_juge=non_juge, errors=errors,
+        non_juge=non_juge, orphelins=orphelins, errors=errors,
         alerte_envoyee=alerte_envoyee, items=items,
     )
 
