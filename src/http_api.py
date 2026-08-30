@@ -2493,10 +2493,14 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
 
 
 class RunWf5In(BaseModel):
-    """Pass complet WF-5 : prend N drafts non encore validés, lance compliance.
+    """Passe de conformité sur les drafts jamais jugés.
 
-    Limite : drafts avec `compliance_check_passed IS NULL` AND `status='draft'`.
-    Re-traite ceux dont les notes contiennent "llm_error" (transient).
+    La requête ne sélectionne que `compliance_check_passed is.null` (parmi les
+    messages `direction='outbound'` et `status='draft'`). Ça inclut les drafts
+    jamais tentés ET ceux dont le juge est tombé : `non_juge` laisse
+    `compliance_check_passed` à NULL exprès, donc le draft revient de lui-même
+    dans le lot du lendemain, sans requête nouvelle. À la 3e tentative il
+    devient un vrai refus et sort du lot.
 
     `concurrency` : nb de drafts jugés en parallèle (sémaphore bornée). Garde
     l'appel `/wf5/run` court — 20 en série ≈ 130s déclenchait un 502 edge Railway.
