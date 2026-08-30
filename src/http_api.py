@@ -2028,6 +2028,28 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
 
 # ---------------- Compliance (Phase 2 — WF-5) ----------------
 
+def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dict[str, Any]:
+    """Le patch à écrire sur `messages` après une passe de conformité.
+
+    `non_juge` est le seul verdict qui NE touche PAS `compliance_check_passed` :
+    en la laissant NULL, `send.py` (qui exige `is True`) ne part pas, ET la
+    requête du lot (qui ne cherche que `is.null`) reprend le draft le lendemain
+    sans aucune requête nouvelle. Écrire `false` le figerait à vie — la garde
+    anti-boucle des 3 tentatives ne serait jamais atteinte et une panne
+    passagère du juge deviendrait un refus définitif.
+
+    `tentatives_avant` tolère `None` : `compliance_tentatives` absent d'un
+    SELECT rend None, et `None + 1` ferait avorter toute la passe.
+    """
+    patch: dict[str, Any] = {
+        "compliance_verdict": verdict,
+        "compliance_tentatives": (tentatives_avant or 0) + 1,
+    }
+    if verdict != "non_juge":
+        patch["compliance_check_passed"] = verdict == "approved"
+    return patch
+
+
 class ComplianceCheckIn(BaseModel):
     """Lance les 2 layers de compliance sur un draft.
 
@@ -2054,7 +2076,13 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
     msgs = await db.select(
         "messages",
         params={
-            "select": "id,subject,body_text,contact_id,generated_by_agent_run,compliance_check_passed",
+            # `compliance_tentatives` alimente la garde anti-boucle du juge :
+            # sans elle dans le SELECT, elle arrive à None et la 3e tentative
+            # n'arrive jamais (voir migration 0045).
+            "select": (
+                "id,subject,body_text,contact_id,generated_by_agent_run,"
+                "compliance_check_passed,compliance_tentatives"
+            ),
             "id": f"eq.{payload.message_id}",
             "limit": "1",
         },
@@ -2097,12 +2125,18 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
     company_rows = await db.select(
         "companies",
         params={
-            "select": "research_json",
+            "select": "research_json,track",
             "id": f"eq.{company_id}",
             "limit": "1",
         },
     ) if company_id else []
     research_json = (company_rows[0].get("research_json") if company_rows else None) or {}
+    # Le track sélectionne le registre attendu par le layer 1 : `agence-ia`
+    # tutoie, `OPT` vouvoie. PAS de `or "OPT"` ici (contrairement à WF-4, où il
+    # sert de défaut de génération) : forcer OPT ferait attendre le vouvoiement
+    # sur des corps tutoyés et bloquerait TOUT le lot agence-ia. `None` laisse
+    # `check_registre` sur son défaut historique, ce qui est fail-closed.
+    track = (company_rows[0].get("track") if company_rows else None)
 
     # 2) Charger le contexte du draft (template + slots) depuis agent_runs
     template_used: str | None = None
@@ -2151,6 +2185,8 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             available_slots=available_slots,
             skip_llm=payload.skip_llm,
             model=payload.model,
+            track=track,
+            tentatives=msg.get("compliance_tentatives"),
         )
     except Exception as e:  # noqa: BLE001
         return compliance_tools.ComplianceCheckOut(
@@ -2160,18 +2196,36 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
         )
 
     # 4) Persist verdict
+    #
+    # Le retour de l'écriture se LIT. L'ancien `except: pass` rendait un verdict
+    # qui se croyait persisté alors que rien n'avait bougé en base — le mode
+    # d'échec exact que 1bfb918 et 57edcaf ont déjà eu à refermer côté WF-7.
+    # Ici c'est fail-safe côté envoi (une écriture ratée laisse `passed` NULL,
+    # donc rien ne part), mais l'invisible reste invisible : le `message_id`
+    # doit finir dans le journal de la passe, que `run_wf5` recopie dans ses
+    # items et dans l'alerte.
     if payload.persist:
+        echec_persist: str | None = None
         try:
-            await db.update(
-                "messages",
-                {
-                    "compliance_check_passed": (out.verdict == "approved"),
-                    "compliance_notes": compliance_tools.format_compliance_notes(out),
-                },
-                filters={"id": f"eq.{payload.message_id}"},
+            patch = _patch_verdict_conformite(out.verdict, msg.get("compliance_tentatives"))
+            patch["compliance_notes"] = compliance_tools.format_compliance_notes(out)
+            lignes = await db.update(
+                "messages", patch, filters={"id": f"eq.{payload.message_id}"},
             )
-        except Exception:  # noqa: BLE001
-            pass  # Non bloquant — l'agent retourne le verdict même si update échoue
+            # PostgREST rend [] quand AUCUNE ligne n'a matché : pas d'exception,
+            # pas d'erreur, mais rien d'écrit non plus.
+            if not lignes:
+                echec_persist = "aucune ligne touchée"
+        except Exception as e:  # noqa: BLE001
+            echec_persist = repr(e)
+
+        if echec_persist:
+            logging.getLogger("wf5").error(
+                "persist_failed message_id=%s verdict=%s — %s",
+                payload.message_id, out.verdict, echec_persist,
+            )
+            marqueur = f"persist_failed: {echec_persist}"
+            out.error_text = f"{out.error_text} · {marqueur}" if out.error_text else marqueur
 
     return out
 
