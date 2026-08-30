@@ -56,6 +56,24 @@ FIRST_PERSON_ACTION_PATTERNS: dict[str, str] = {
     r"on s'est parl[ée]": "claim 'on s'est parlé' (conversation probablement non effectuée)",
     r"\bhier soir,?\s+j['e]": "claim temporel 'hier soir, je/j'ai...' (action probablement fausse)",
     r"\bce matin,?\s+j['e]": "claim temporel 'ce matin, je/j'ai...' (action probablement fausse)",
+    # Règle nº4 de la spec §5, ajoutée le 2026-08-30 (AC1b).
+    #
+    # ⚠️ Ce n'est PAS une action inventée comme les autres : « j'ai vu » peut
+    # être vrai. Le motif est là pour une raison de FORME — ces trois formules
+    # sont le tell nº1 du courriel de masse, elles mettent la recherche en
+    # scène au lieu de la prouver. Le juge LLM ne peut pas s'en charger :
+    # `prompts/compliance.md` lui dit explicitement de NE PAS re-checker les
+    # actions au passé en première personne. C'était l'angle mort exact que la
+    # spec nomme.
+    #
+    # 🔴 Il n'a pu être posé qu'APRÈS le 2026-08-30, et pas avant : le bloc
+    # « sans site » disait lui-même « j'ai vu que t'as pas de site web ».
+    # L'ajouter plus tôt aurait bloqué les 97 entreprises sans site — un refus
+    # `block` que `rejuger_a_relire` ne reprend jamais, donc un contact gelé à
+    # vie. Le conseil de revue a trouvé les deux moitiés du piège ensemble.
+    r"j'ai vu\b": "formule 'j'ai vu' (met la recherche en scène — règle nº4)",
+    r"j'ai lu\b": "formule 'j'ai lu' (met la recherche en scène — règle nº4)",
+    r"j'ai remarqu[ée]": "formule 'j'ai remarqué' (met la recherche en scène — règle nº4)",
 }
 
 SOCIAL_PROOF_PATTERNS: dict[str, str] = {
@@ -362,8 +380,17 @@ def check_loi25_privacy_contact(email_body: str, appended_footer: str = "") -> C
 # ferait échouer 100 % des brouillons OPT, alors que la spec exige que le
 # prompt OPT reste intact.
 _BORNES_LONGUEUR = {
-    ("agence-ia", "A"): (180, 250),
-    ("agence-ia", "B"): (180, 250),
+    # 🔧 Borne haute portee de 250 a 270 le 2026-08-30, apres le conseil de
+    # revue. Les 250 avaient ete calibres sur des corps de 206 et 224 mots qui
+    # ne portaient PAS deux elements aujourd'hui obligatoires : le 2e temps
+    # (jusqu'a ~10 mots, obligatoire des que l'entreprise est multi-metier,
+    # soit 44 % de la liste) et la variante « sans site » (+6 mots, 97
+    # entreprises). Mesure avec les deux : CORPS_B_SANS_SITE = 246 mots, soit
+    # 4 de marge -- exactement la marge d'un cheveu que la spec interdit.
+    # La spec prevoit elle-meme cet arbitrage : « soit on allonge le repli,
+    # soit on baisse la borne, mais on ne laisse pas une marge d'un mot ».
+    ("agence-ia", "A"): (180, 270),
+    ("agence-ia", "B"): (180, 270),
     # 🔧 Borne haute montée de 100 à 120 le 2026-08-30 (AC1b). Les 100 avaient
     # été posés sur une ESTIMATION (« ≈ 88 mots ») qui ne comptait pas de vrai
     # ouvreur — or l'ouvreur généré fait jusqu'à 45 mots à lui seul. Mesuré sur

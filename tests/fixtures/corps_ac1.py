@@ -71,6 +71,7 @@ rappelle qui l'a.
 
 Pis toi t'es sur un terrain, la tondeuse dans les oreilles. Tu rappelles
 à six heures le soir, pis le gars a déjà donné son contrat à un autre.
+Pour le reste de l'année, tu fais du déneigement.
 
 Paysagement Rivard a 4,8 étoiles sur 47 avis. Si tu perds des contrats,
 c'est probablement pas parce que le monde t'aime pas. C'est parce que
@@ -189,17 +190,19 @@ CORPS_A_SANS_SITE = _sans(
     "En regardant ton site, je me suis aussi dit que je pourrais t'en faire\n"
     "une version rafraîchie. Je te charge rien pour ça, c'est pour que tu voies\n"
     "comment je travaille avant qu'on parle du reste.",
-    "Pendant que je regardais ton entreprise, j'ai vu que t'as pas de site\n"
-    "web. Je pourrais t'en monter un. Je te charge rien pour ça, c'est pour\n"
-    "que tu voies comment je travaille avant qu'on parle du reste.",
+    "En regardant ton entreprise, je me suis aussi dit que je pourrais te\n"
+    "créer un site, parce que je pense que t'en as pas. Je te charge rien\n"
+    "pour ça, c'est pour que tu voies comment je travaille avant qu'on parle\n"
+    "du reste.",
 )
 
 CORPS_B_SANS_SITE = _sans(
     CORPS_B,
     "En regardant ton site, je me suis aussi dit que je pourrais t'en faire\n"
     "une version rafraîchie. Je te charge rien pour ça.",
-    "Pendant que je regardais ton entreprise, j'ai vu que t'as pas de site\n"
-    "web. Je pourrais t'en monter un. Je te charge rien pour ça.",
+    "En regardant ton entreprise, je me suis aussi dit que je pourrais te\n"
+    "créer un site, parce que je pense que t'en as pas. Je te charge rien\n"
+    "pour ça.",
 )
 
 # La relance 1 ne bascule PAS : « Pour le site, l'offre tient toujours » ne

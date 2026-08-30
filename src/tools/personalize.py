@@ -21,7 +21,7 @@ from typing import Any
 from anthropic import Anthropic
 from pydantic import BaseModel
 
-from ..lib.avis import bloc_faits_verifies
+from ..lib.avis import bloc_faits_verifies, nom_commercial
 from . import research as research_tools
 
 # ----------------------------------------------------------------------
@@ -58,7 +58,9 @@ def _format_input_for_llm(
     slots_block: str,
 ) -> str:
     """Reprend exactement le format du proto CLI (`agents/personalize_agent.py`)."""
-    place_name = company.get("name", "")
+    # Coupe au premier separateur : les noms en base sont des fiches Google
+    # bourrees de mots-cles, et le nom brut pousse le corps hors des bornes.
+    place_name = nom_commercial(company.get("name"))
     website = company.get("website", "") or ""
     # `research_json` porte aussi la télémétrie du scraper d'emails
     # (`diagnostic_courriels`) : compteurs de rejets + adresses tierces jetées.

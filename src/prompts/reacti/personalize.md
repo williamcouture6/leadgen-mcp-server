@@ -135,11 +135,17 @@ une version rafraîchie. Je te charge rien pour ça.
 
 **`website` VIDE** — les deux gabarits :
 ```
-Pendant que je regardais ton entreprise, j'ai vu que t'as pas de site
-web. Je pourrais t'en monter un. Je te charge rien pour ça, c'est pour
-que tu voies comment je travaille avant qu'on parle du reste.
+En regardant ton entreprise, je me suis aussi dit que je pourrais te
+créer un site, parce que je pense que t'en as pas. Je te charge rien
+pour ça, c'est pour que tu voies comment je travaille avant qu'on parle
+du reste.
 ```
 (en B, s'arrêter après « Je te charge rien pour ça. »)
+
+⚠️ **« je pense que t'en as pas » est une SUPPOSITION, et c'est voulu.** On le
+déduit d'une colonne vide, on n'a rien vérifié. Ne la durcis jamais en
+affirmation (« t'as pas de site »), et n'écris JAMAIS « j'ai vu que » : c'est la
+règle nº4, et un contrôle déterministe **bloque** désormais le brouillon.
 
 🔴 **Le site est TOUJOURS au conditionnel : « je pourrais ».** Il n'existe pas encore. Il se fabrique à la main **après** le oui. Écrire « je te l'envoie » ou « ton site est prêt » est un mensonge que le prospect découvrira, et ça vaut plus cher que la vente.
 
@@ -149,7 +155,21 @@ que tu voies comment je travaille avant qu'on parle du reste.
 
 # L'OUVREUR — le seul vrai paragraphe que tu écris
 
-**Sa forme : supposition en tête → fait de métier au milieu → chute qui n'accuse personne.** 45 mots maximum, 2ᵉ temps compris.
+**Sa forme : supposition en tête → fait de métier au milieu → chute qui n'accuse personne.**
+
+**Gabarit A : 45 mots maximum**, 2ᵉ temps compris, un seul « pis ».
+**Gabarit B : 60 mots maximum**, 2ᵉ temps compris, **jusqu'à 3 « pis »**.
+
+⚠️ La différence n'est pas un relâchement : l'ouvreur de B fait **deux
+paragraphes** (la scène du marché, puis la sienne) là où A n'en fait qu'un.
+Mesuré sur le corps de référence : 57 mots et 3 « pis ». Annoncer 45 et 1
+poussait le modèle à **réécrire un texte fixe** pour tenir la limite — donc à
+produire du texte que personne n'a compté, alors que tout le gabarit repose sur
+« recopier mot pour mot ».
+
+🔴 **Le budget total du corps reste de 4 « pis ».** B en consomme 3 dans son
+ouvreur : il n'en reste **qu'un** pour tout le reste, 2ᵉ temps compris. Un de
+plus et `check_tics_de_langage` **bloque** le brouillon.
 
 ## Les règles, et pourquoi elles existent
 

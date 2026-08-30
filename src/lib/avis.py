@@ -40,6 +40,44 @@ def bloc_avis_autorise(
     )
 
 
+# Les separateurs qui, dans une fiche Google, introduisent le bourrage de
+# mots-cles apres le vrai nom commercial.
+_SEPARATEURS_NOM = ("-", "|", ",", "/", ":", "–", "—")
+
+
+def nom_commercial(nom_brut: str | None) -> str:
+    """Le nom d'entreprise tel qu'il doit apparaitre dans le corps.
+
+    🔴 Les noms en base viennent de fiches Google BOURREES DE MOTS-CLES.
+    Mesure reelle : « Vitres Ultra Nettes -lavage de vitres residentiel
+    -lavage de vitres condo -nettoyage de gouttieres » fait **14 mots** au lieu
+    de 3.
+
+    Recopie brut dans l'ancre factuelle, il ne fait pas que se lire comme du
+    spam : il pousse le corps hors des bornes. Mesure du conseil du 2026-08-30 :
+    CORPS_B avec ce nom ET son 2e temps obligatoire = 251 mots contre une borne
+    de 250 -- `check_length` echoue, verdict `needs_revision`, brouillon mort et
+    contact gele a vie dans la fenetre WF-4.
+
+    ⚠️ Ce n'est ni le nom SEUL ni le 2e temps SEUL qui cassaient : chacun passe.
+    C'est leur addition, et B est la version la plus serree.
+
+    On coupe au premier separateur (decision William, 2026-08-30) : simple,
+    previsible, et ca rend presque toujours le vrai nom commercial.
+    """
+    nom = (nom_brut or "").strip()
+    if not nom:
+        return ""
+    coupe = len(nom)
+    for sep in _SEPARATEURS_NOM:
+        i = nom.find(sep)
+        # `i > 0` : un separateur EN TETE ne coupe rien, sinon on rendrait une
+        # chaine vide sur un nom du genre « -Deneigement Rive-Sud ».
+        if i > 0:
+            coupe = min(coupe, i)
+    return nom[:coupe].strip(" -|,/:") or nom
+
+
 def formater_note(google_rating: float) -> str:
     """La note telle qu'elle doit apparaître dans le corps : une décimale,
     virgule décimale française.

@@ -2039,7 +2039,19 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
     companies = await db.select(
         "companies",
         params={
-            "select": "id,name,website,city,icp_segment,industry,research_json,track",
+            # ⚠️ Le CINQUIÈME point du câblage des avis, oublié par la tâche 7
+            # qui n'en nommait que quatre. Cette route appelle le MÊME
+            # `_personalize_one` que /wf4/run, et c'est elle que le plan du
+            # pivot tri désigne comme la façon de créer un draft de test au
+            # go-live. Sans ces colonnes, `bloc_faits_verifies` annonce
+            # « aucune note et aucun avis en base » — faux pour 785 des 816
+            # entreprises — le draft sort en repli, et il PASSE la conformité
+            # (aucun chiffre = rien à vérifier). La dégradation est invisible,
+            # et c'est le test de fumée lui-même qui ment.
+            "select": (
+                "id,name,website,city,icp_segment,industry,research_json,track,"
+                "google_rating,google_reviews_count,google_place_id"
+            ),
             "id": f"eq.{contact['company_id']}",
             "limit": "1",
         },

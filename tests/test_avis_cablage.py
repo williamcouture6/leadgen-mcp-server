@@ -44,6 +44,63 @@ async def test_le_select_des_companies_ramene_les_avis(monkeypatch: pytest.Monke
         assert colonne in select, f"{colonne} absente du select : {select}"
 
 
+# ---------------- Le nom d'entreprise, coupé au premier séparateur ----------------
+
+@pytest.mark.parametrize(
+    "brut,attendu",
+    [
+        (
+            "Vitres Ultra Nettes -lavage de vitres résidentiel -lavage de vitres condo",
+            "Vitres Ultra Nettes",
+        ),
+        ("Paysagement Rivard", "Paysagement Rivard"),
+        ("Déneigement ABC | Excavation | Terrassement", "Déneigement ABC"),
+        ("Piscines Élégance, Québec", "Piscines Élégance"),
+        ("Toiture Pro / Bardeaux", "Toiture Pro"),
+        ("  Espaces Verts  ", "Espaces Verts"),
+    ],
+)
+def test_le_nom_est_coupe_au_premier_separateur(brut: str, attendu: str) -> None:
+    """Les noms en base viennent de fiches Google bourrées de mots-clés.
+    Recopié brut dans l'ancre, « Vitres Ultra Nettes -lavage de vitres… » fait
+    14 mots au lieu de 3 et pousse le corps hors des bornes."""
+    from src.lib.avis import nom_commercial
+
+    assert nom_commercial(brut) == attendu
+
+
+@pytest.mark.parametrize(
+    "cas_limite",
+    ["-Déneigement Rive-Sud", "| Toiture Express", ",,,", "", "   ", None],
+)
+def test_la_coupe_ne_rend_jamais_une_chaine_vide_utilisable(cas_limite) -> None:
+    """Un séparateur EN TÊTE ne doit pas couper à zéro : le courriel dirait
+    « a 4,8 étoiles sur 47 avis » sans sujet."""
+    from src.lib.avis import nom_commercial
+
+    resultat = nom_commercial(cas_limite)
+    if (cas_limite or "").strip(" -|,/:"):
+        assert resultat.strip(), f"{cas_limite!r} → chaîne vide"
+
+
+def test_le_nom_coupe_ramene_le_corps_dans_les_bornes() -> None:
+    """Le cas mesuré par le conseil : CORPS_B + 2ᵉ temps + nom brut = 251 mots
+    contre une borne de 250. Ni le nom seul ni le 2ᵉ temps seul ne cassaient —
+    c'est leur addition, et B est la version la plus serrée."""
+    from src.lib import compliance_checks as cc
+    from src.lib.avis import nom_commercial
+    from tests.fixtures import corps_ac1 as fx
+
+    brut = "Vitres Ultra Nettes -lavage de vitres résidentiel -lavage de vitres condo -nettoyage de gouttières"
+    avec_brut = fx.CORPS_B.replace("Paysagement Rivard", brut)
+    avec_coupe = fx.CORPS_B.replace("Paysagement Rivard", nom_commercial(brut))
+
+    n_brut = len(cc._body_without_signature(avec_brut).split())
+    n_coupe = len(cc._body_without_signature(avec_coupe).split())
+    assert n_brut - n_coupe >= 10, "la coupe doit retirer une dizaine de mots"
+    assert cc.check_length(avec_coupe, template="B", track="agence-ia").passed
+
+
 # ---------------- Point 2 : le dict `company` passé au rédacteur ----------------
 
 @pytest.mark.asyncio

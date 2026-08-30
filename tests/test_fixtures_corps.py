@@ -86,11 +86,36 @@ def test_le_repli_retire_le_chiffre_mais_garde_le_paragraphe(nom: str) -> None:
 def test_la_variante_sans_site_ne_promet_jamais_de_rafraichir(nom: str) -> None:
     """97 boîtes sur 255 n'ont pas de site. Leur promettre une « version
     rafraîchie » est un mensonge immédiatement visible pour le seul
-    destinataire capable de le détecter."""
+    destinataire capable de le détecter.
+
+    Et le site reste TOUJOURS à faire : « je pourrais », jamais « je te
+    l'envoie ». Il se fabrique à la main APRÈS le oui — c'est la dette
+    d'honnêteté refermée le 2026-08-26."""
     corps = f.TOUS_LES_CORPS[nom]
     assert "rafraîchie" not in corps, nom
     assert "au goût du jour" not in corps, nom
-    assert "monter un" in corps, nom
+    # Casse insensible : la relance 2 commence sa phrase par « Je pourrais ».
+    assert "je pourrais" in corps.lower(), nom
+
+
+@pytest.mark.parametrize("nom", ["CORPS_A_SANS_SITE", "CORPS_B_SANS_SITE"])
+def test_le_bloc_sans_site_du_courriel_1_porte_la_supposition(nom: str) -> None:
+    """Formulation validée par William le 2026-08-30, après que le conseil ait
+    relevé que l'ancienne (« j'ai vu que t'as pas de site web ») violait la
+    règle nº4 du prompt lui-même.
+
+    « Je pense que t'en as pas » est sa tournure de supposition, et elle est
+    honnête : on le déduit d'une colonne `website` vide, on n'a rien vérifié.
+
+    ⚠️ Ce test est ce qui autorise `j'ai vu` dans FIRST_PERSON_ACTION_PATTERNS.
+    Si la phrase revenait, les 97 courriels sans site seraient bloqués — un
+    refus `block` que `rejuger_a_relire` ne reprend jamais.
+    """
+    corps = f.TOUS_LES_CORPS[nom]
+    assert "créer un site" in corps, nom
+    assert "je pense que t'en as pas" in corps, nom
+    assert "j'ai vu" not in corps, nom
+    assert cc.check_first_person_actions(corps).passed, nom
 
 
 def test_la_relance_1_sert_aux_deux_cas() -> None:
