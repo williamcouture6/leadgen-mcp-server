@@ -46,14 +46,31 @@ from datetime import date
 # « préfixe d'un mot », pas « n'importe où dans la chaîne ».
 RACINES: dict[str, tuple[str, ...]] = {
     "déneigement": ("deneig", "neige", "souffleuse", "deglac"),
-    "paysagement": ("paysag", "amenagement paysager", "plate-bande", "platebande", "haie"),
+    # « plates-bandes » (23 fiches) et « murs de soutenement » (19) etaient des
+    # trous mesures par la spec §3 et jamais bouches. « plate-bande » au
+    # SINGULIER apparait dans 0 fiche : c'etait du code mort.
+    # Murs de soutenement -> paysagement (decision William, 2026-08-30) :
+    # c'est de l'amenagement exterieur, et ca lui donne la fenetre du
+    # paysagement plutot que les douze mois d'excavation.
+    "paysagement": (
+        "paysag", "amenagement paysager", "plate-bande", "plates-bande",
+        "platebande", "haie", "soutenement",
+    ),
     "tonte": ("tonte", "pelouse", "gazon", "tondre"),
-    "lavage de vitres": ("vitre", "fenetre"),
+    # « pression » (34 fiches) -> lavage de vitres (decision William,
+    # 2026-08-30) : meme client, meme saison d'avril, meme equipement.
+    "lavage de vitres": ("vitre", "fenetre", "pression"),
     "extermination": ("extermin", "parasitaire", "vermine", "punaise", "fourmi", "rongeur"),
     "ménage": ("menage", "entretien menager", "nettoyage residentiel"),
     "piscine": ("piscine", "spa"),
     "pavage": ("pavage", "asphalte", "pave uni", "paveuni"),
-    "excavation": ("excavation", "terrassement", "creus"),
+    # ⚠️ « creus » (et non « creusage ») appariait « piscine CREUSEE », le
+    # terme standard au Quebec pour une piscine enterree. Mesure en base :
+    # 20 des 22 libelles contenant « creus » sont des piscines, 2 seulement
+    # de la vraie excavation. Meme famille de collision que
+    # « amenagement »/« menage ». La racine est donc resserree sur le NOM DE
+    # L'ACTE, pas sur l'adjectif.
+    "excavation": ("excavation", "terrassement", "creusage", "creusement"),
     "toiture": ("toiture", "bardeau", "couvreur"),
 }
 
@@ -66,6 +83,12 @@ RACINES: dict[str, tuple[str, ...]] = {
 # exception rogne le garde-fou nº2 (« on inclut dans le doute »).
 ECRASE: dict[str, tuple[str, ...]] = {
     "déneigement": ("toiture",),
+    # Ceinture ET bretelles avec la racine resserree ci-dessus : si un libelle
+    # de piscine amenait quand meme l'excavation (« creusage pour piscine »),
+    # c'est la piscine qui gagne. Une piscine creusee n'est pas un contrat
+    # d'excavation, et excavation n'ayant pas de saison documentee, elle
+    # ouvrirait les douze mois a une entreprise saisonniere.
+    "piscine": ("excavation",),
 }
 
 _RACINES_RE: dict[str, tuple[re.Pattern[str], ...]] = {
@@ -239,7 +262,25 @@ def resoudre_metiers(
         for gagnant, perdants in ECRASE.items():
             if gagnant in apparies:
                 apparies -= set(perdants)
-        for metier in apparies:
+        # 🔴 On réordonne selon RACINES avant d'insérer, et ce n'est PAS
+        # cosmétique. `apparies` est un SET de chaînes : son ordre d'itération
+        # dépend de la randomisation du hash de Python, qui change à CHAQUE
+        # processus. Il décidait donc l'ordre d'insertion dans `compte`, donc
+        # l'ordre d'apparition, donc la rupture d'égalité du tri stable plus
+        # bas — donc `dominant`, qui gouverne le LEXIQUE.
+        #
+        # Mesuré avant correctif, même entreprise, seeds différents :
+        #   PYTHONHASHSEED=1 → Piscines Élégance dominant='piscine'
+        #   PYTHONHASHSEED=0 → la même, dominant='excavation'
+        # L'installateur de piscines se faisait demander « l'accès au terrain,
+        # ce qu'il y a à creuser » un envoi sur deux.
+        #
+        # ⚠️ Un test de rejouabilité DANS UN SEUL PROCESSUS ne peut pas voir
+        # ça : le hash est tiré une fois au démarrage. Il faut des processus
+        # séparés — voir `test_le_dominant_est_stable_entre_processus`.
+        for metier in _RACINES_RE:
+            if metier not in apparies:
+                continue
             compte[metier] = compte.get(metier, 0) + 1
             ordre_apparition.setdefault(metier, rang)
 

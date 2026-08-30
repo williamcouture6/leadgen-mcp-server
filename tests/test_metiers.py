@@ -6,9 +6,13 @@ entreprise joignable devient invisible.
 """
 from __future__ import annotations
 
+import os
 from datetime import date
+from pathlib import Path
 
 import pytest
+
+RACINE_PROJET = Path(__file__).resolve().parents[1]
 
 from src.lib.metiers import (
     SAISONS,
@@ -178,6 +182,76 @@ def test_un_deneigeur_pur_nest_pas_joignable_en_juillet() -> None:
         assert not resoudre_metiers(services, juillet).joignable, services
 
 
+def test_piscine_creusee_nest_PAS_de_lexcavation() -> None:
+    """🔴 Troisième collision de la même famille, trouvée par le conseil du
+    2026-08-30. La racine « creus » appariait « piscine CREUSÉE », le terme
+    standard au Québec pour une piscine enterrée. Mesuré en base : 20 des 22
+    libellés contenant « creus » sont des piscines, 2 seulement de la vraie
+    excavation.
+
+    Le dégât était double : un métier fantôme (donc `deuxieme_temps_obligatoire`
+    sur une entreprise mono-métier), et excavation n'ayant pas de saison
+    documentée, elle ouvrait les douze mois à une entreprise saisonnière.
+    """
+    for libelle in (
+        "Installation de piscines creusées",
+        "Vente de piscines creusées",
+        "installation de piscine creusee",
+    ):
+        r = resoudre_metiers([libelle], date(2026, 6, 15))
+        assert r.metiers == ("piscine",), f"{libelle!r} → {r.metiers}"
+        assert not r.deuxieme_temps_obligatoire
+
+
+def test_la_vraie_excavation_est_toujours_reconnue() -> None:
+    """Le contrôle négatif : resserrer la racine ne doit pas faire disparaître
+    les 2 vrais libellés d'excavation de la base."""
+    for libelle in ("Creusage de tranchées", "Creusage de puits sec", "Excavation résidentielle"):
+        assert "excavation" in resoudre_metiers([libelle], date(2026, 6, 15)).metiers, libelle
+
+
+@pytest.mark.parametrize(
+    "libelle,metier_attendu,combien_en_base",
+    [
+        ("Aménagement des plates-bandes", "paysagement", 23),
+        ("Sarclage des plates-bandes", "paysagement", 23),
+        ("Lavage à pression de patio", "lavage de vitres", 34),
+        ("Construction de murs de soutènement", "paysagement", 19),
+    ],
+)
+def test_les_trous_du_dictionnaire_sont_bouches(
+    libelle: str, metier_attendu: str, combien_en_base: int
+) -> None:
+    """Les trous que la spec §3 avait nommés et mesurés, et que la première
+    version du dictionnaire n'avait pas bouchés.
+
+    ⚠️ « plate-bande » au SINGULIER apparaît dans **0 fiche** de production,
+    « plates-bandes » dans 23 : la racine d'origine était du code mort.
+    Le classement de « lavage à pression » (→ vitres) et « murs de soutènement »
+    (→ paysagement) est une décision de William du 2026-08-30.
+    """
+    r = resoudre_metiers([libelle], date(2027, 2, 10))
+    assert metier_attendu in r.metiers, f"{libelle!r} → {r.metiers}"
+
+
+def test_herbofleurs_avec_ses_VRAIS_libelles() -> None:
+    """Le cas qui prouve que les trous coûtaient cher. Herbofleurs a
+    l'horticulture pour métier, et ses quatre premiers services sont des
+    plates-bandes. Avant le correctif elle se résolvait en `('tonte',)` —
+    mono-métier — donc elle recevait en février un ouvreur 100 % tonte et
+    AUCUN 2ᵉ temps, sans que rien ne le signale."""
+    services = [
+        "Aménagement des plates-bandes",
+        "Sarclage des plates-bandes",
+        "Plantation d'arbustes et végétaux",
+        "Tonte de pelouse",
+    ]
+    r = resoudre_metiers(services, FEVRIER)
+    assert r.dominant == "paysagement", r.metiers
+    assert r.deuxieme_temps_obligatoire
+    assert "tonte" in r.autres
+
+
 def test_les_accents_manquants_ne_font_pas_rater_une_fenetre() -> None:
     avec = resoudre_metiers(["aménagement paysager"], FEVRIER)
     sans = resoudre_metiers(["amenagement paysager"], FEVRIER)
@@ -295,9 +369,65 @@ def test_lordre_des_metiers_suit_le_nombre_de_libelles() -> None:
 
 
 def test_la_resolution_est_rejouable() -> None:
-    """Déterminisme : c'est ce qu'un classement par LLM ne garantit pas, et
-    c'est la raison d'être du dictionnaire."""
+    """Déterminisme DANS UN processus.
+
+    ⚠️ Ce test ne suffit PAS, et c'est important de le dire ici : le hash de
+    Python est tiré une fois au démarrage du processus, donc une dépendance à
+    l'ordre d'itération d'un set y est parfaitement stable. Voir le test
+    suivant, qui est le seul à pouvoir la voir."""
     services = ["déneigement", "tonte", "haies", "excavation"]
     premier = resoudre_metiers(services, OCTOBRE)
     for _ in range(5):
         assert resoudre_metiers(services, OCTOBRE) == premier
+
+
+@pytest.mark.parametrize(
+    "services",
+    [
+        ["Installation de piscines creusées"],
+        ["déneigement et aménagement paysager"],
+        ["lavage de vitres", "déneigement"],
+        ["tonte", "haies", "pavage"],
+    ],
+)
+def test_le_dominant_est_stable_entre_processus(services: list[str]) -> None:
+    """🔴 Le défaut que le conseil du 2026-08-30 a trouvé, et que rien d'autre
+    ne pouvait voir.
+
+    `apparies` est un SET de chaînes. Son ordre d'itération dépend de la
+    randomisation du hash, qui change à chaque PROCESSUS. Il décidait l'ordre
+    d'insertion dans `compte`, donc la rupture d'égalité du tri stable, donc
+    `dominant` — qui gouverne le LEXIQUE.
+
+    Mesuré avant correctif : Piscines Élégance rendait `dominant='piscine'`
+    sous PYTHONHASHSEED=1 et `dominant='excavation'` sous PYTHONHASHSEED=0.
+    L'installateur de piscines se faisait demander « l'accès au terrain, ce
+    qu'il y a à creuser » un envoi sur deux, sans qu'aucun test ne bronche.
+
+    Il FAUT des processus séparés : un test en un seul processus est
+    structurellement aveugle à cette classe de défaut.
+    """
+    import json
+    import subprocess
+    import sys
+
+    programme = (
+        "import sys, json; sys.path.insert(0, '.');"
+        "from src.lib.metiers import resoudre_metiers;"
+        "from datetime import date;"
+        "r = resoudre_metiers(json.loads(sys.argv[1]), date(2026, 6, 15));"
+        "print(json.dumps([r.dominant, list(r.metiers), r.scene]))"
+    )
+    vus = set()
+    for seed in ("0", "1", "2", "3", "4"):
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        res = subprocess.run(
+            [sys.executable, "-c", programme, json.dumps(services)],
+            capture_output=True, text=True, env=env, cwd=str(RACINE_PROJET),
+        )
+        assert res.returncode == 0, res.stderr
+        vus.add(res.stdout.strip())
+
+    assert len(vus) == 1, (
+        f"{len(vus)} résultats différents selon PYTHONHASHSEED pour {services} : {vus}"
+    )
