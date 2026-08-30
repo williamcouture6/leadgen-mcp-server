@@ -733,6 +733,13 @@ class MessageDraftIn(BaseModel):
     compliance_check_passed: bool | None = None
     compliance_notes: str | None = None
     demo_url: str | None = None
+    # Le bras du test A/B REELLEMENT ecrit (migration 0047). Jamais 'AB' : la
+    # contrainte de la colonne l'interdit, parce que le stocker mettrait la
+    # meme valeur sur 100 % des lignes et il n'y aurait aucun test.
+    template_choice: str | None = None
+    # Les corps des relances, {"relance_1": "...", "relance_2": "..."}
+    # (migration 0046). NULL sur la piste OPT, qui n'a pas de relances.
+    followups: dict[str, Any] | None = None
 
 
 async def insert_message_draft(payload: MessageDraftIn) -> dict[str, Any]:

@@ -409,8 +409,29 @@ def check_length(
     max_words: int | None = None,
     track: str | None = None,
 ) -> CheckResult:
-    cle = (track or "", (template or "").upper())
-    defaut_min, defaut_max = _BORNES_LONGUEUR.get(cle, _BORNES_DEFAUT)
+    piste = track or ""
+    gabarit = (template or "").upper()
+
+    # 🔴 Le repli ne traverse JAMAIS la frontière des pistes.
+    #
+    # Mesuré le 2026-08-30 : un gabarit inconnu sur `agence-ia` retombait sur
+    # les bornes OPT (60-95 mots) et refusait un corps de 217 mots. Le cas
+    # n'est pas théorique — il suffit que la conformité lise le PARAMÈTRE
+    # `template_choice='AB'` au lieu de la variante écrite, ce que la tâche 18
+    # allait poser dans n8n :
+    #
+    #     template=A   → passed=True   217 mots (cible 180-270)
+    #     template=AB  → passed=False  217 mots (cible 60-95)
+    #
+    # 100 % des brouillons refusés en `needs_revision`, donc sortis du lot
+    # pour toujours, contacts gelés à vie. Une piste dont on connaît les bornes
+    # doit rester dans SES bornes, même quand le gabarit est méconnaissable :
+    # on préfère un gabarit approximatif de la bonne piste à un gabarit exact
+    # de la mauvaise.
+    bornes = _BORNES_LONGUEUR.get((piste, gabarit))
+    if bornes is None:
+        bornes = _BORNES_LONGUEUR.get((piste, "A"), _BORNES_DEFAUT)
+    defaut_min, defaut_max = bornes
     if min_words is None:
         min_words = defaut_min
     if max_words is None:

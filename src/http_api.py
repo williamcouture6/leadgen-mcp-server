@@ -1882,6 +1882,28 @@ class PersonalizeContactOut(BaseModel):
     error_text: str | None = None
 
 
+def _bras_ab(template_choice: str, rang: int) -> str:
+    """Le bras du test A/B pour le n-ième contact du lot.
+
+    `"AB"` demande l'alternance ; `"A"` ou `"B"` force un bras (mode manuel,
+    rejeu d'un lead précis).
+
+    🔴 L'alternance se fait par RANG DANS LE LOT, jamais par une propriété du
+    contact. La spec du 2026-08-26 le dit : sans ça, « A part sur les contacts
+    les plus anciens et B sur les plus récents, et le test mesure l'ordre de la
+    file au lieu du courriel ». La file est triée `created_at.asc`, donc toute
+    répartition dérivée du contact serait corrélée à son ancienneté.
+
+    ⚠️ Le rang est celui du lot, pas un compteur global : deux lots consécutifs
+    recommencent tous les deux par A. Sur des lots de 10 à 20 c'est sans effet
+    sur l'équilibre ; ça le deviendrait sur des lots de 1, cas qui n'existe
+    qu'en rejeu manuel — où le bras se force de toute façon.
+    """
+    if template_choice.strip().upper() != "AB":
+        return template_choice
+    return "A" if rang % 2 == 0 else "B"
+
+
 async def _personalize_one(
     contact_row: dict[str, Any],
     company_row: dict[str, Any],
@@ -1962,7 +1984,22 @@ async def _personalize_one(
                 contact_id=contact_id,
                 company_id=company_row["id"],
                 input_payload={
-                    "template_choice": template_choice,
+                    # 🔴 La variante RÉSOLUE, pas le paramètre demandé.
+                    #
+                    # La route de conformité lit CE champ en premier pour
+                    # choisir les bornes de longueur. Avec « AB » ici,
+                    # `check_length` cherche les bornes de ('agence-ia', 'AB'),
+                    # ne les trouve pas, et refusait un corps de 217 mots.
+                    # Le repli par piste (compliance_checks) est la deuxième
+                    # ceinture ; celle-ci est la première.
+                    "template_choice": (
+                        out.template_used
+                        if out.template_used in ("A", "B")
+                        else template_choice
+                    ),
+                    # Le paramètre d'entrée reste tracé, séparément, pour qu'on
+                    # sache si le choix venait de nous ou du rédacteur.
+                    "template_demande": template_choice,
                     "slots_count": sum(len(s.get("times", [])) for s in available_slots),
                     "social_proof_count": len(social_proof),
                 },
@@ -1994,6 +2031,25 @@ async def _personalize_one(
                     generated_by_agent_run=agent_run_id,
                     compliance_check_passed=None,  # WF-5 le valide
                     compliance_notes=notes,
+                    # La variante RÉELLEMENT écrite (migration 0047). Jamais le
+                    # paramètre : avec `template_choice='AB'`, la colonne
+                    # porterait « AB » sur 100 % des lignes et il n'y aurait
+                    # aucun test A/B — juste deux textes et aucune trace de qui
+                    # a reçu quoi. La contrainte de la colonne refuse 'AB'.
+                    template_choice=(
+                        out.template_used
+                        if out.template_used in ("A", "B")
+                        else None
+                    ),
+                    # Les deux relances (migration 0046). Absentes sur OPT.
+                    followups=(
+                        {
+                            "relance_1": email.get("relance_1") or "",
+                            "relance_2": email.get("relance_2") or "",
+                        }
+                        if email.get("relance_1") or email.get("relance_2")
+                        else None
+                    ),
                 )
             )
             message_id = ins.get("message_id")
@@ -2264,13 +2320,13 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
     items: list[RunWf4Item] = []
     drafts = skipped = failed = 0
 
-    for entry in backlog:
+    for rang, entry in enumerate(backlog):
         contact = entry["contact"]
         company = entry["company"]
         try:
             res = await _personalize_one(
                 contact, company,
-                template_choice=payload.template_choice,
+                template_choice=_bras_ab(payload.template_choice, rang),
                 model=payload.model,
                 persist=payload.persist,
                 available_slots=slots,
@@ -2605,8 +2661,23 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
         if runs:
             inp = runs[0].get("input_payload") or {}
             outp = runs[0].get("output_payload") or {}
-            template_used = (inp.get("template_choice")
-                             or outp.get("template_used"))
+            # 🔴 La SORTIE d'abord, l'entrée seulement en repli.
+            #
+            # L'ordre inverse était une mine : `input_payload.template_choice`
+            # peut valoir « AB » (le paramètre qui demande au rédacteur de
+            # choisir), et `check_length` retombait alors sur les bornes de la
+            # piste OPT — 60 à 95 mots — pour refuser un corps de 217. Mesuré :
+            #   template=A  → passed=True   217 mots (cible 180-270)
+            #   template=AB → passed=False  217 mots (cible 60-95)
+            # Soit 100 % des brouillons en `needs_revision`, sortis du lot pour
+            # toujours, contacts gelés à vie.
+            template_used = (outp.get("template_used")
+                             or inp.get("template_choice"))
+            if (template_used or "").upper() == "AB":
+                # Ceinture de sécurité pour les agent_runs ÉCRITS AVANT ce
+                # correctif : ils portent « AB » des deux côtés. On préfère un
+                # gabarit approximatif de la bonne piste à un refus certain.
+                template_used = "A"
             # available_slots peut être stocké dans input_payload mais on a juste un count
             # → on re-fetch Cal.com pour avoir la liste actuelle (acceptable car compliance
             # se fait peu après personalize, slots quasi identiques).
