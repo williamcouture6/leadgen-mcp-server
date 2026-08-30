@@ -88,8 +88,12 @@ async def test_personalize_isole_par_track_company(monkeypatch: pytest.MonkeyPat
             ]
         if table == "companies":
             return [
-                {"id": "co-opt", "name": "OPT Co", "track": "OPT", "research_json": {"x": 1}},
-                {"id": "co-rea", "name": "REA Co", "track": "agence-ia", "research_json": {"x": 1}},
+                # `website` renseigne des deux cotes : ce test porte sur l'isolation
+                # PAR TRACK, pas sur la garde sans-site d'AC1b.
+                {"id": "co-opt", "name": "OPT Co", "track": "OPT",
+                 "website": "https://opt.ca", "research_json": {"x": 1}},
+                {"id": "co-rea", "name": "REA Co", "track": "agence-ia",
+                 "website": "https://rea.ca", "research_json": {"x": 1}},
             ]
         return []  # messages
 

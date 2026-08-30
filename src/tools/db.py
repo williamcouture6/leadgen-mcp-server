@@ -694,6 +694,8 @@ async def list_contacts_to_personalize(
             continue
         if require_research and not company.get("research_json"):
             continue
+        if not site_ou_fiche_exploitable(company):
+            continue
         eligible.setdefault(c["company_id"], []).append(c)
 
     out: list[dict[str, Any]] = []
@@ -719,6 +721,36 @@ async def list_contacts_to_personalize(
             if len(out) >= limit:
                 return out
     return out
+
+
+# Seuil de la garde « sans site ». C'est UN BOUTON, pas une vérité : la spec le
+# dit explicitement. En dessous, il n'y a ni matière pour écrire sur eux ni
+# matière pour bâtir un site.
+MIN_AVIS_SANS_SITE = 3
+
+
+def site_ou_fiche_exploitable(company: dict[str, Any]) -> bool:
+    """Une entreprise sans site est-elle démarchable ?
+
+    Les 97 entreprises sans `website` reçoivent la variante « je pourrais te
+    créer un site ». Encore faut-il qu'on ait de quoi écrire : la garde exige
+    une fiche Google exploitable (`google_place_id` renseigné et au moins
+    quelques avis).
+
+    🔴 Sans cette garde, l'implicite produit le mensonge par défaut : les deux
+    gabarits et le repli disent tous « ton site », et le lead sans site ni fiche
+    recevrait un courriel qui parle d'un site inexistant à une entreprise dont
+    on ne sait rien.
+
+    ⚠️ Le motif du saut n'apparaît PAS encore dans `v_pourquoi_pas_de_courriel`
+    — la vue appartient à AC1c, différé. Le lead est donc écarté silencieusement
+    pour l'instant, ce qui est assumé et inscrit au plan.
+    """
+    if (company.get("website") or "").strip():
+        return True
+    if not (company.get("google_place_id") or "").strip():
+        return False
+    return (company.get("google_reviews_count") or 0) >= MIN_AVIS_SANS_SITE
 
 
 class MessageDraftIn(BaseModel):

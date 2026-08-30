@@ -66,14 +66,32 @@ def _message_utilisateur_juge(
     contact: dict[str, Any] | None = None,
     google_rating: float | None = None,
     google_reviews_count: int | None = None,
+    followups: dict[str, str] | None = None,
 ) -> str:
     """Ce que le juge voit. Extrait en fonction pure pour être testable sans
     appeler Anthropic — un bloc qui disparaît du prompt doit casser un test,
     pas une campagne."""
+    # 🔴 Les TROIS corps, pas seulement le premier. Le triplet part ensemble :
+    # juger le courriel seul laissait deux tiers du contenu inspectés par
+    # personne, et c'est exactement ce qui a masqué l'échec des relances sur
+    # `check_cta_present`.
+    bloc_relances = ""
+    for cle, etiquette in (("relance_1", "Relance 1 (jour 3)"), ("relance_2", "Relance 2 (jour 7)")):
+        texte = ((followups or {}).get(cle) or "").strip()
+        if texte:
+            bloc_relances += f"\n**{etiquette}** (en fil, sans objet) :\n{texte}\n"
+    if bloc_relances:
+        bloc_relances = (
+            "\n## Les relances du même envoi — À JUGER AUSSI\n"
+            "Elles partent au même prospect, 3 et 7 jours après. Une violation "
+            "dans une relance est une violation de l'envoi.\n" + bloc_relances + "\n"
+        )
+
     return (
         f"## Email à juger\n\n"
         f"**Sujet**: {subject}\n\n"
-        f"**Corps**:\n{body}\n\n"
+        f"**Corps**:\n{body}\n"
+        f"{bloc_relances}\n"
         # 🔴 Les avis AVANT tout le reste. Sans la valeur de colonne sous les
         # yeux, le juge ne peut pas déclarer un chiffre inventé : il n'a aucun
         # moyen de savoir. C'est le bug de 0732d20, où il ne voyait pas la
@@ -111,6 +129,7 @@ def _llm_judge(
     max_tokens: int = 2500,
     google_rating: float | None = None,
     google_reviews_count: int | None = None,
+    followups: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -119,7 +138,7 @@ def _llm_judge(
     system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
     user = _message_utilisateur_juge(
         body, subject, research_json, social_proof, contact,
-        google_rating, google_reviews_count,
+        google_rating, google_reviews_count, followups,
     )
     resp = client.messages.create(
         model=model,
@@ -181,6 +200,7 @@ async def compliance_check(
     tentatives: int = 0,
     google_rating: float | None = None,
     google_reviews_count: int | None = None,
+    followups: dict[str, str] | None = None,
 ) -> ComplianceCheckOut:
     """Lance les 2 layers de compliance sur un draft donné.
 
@@ -234,18 +254,50 @@ async def compliance_check(
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 
-    # Layer 1 — deterministic
-    det_results: list[CheckResult] = run_all(
-        email_body=body,
-        social_proof_count=len(social_proof),
-        available_slots=available_slots or None,
-        template=template_used,
-        email_subject=subject,
-        appended_footer=appended_footer,
-        track=track,
-        google_rating=google_rating,
-        google_reviews_count=google_reviews_count,
-    )
+    # Layer 1 — deterministic, sur LES TROIS CORPS.
+    #
+    # 🔴 Critère de fin nº3 de la spec du 2026-08-26 : le critère ne porte pas
+    # sur le seul corps de tri. C'est cette formulation-là qui masquait l'échec
+    # des deux relances sur `check_cta_present` — un draft « approuvé » dont
+    # deux tiers du contenu n'avaient jamais été regardés.
+    #
+    # Chaque corps est jugé avec SON gabarit : le tri avec A ou B (180-270
+    # mots), les relances avec RELANCE (40-120). Les juger tous sous le même
+    # gabarit refuserait mécaniquement les relances, qui font 97 mots.
+    corps_a_juger: list[tuple[str, str, str | None]] = [("courriel", body, template_used)]
+    for cle, etiquette in (("relance_1", "relance 1"), ("relance_2", "relance 2")):
+        texte = ((followups or {}).get(cle) or "").strip()
+        if texte:
+            corps_a_juger.append((etiquette, texte, "RELANCE"))
+
+    det_results: list[CheckResult] = []
+    for etiquette, texte, gabarit in corps_a_juger:
+        for r in run_all(
+            email_body=texte,
+            social_proof_count=len(social_proof),
+            available_slots=available_slots or None,
+            template=gabarit,
+            # Le sujet n'appartient qu'au courriel : les relances partent EN FIL
+            # et n'en ont pas. Le passer aux trois ferait juger trois fois le
+            # même sujet, et un warning y compterait triple.
+            email_subject=subject if etiquette == "courriel" else None,
+            appended_footer=appended_footer,
+            track=track,
+            google_rating=google_rating,
+            google_reviews_count=google_reviews_count,
+        ):
+            # L'étiquette voyage avec le résultat : « cta_present » tout court
+            # ne dit pas LEQUEL des trois corps est en faute, et c'est la
+            # première question qu'on se pose en lisant l'alerte.
+            det_results.append(
+                r if etiquette == "courriel"
+                else CheckResult(
+                    name=f"{r.name}[{etiquette}]",
+                    passed=r.passed, severity=r.severity,
+                    message=f"{etiquette} — {r.message}", matches=r.matches,
+                )
+            )
+
     det_blockers = [r for r in det_results if not r.passed and r.severity == "block"]
     det_warnings = [r for r in det_results if not r.passed and r.severity == "warn"]
 
@@ -267,7 +319,7 @@ async def compliance_check(
         try:
             llm_verdict = await asyncio.to_thread(
                 _llm_judge, body, subject, research_json, social_proof, contact, model,
-                2500, google_rating, google_reviews_count,
+                2500, google_rating, google_reviews_count, followups,
             )
         except Exception as e:  # noqa: BLE001
             llm_verdict = {"error": f"LLM judge failed: {type(e).__name__}: {e}"}

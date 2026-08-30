@@ -2552,7 +2552,7 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             # n'arrive jamais (voir migration 0045).
             "select": (
                 "id,subject,body_text,contact_id,generated_by_agent_run,"
-                "compliance_check_passed,compliance_tentatives"
+                "compliance_check_passed,compliance_tentatives,followups"
             ),
             "id": f"eq.{payload.message_id}",
             "limit": "1",
@@ -2710,6 +2710,9 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             tentatives=msg.get("compliance_tentatives"),
             google_rating=google_rating,
             google_reviews_count=google_reviews_count,
+            # Le TRIPLET, pas le seul corps de tri. Sans ca, deux tiers du
+            # contenu partent sans avoir ete inspectes par personne.
+            followups=msg.get("followups") or None,
         )
     except Exception as e:  # noqa: BLE001
         return compliance_tools.ComplianceCheckOut(

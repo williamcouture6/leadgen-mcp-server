@@ -159,7 +159,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     msgs = await db.select(
         "messages",
         params={
-            "select": "id,subject,body_text,to_email,status,direction,compliance_check_passed,contact_id,track,compliance_notes",
+            "select": "id,subject,body_text,to_email,status,direction,compliance_check_passed,contact_id,track,compliance_notes,followups",
             "id": f"eq.{payload.message_id}",
             "limit": "1",
         },
@@ -275,6 +275,31 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
             skipped_reason=reason,
         )
 
+    # 3bis) Le TRIPLET, ou rien.
+    #
+    # 🔴 Le refus est TOTAL, jamais partiel. Un lead poussé sans ses relances
+    # recevrait un seul courriel et personne ne le saurait : la campagne
+    # tournerait, les compteurs seraient verts, et 68 % des réponses positives
+    # (celles qui arrivent après la 2ᵉ touche) ne viendraient simplement jamais.
+    #
+    # ⚠️ C'est ICI que le refus appartient, et pas dans une contrainte de base :
+    # le message garde sa ligne, son statut reste `draft`, et il repartira dès
+    # que ses relances existeront. Un `check` en base aurait fait échouer
+    # l'insert du courriel entier — la même erreur de couche que le pied de
+    # page vide.
+    followups = msg.get("followups") or None
+    if (msg.get("track") or "") == "agence-ia":
+        manquantes = [
+            cle for cle in ("relance_1", "relance_2")
+            if not ((followups or {}).get(cle) or "").strip()
+        ]
+        if manquantes:
+            return SendMessageOut(
+                message_id=payload.message_id,
+                status="skipped_followups_manquants",
+                skipped_reason=f"relances absentes ou vides : {', '.join(manquantes)}",
+            )
+
     # 4) Push à Instantly (ou simule si dry_run)
     provider_message_id: str | None = None
     if payload.dry_run:
@@ -285,6 +310,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
                 email=msg["to_email"],
                 subject=msg["subject"],
                 body_text=msg["body_text"],
+                followups=followups,
                 first_name=contact.get("first_name"),
                 last_name=contact.get("last_name"),
                 company_name=company.get("name"),
