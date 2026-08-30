@@ -23,6 +23,7 @@ from datetime import date
 import pytest
 
 from src.lib import compliance_checks as cc
+from src.lib.compliance_checks import check_length
 from tests.fixtures.corps_ac1 import (
     CORPS_A,
     CORPS_A_SANS_CTA,
@@ -422,6 +423,31 @@ def test_banned_words_isolated_ia_blocked_but_couture_ia_allowed() -> None:
     body_ok = "Bonjour de la part de Couture IA, votre clinique m'intéresse."
     r_ok = cc.check_banned_words(body_ok)
     assert r_ok.passed, f"'Couture IA' doit passer: {r_ok.matches}"
+
+
+# ---------------- 8. check_length (bornes par gabarit, mesurées 2026-08-30) ----------------
+
+def test_length_accepte_le_corps_a_du_pivot():
+    assert check_length(CORPS_A, template="A").passed
+
+
+def test_length_accepte_le_corps_b_du_pivot():
+    assert check_length(CORPS_B, template="B").passed
+
+
+def test_length_accepte_une_relance():
+    corps = "Bonjour,\n\n" + " ".join(["mot"] * 70) + "\n\n---\nWilliam"
+    assert check_length(corps, template="RELANCE").passed
+
+
+def test_length_refuse_une_relance_trop_longue():
+    corps = "Bonjour,\n\n" + " ".join(["mot"] * 150) + "\n\n---\nWilliam"
+    assert not check_length(corps, template="RELANCE").passed
+
+
+def test_length_refuse_un_corps_de_tri_trop_court():
+    corps = "Bonjour,\n\n" + " ".join(["mot"] * 100) + "\n\n---\nWilliam"
+    assert not check_length(corps, template="A").passed
 
 
 # ---------------- run_all integration ----------------

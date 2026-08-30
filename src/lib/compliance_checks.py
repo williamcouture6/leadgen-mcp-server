@@ -251,14 +251,27 @@ def check_loi25_privacy_contact(email_body: str, appended_footer: str = "") -> C
     )
 
 
+# Bornes par famille de gabarit. Le tri du pivot fait 206 (A) et 224 (B) mots ;
+# les relances, 40 à 100. Les valeurs viennent d'une MESURE sur les fixtures, et
+# toute édition d'un corps oblige à remesurer dans le même commit.
+_BORNES_LONGUEUR = {
+    "A": (180, 250),
+    "B": (180, 250),
+    "RELANCE": (40, 100),
+}
+
+
 def check_length(
     email_body: str,
     template: str | None = None,
-    min_words: int = 60,
+    min_words: int | None = None,
     max_words: int | None = None,
 ) -> CheckResult:
+    defaut_min, defaut_max = _BORNES_LONGUEUR.get((template or "").upper(), (60, 95))
+    if min_words is None:
+        min_words = defaut_min
     if max_words is None:
-        max_words = 115 if (template or "").upper() == "B" else 95
+        max_words = defaut_max
     body = _body_without_signature(email_body)
     n = len(body.split())
     in_range = min_words <= n <= max_words
