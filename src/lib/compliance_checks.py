@@ -486,6 +486,28 @@ def check_registre(email_body: str, track: str | None = None) -> CheckResult:
     )
 
 
+_MAX_PIS = 4
+
+
+def check_tics_de_langage(email_body: str) -> CheckResult:
+    """Le budget de « pis ».
+
+    La voix québécoise de la copie en utilise, c'est voulu. Ce qui ne l'est
+    pas, c'est la dérive du paragraphe GÉNÉRÉ sur des centaines de leads. Le
+    seuil est haut exprès : les corps de référence en portent 1 et 3.
+    """
+    body = _body_without_signature(email_body).lower()
+    hits = re.findall(r"\bpis\b", body)
+    passed = len(hits) <= _MAX_PIS
+    return CheckResult(
+        name="tics_de_langage",
+        passed=passed,
+        severity="block",
+        message=f"{len(hits)} « pis » (max {_MAX_PIS})",
+        matches=[] if passed else [f"{len(hits)} occurrences de « pis »"],
+    )
+
+
 def run_all(
     email_body: str,
     social_proof_count: int,
@@ -509,4 +531,5 @@ def run_all(
         check_cta_present(email_body),
         check_cta_slots_real(email_body, available_slots),
         check_registre(email_body, track=track),
+        check_tics_de_langage(email_body),
     ]

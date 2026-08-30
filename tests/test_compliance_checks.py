@@ -23,7 +23,7 @@ from datetime import date
 import pytest
 
 from src.lib import compliance_checks as cc
-from src.lib.compliance_checks import check_length
+from src.lib.compliance_checks import check_length, check_tics_de_langage, run_all
 from tests.fixtures.corps_ac1 import (
     CORPS_A,
     CORPS_A_SANS_CTA,
@@ -450,11 +450,33 @@ def test_length_refuse_un_corps_de_tri_trop_court():
     assert not check_length(corps, template="A").passed
 
 
+# ---------------- 9. check_tics_de_langage (budget du « pis ») ----------------
+
+def test_tics_accepte_les_corps_du_pivot():
+    assert check_tics_de_langage(CORPS_A).passed
+    assert check_tics_de_langage(CORPS_B).passed
+
+
+def test_tics_bloque_au_dela_de_quatre_pis():
+    corps = "Bonjour,\n\npis pis pis pis pis\n\n---\nWilliam"
+    r = check_tics_de_langage(corps)
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_tics_accepte_exactement_quatre():
+    corps = "Bonjour,\n\npis pis pis pis\n\n---\nWilliam"
+    assert check_tics_de_langage(corps).passed
+
+
 # ---------------- run_all integration ----------------
 
 def test_run_all_returns_13_checks() -> None:
     """run_all doit toujours retourner tous les checks (pour audit), même
-    quand certains sont 'passed=True ignoré'."""
+    quand certains sont 'passed=True ignoré'.
+
+    MAJ 2026-08-30 : 14 checks depuis l'ajout de `check_tics_de_langage`
+    (tâche AC1a, garde-fou sur le paragraphe généré)."""
     results = cc.run_all(
         email_body="Bonjour,\nVotre clinique m'intéresse. 15 minutes ?\n\n—\nWilliam",
         social_proof_count=0,
@@ -462,12 +484,22 @@ def test_run_all_returns_13_checks() -> None:
         template="A",
         email_subject="Question rapide",
     )
-    # 13 checks expected: warmup + 6 body + 3 subject + length + cta_present
-    # + cta_slots_real + registre
-    assert len(results) == 13, f"attendu 13 checks, eu {len(results)}"
+    # 14 checks expected: warmup + 6 body + 3 subject + length + cta_present
+    # + cta_slots_real + registre + tics_de_langage
+    assert len(results) == 14, f"attendu 14 checks, eu {len(results)}"
     names = [r.name for r in results]
     # Sanity: pas de doublon
-    assert len(set(names)) == 13
+    assert len(set(names)) == 14
+
+
+def test_run_all_retourne_14_checks():
+    assert len(run_all(CORPS_A, 0, template="A", track="agence-ia")) == 14
+
+
+def test_run_all_ne_bloque_pas_le_corps_du_pivot():
+    resultats = run_all(CORPS_A, 0, template="A", track="agence-ia")
+    bloquants = [r.name for r in resultats if not r.passed and r.severity == "block"]
+    assert bloquants == ["warmup_window", "legal_footer"], bloquants
 
 
 def test_run_all_clean_legit_email_no_blockers(
