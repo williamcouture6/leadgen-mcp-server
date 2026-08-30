@@ -50,8 +50,9 @@ je propose aux entreprises de services résidentiels, c'est de créer un
 système qui répond à tout ce qui rentre en moins de 60 secondes. Un appel
 que tu peux pas prendre, un texto, un message sur ton site ou sur
 Facebook. Il demande l'adresse, la grandeur du terrain, ce que le client
-veut faire faire. Toi, t'as un texto avec tout dedans. Le soir, la fin de
-semaine, quand t'es fermé.
+veut faire faire. Le système reste actif 24/7, le soir, la fin de semaine,
+quand t'es pas disponible. Toi, tu reçois un texto avec tout dedans qui te
+simplifie la vie.
 
 En regardant ton site, je me suis dit que je pourrais t'en faire une
 version rafraîchie. Je te charge rien pour ça, c'est pour que tu voies
@@ -80,8 +81,9 @@ je propose aux entreprises de services résidentiels, c'est de créer un
 système qui répond à tout ce qui rentre en moins de 60 secondes. Un appel
 que tu peux pas prendre, un texto, un message sur ton site ou sur
 Facebook. Il demande l'adresse, la grandeur du terrain, ce que le client
-veut faire faire. Quand tu le rappelles à six heures, t'es pas le
-troisième. T'es celui qui lui a déjà répondu.
+veut faire faire. Avec ce système tu réponds plus vite au client, et ça
+t'évite de le rappeler à six heures pour qu'il te dise qu'il a déjà appelé
+une autre compagnie.
 
 En regardant ton site, je me suis dit que je pourrais t'en faire une
 version rafraîchie. Je te charge rien pour ça.
