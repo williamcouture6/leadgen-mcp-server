@@ -167,3 +167,43 @@ async def test_la_piste_OPT_nest_pas_soumise_a_la_garde(_pipeline_vert) -> None:
     )
 
     assert res.status == "ok", res.skipped_reason or res.error_text
+
+
+# ---------------- Le payload REEL, pas le dry_run ----------------
+
+@pytest.mark.asyncio
+async def test_un_envoi_REEL_porte_les_trois_corps(
+    _pipeline_vert, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 Le trou de couverture trouvé par le conseil final.
+
+    `send_one_message` en `dry_run` retourne AVANT de construire le payload :
+    aucun test ne voyait donc le passage `followups=followups` vers
+    `add_lead_to_campaign`. Vérifié par mutation : retirer cette ligne laissait
+    les 1153 tests verts et faisait partir 255 leads avec un seul corps.
+
+    Le critère de fin nº11 de la spec — « un push montre les TROIS corps dans le
+    payload réellement destiné à Instantly » — était littéralement invérifiable.
+    """
+    capture: dict[str, Any] = {}
+
+    async def faux_push(**kw):
+        capture.update(kw)
+        return {"id": "lead-1"}
+
+    async def faux_update(table, patch, *, filters=None, **kw):
+        return [{"id": "m1"}]
+
+    monkeypatch.setattr(send_tools.instantly_lib, "add_lead_to_campaign", faux_push)
+    monkeypatch.setattr(send_tools.db, "update", faux_update)
+    _pipeline_vert(_message())
+
+    res = await send_tools.send_one_message(
+        send_tools.SendMessageIn(message_id="m1", dry_run=False, campaign_id="camp-1")
+    )
+
+    assert res.status == "ok", res.error_text
+    assert capture["followups"] == TRIPLET, (
+        "le maillon entre messages.followups et Instantly n'est pas branché"
+    )
+    assert capture["body_text"] == "corps"

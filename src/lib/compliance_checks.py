@@ -548,6 +548,7 @@ def check_avis_conformes(
     email_body: str,
     google_rating: float | None = None,
     google_reviews_count: int | None = None,
+    track: str | None = None,
 ) -> CheckResult:
     """Tout chiffre d'avis présent dans le corps doit correspondre à la colonne.
 
@@ -571,6 +572,13 @@ def check_avis_conformes(
     """
     from .avis import bloc_avis_autorise
 
+    # ⚠️ Le plancher d'avis est une regle de la piste `agence-ia`. La piste OPT
+    # n'a ni bloc 2, ni repli, ni colonnes d'avis cablees : lui appliquer le
+    # plancher bloquerait tout corps OPT qui mentionnerait un chiffre, pour une
+    # regle qui ne le concerne pas. Meme raison que `check_length` et
+    # `check_registre`, qui prennent deja le track.
+    plancher_applicable = track == "agence-ia"
+
     body = _body_without_signature(email_body)
     notes = _NOTE_RE.findall(body)
     comptes = _COMPTE_AVIS_RE.findall(body)
@@ -593,7 +601,7 @@ def check_avis_conformes(
     # dit refuser. Mesure sur A.M.G. Neige (2,3 sur 27 avis, donnee reelle) :
     # `check_avis_conformes(corps, 2.3, 27)` rendait passed=True.
     # 83 des 255 envoyables sont sous le plancher avec des valeurs non nulles.
-    if not bloc_avis_autorise(google_rating, google_reviews_count):
+    if plancher_applicable and not bloc_avis_autorise(google_rating, google_reviews_count):
         ecarts.append(
             f"citation interdite par le plancher de qualite "
             f"(note={google_rating}, avis={google_reviews_count}) : le corps "
@@ -801,7 +809,7 @@ def run_all(
 ) -> list[CheckResult]:
     return [
         check_warmup_window(),
-        check_avis_conformes(email_body, google_rating, google_reviews_count),
+        check_avis_conformes(email_body, google_rating, google_reviews_count, track),
         check_banned_words(email_body),
         check_subject_banned_words(email_subject or ""),
         check_first_person_actions(email_body),

@@ -245,7 +245,9 @@ def test_un_synonyme_davis_est_compare_a_la_colonne(mot: str) -> None:
     from src.lib import compliance_checks as cc
 
     corps = f"Bonjour,\n\nGroupe Essa a 2,9 étoiles sur 504 {mot}. Dis-moi."
-    r = cc.check_avis_conformes(corps, google_rating=2.9, google_reviews_count=504)
+    r = cc.check_avis_conformes(
+        corps, google_rating=2.9, google_reviews_count=504, track="agence-ia"
+    )
     assert not r.passed, f"« {mot} » échappe encore au plancher"
 
 

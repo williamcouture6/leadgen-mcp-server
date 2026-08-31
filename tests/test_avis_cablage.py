@@ -152,6 +152,9 @@ def _message_redacteur(**avis: Any) -> str:
         social_proof=[],
         template_choice="A",
         slots_block="",
+        # ⚠️ Les blocs d'AC1b ne servent QUE la piste `agence-ia` : sans le
+        # track, ce helper tomberait sur OPT et ne verrait aucun bloc.
+        track="agence-ia",
     )
 
 
@@ -302,7 +305,9 @@ def test_une_note_sous_le_plancher_est_BLOQUEE_meme_si_elle_est_vraie(note, nb_a
     from src.lib import compliance_checks as cc
 
     corps = f"Bonjour,\n\nA.M.G. Neige a {str(note).replace('.', ',')} étoiles sur {nb_avis} avis. Dis-moi."
-    r = cc.check_avis_conformes(corps, google_rating=note, google_reviews_count=nb_avis)
+    r = cc.check_avis_conformes(
+        corps, google_rating=note, google_reviews_count=nb_avis, track="agence-ia"
+    )
     assert not r.passed, f"{note}/{nb_avis} : chiffre exact mais citation interdite"
     assert r.severity == "block"
     assert any("plancher" in m for m in r.matches)
@@ -314,7 +319,36 @@ def test_le_repli_passe_meme_sous_le_plancher() -> None:
     from src.lib import compliance_checks as cc
 
     corps = "Bonjour,\n\nDu monde qui te cherche, t'en as. Dis-moi."
-    assert cc.check_avis_conformes(corps, google_rating=2.3, google_reviews_count=27).passed
+    assert cc.check_avis_conformes(
+        corps, google_rating=2.3, google_reviews_count=27, track="agence-ia"
+    ).passed
+
+
+def test_la_piste_OPT_nest_pas_soumise_au_plancher() -> None:
+    """OPT n'a ni bloc 2, ni repli, ni colonnes d'avis câblées. Lui appliquer le
+    plancher bloquerait tout corps qui mentionnerait un chiffre, pour une règle
+    qui ne le concerne pas. Même raison que `check_length` et `check_registre`,
+    qui prennent déjà le track."""
+    from src.lib import compliance_checks as cc
+
+    corps = "Bonjour,\n\nVotre clinique a 2,3 étoiles sur 27 avis."
+    assert cc.check_avis_conformes(
+        corps, google_rating=2.3, google_reviews_count=27, track="OPT"
+    ).passed
+
+
+def test_la_piste_OPT_ne_recoit_pas_les_blocs_dac1b() -> None:
+    """Le prompt OPT ne connaît ni la structure en trois temps, ni le lexique,
+    ni le plancher. Lui servir ces blocs lui donnerait des instructions qu'il ne
+    sait pas exécuter."""
+    msg = perso._format_input_for_llm(
+        research={"services_offered": ["déneigement"]},
+        company={"name": "Ex", "google_rating": 4.8, "google_reviews_count": 47},
+        contact=None, social_proof=[], template_choice="A", slots_block="",
+        track="OPT",
+    )
+    assert "Métiers résolus" not in msg
+    assert "Faits vérifiés" not in msg
 
 
 def test_le_juge_garde_son_retry_sur_les_529() -> None:

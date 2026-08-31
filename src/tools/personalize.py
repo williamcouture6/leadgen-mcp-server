@@ -224,14 +224,29 @@ def _format_input_for_llm(
     parts = [
         f"## Template à utiliser\n{template_choice}",
         f"\n## Entreprise ciblée\nname: {place_name}\nwebsite: {website}",
-        "\n" + bloc_metiers_resolus(
-            research.get("services_offered"), aujourdhui or date.today()
-        ),
-        "\n" + bloc_faits_verifies(
-            company.get("google_rating"), company.get("google_reviews_count")
-        ),
-        f"\n## research_json (Research Agent output)\n```json\n{json.dumps(research, ensure_ascii=False, indent=2)}\n```",
     ]
+
+    # ⚠️ Les deux blocs d'AC1b ne servent QUE la piste `agence-ia`.
+    #
+    # Le prompt OPT ne connaît ni la structure en trois temps, ni le lexique de
+    # métier, ni le plancher d'avis. Lui servir ces blocs lui donnerait des
+    # instructions qu'il ne sait pas exécuter, et le bloc de faits vérifiés lui
+    # ordonnerait de citer une note que son gabarit n'a nulle part où mettre.
+    # OPT est gelé mais doit rester INTACT — c'est la règle du repo depuis le
+    # pivot, et `check_length` comme `check_registre` la respectent déjà.
+    if track == "agence-ia":
+        parts += [
+            "\n" + bloc_metiers_resolus(
+                research.get("services_offered"), aujourdhui or date.today()
+            ),
+            "\n" + bloc_faits_verifies(
+                company.get("google_rating"), company.get("google_reviews_count")
+            ),
+        ]
+
+    parts.append(
+        f"\n## research_json (Research Agent output)\n```json\n{json.dumps(research, ensure_ascii=False, indent=2)}\n```"
+    )
 
     if contact:
         parts.append(
