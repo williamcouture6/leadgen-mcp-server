@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
@@ -1882,6 +1882,23 @@ class PersonalizeContactOut(BaseModel):
     error_text: str | None = None
 
 
+def _tombe_sur_le_repli_du_lexique(company_row: dict[str, Any]) -> bool:
+    """Cette entreprise recevra-t-elle le lexique GENERIQUE ?
+
+    Vrai quand aucun metier n'est reconnu dans `services_offered`. Le lead part
+    quand meme -- c'est le defaut inverse, on n'ecarte jamais sur l'optimisation
+    -- mais avec un ouvreur sans metier nomme, donc beaucoup moins ancre.
+
+    ⚠️ Si ce compteur monte, ce n'est pas la copie qui est en cause : c'est WF-3
+    qui n'a pas assez creuse. La spec le dit depuis le debut ; il manquait juste
+    quelqu'un pour compter.
+    """
+    from .lib.metiers import resoudre_metiers
+
+    research = company_row.get("research_json") or {}
+    return resoudre_metiers(research.get("services_offered"), date.today()).dominant is None
+
+
 def _bras_ab(template_choice: str, rang: int) -> str:
     """Le bras du test A/B pour le n-ième contact du lot.
 
@@ -2182,6 +2199,15 @@ class RunWf4Out(BaseModel):
     # n'y avait rien à annoncer. Lire le retour évite l'alerte qui se croit
     # partie, comme RunWf5Out.alerte_envoyee.
     alerte_famine_envoyee: bool | None = None
+    # Combien de leads du lot sont tombes sur le LEXIQUE DE REPLI, faute de
+    # metier reconnu. Promis par la tache 5 et par la spec, jamais pose jusqu'au
+    # conseil final : sans lui, un lot peut partir massivement en formulations
+    # generiques -- exactement ce que la section 3 existe pour eviter -- et
+    # /wf4/run rend `drafts_created=10` sans un mot.
+    #
+    # ⚠️ Ce n'est PAS un compteur de la copie : s'il monte, c'est WF-3 qui n'a
+    # pas assez creuse les services de l'entreprise.
+    lexique_de_repli: int = 0
     items: list[RunWf4Item]
 
 
@@ -2329,11 +2355,15 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
     social_proof = _load_client_references()
 
     items: list[RunWf4Item] = []
-    drafts = skipped = failed = 0
+    drafts = skipped = failed = repli_lexique = 0
 
     for rang, entry in enumerate(backlog):
         contact = entry["contact"]
         company = entry["company"]
+        # Compte AVANT la generation : meme si le draft echoue ensuite, le fait
+        # que WF-3 n'ait pas trouve de metier reste vrai et doit se voir.
+        if _tombe_sur_le_repli_du_lexique(company):
+            repli_lexique += 1
         try:
             res = await _personalize_one(
                 contact, company,
@@ -2388,6 +2418,7 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
         skipped=skipped, failed=failed,
         slots_available=total_slots, items=items,
         alerte_famine_envoyee=alerte_famine_envoyee,
+        lexique_de_repli=repli_lexique,
     )
 
 

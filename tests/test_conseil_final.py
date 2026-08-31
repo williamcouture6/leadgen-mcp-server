@@ -247,3 +247,53 @@ def test_un_synonyme_davis_est_compare_a_la_colonne(mot: str) -> None:
     corps = f"Bonjour,\n\nGroupe Essa a 2,9 étoiles sur 504 {mot}. Dis-moi."
     r = cc.check_avis_conformes(corps, google_rating=2.9, google_reviews_count=504)
     assert not r.passed, f"« {mot} » échappe encore au plancher"
+
+
+# ---------------- 7. La garde sans-site, et le compteur de repli ----------------
+
+@pytest.mark.parametrize(
+    "company,demarchable,pourquoi",
+    [
+        ({"website": "https://ex.ca"}, True, "a un site"),
+        ({"website": "https://ex.ca", "google_place_id": None}, True, "le site suffit"),
+        ({"website": "", "google_place_id": "ChIJ", "google_reviews_count": 12}, True,
+         "pas de site mais fiche Google exploitable"),
+        ({"website": "", "google_place_id": "ChIJ", "google_reviews_count": 3}, True,
+         "exactement au seuil"),
+        ({"website": "", "google_place_id": "ChIJ", "google_reviews_count": 2}, False,
+         "sous le seuil : rien a ecrire sur eux"),
+        ({"website": "", "google_place_id": None, "google_reviews_count": 99}, False,
+         "aucune fiche Google"),
+        ({"website": "", "google_place_id": "ChIJ"}, False, "aucun compte d'avis"),
+        ({}, False, "fiche vide"),
+    ],
+)
+def test_la_garde_sans_site(company, demarchable, pourquoi) -> None:
+    """La garde n'avait AUCUN test, et les deux seuls tests qui la croisaient
+    ont été modifiés pendant AC1b pour la contourner en ajoutant un `website`.
+
+    Exposition nulle aujourd'hui (0 lead écarté), mais une régression serait
+    invisible : soit on démarche des entreprises sur lesquelles on n'a rien à
+    dire, soit on en écarte silencieusement des centaines."""
+    from src.tools.db import site_ou_fiche_exploitable
+
+    assert site_ou_fiche_exploitable(company) is demarchable, pourquoi
+
+
+def test_le_repli_du_lexique_se_compte() -> None:
+    """Promis par la tâche 5 et par la spec, jamais posé jusqu'au conseil final.
+    Sans lui, un lot peut partir massivement en formulations génériques —
+    exactement ce que la §3 existe pour éviter — et `/wf4/run` rend
+    `drafts_created=10` sans un mot."""
+    reconnue = {"research_json": {"services_offered": ["déneigement résidentiel"]}}
+    inconnue = {"research_json": {"services_offered": ["réparation de clôtures"]}}
+    vide = {"research_json": {}}
+
+    assert http_api._tombe_sur_le_repli_du_lexique(inconnue) is True
+    assert http_api._tombe_sur_le_repli_du_lexique(vide) is True
+    assert http_api._tombe_sur_le_repli_du_lexique(reconnue) is False
+
+
+def test_le_compteur_de_repli_est_expose_par_la_route() -> None:
+    """Un compteur qui n'atteint pas la sortie de `/wf4/run` ne compte rien."""
+    assert "lexique_de_repli" in http_api.RunWf4Out.model_fields
