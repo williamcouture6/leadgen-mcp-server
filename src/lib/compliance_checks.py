@@ -104,8 +104,20 @@ def _body_without_signature(email_body: str) -> str:
 
 
 def _find_matches(body: str, patterns: dict[str, str]) -> list[tuple[str, str]]:
+    """🔴 Normalise l'APOSTROPHE avant de chercher.
+
+    Tous les motifs d'action à la première personne sont écrits avec une
+    apostrophe DROITE (« j'ai vu »). Un traitement de texte, un copier-coller
+    depuis Word, ou un modèle qui soigne sa typographie produisent l'apostrophe
+    COURBE U+2019 — et le motif ne matche plus rien.
+
+    Le filet est unique : `prompts/compliance.md` interdit explicitement au juge
+    LLM de re-checker les actions au passé en première personne, parce qu'on lui
+    a dit que le déterministe s'en charge. Un caractère invisible désarmait donc
+    la règle entièrement, sans que rien ne le signale.
+    """
     hits: list[tuple[str, str]] = []
-    low = body.lower()
+    low = body.lower().replace("’", "'").replace("ʼ", "'")
     for pattern, label in patterns.items():
         for m in re.finditer(pattern, low, flags=re.IGNORECASE):
             hits.append((m.group(0), label))
@@ -521,8 +533,15 @@ def _warmup_disabled() -> bool:
 # motifs sont ANCRÉS sur leur mot (« étoiles », « avis ») : sans ça, « 60
 # secondes » et « 24/7 », présents dans tous les corps, seraient pris pour des
 # chiffres d'avis et bloqueraient 100 % des brouillons.
-_NOTE_RE = re.compile(r"(\d+(?:[,.]\d)?)\s*étoiles?", re.IGNORECASE)
-_COMPTE_AVIS_RE = re.compile(r"(\d+)\s*avis\b", re.IGNORECASE)
+# ⚠️ Les SYNONYMES comptent. Ancré uniquement sur « étoiles » et « avis », le
+# check laissait passer « 2,9 sur 504 évaluations Google » : le chiffre
+# échappait DEUX fois — à la comparaison avec la colonne ET au plancher de
+# qualité — et une entreprise notée 2,9 lisait sa propre mauvaise note.
+_NOTE_RE = re.compile(r"(\d+(?:[,.]\d)?)\s*(?:étoiles?|etoiles?)", re.IGNORECASE)
+_COMPTE_AVIS_RE = re.compile(
+    r"(\d+)\s*(?:avis|évaluations?|evaluations?|commentaires?)\b",
+    re.IGNORECASE,
+)
 
 
 def check_avis_conformes(

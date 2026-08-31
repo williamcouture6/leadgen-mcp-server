@@ -511,7 +511,12 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             sk_supp += 1
         elif res.status == "skipped_platform_domain":
             sk_plat += 1
-        elif res.status == "skipped_not_eligible":
+        elif res.status in ("skipped_not_eligible", "skipped_followups_manquants"):
+            # 🔧 `skipped_followups_manquants` est un refus VOLONTAIRE et
+            # fail-closed, pas une panne. Le compter en `errors` le faisait
+            # remonter comme une erreur d'envoi alors que le nœud n8n filtre
+            # sur `status === 'error'` et affichait `Failures: []` : le lot
+            # rapportait des erreurs que personne ne pouvait nommer.
             sk_other += 1
         else:
             errors += 1

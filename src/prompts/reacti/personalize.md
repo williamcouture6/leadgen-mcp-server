@@ -158,11 +158,11 @@ règle nº4, et un contrôle déterministe **bloque** désormais le brouillon.
 **Sa forme : supposition en tête → fait de métier au milieu → chute qui n'accuse personne.**
 
 **Gabarit A : 45 mots maximum**, 2ᵉ temps compris, un seul « pis ».
-**Gabarit B : 60 mots maximum**, 2ᵉ temps compris, **jusqu'à 3 « pis »**.
+**Gabarit B : 70 mots maximum**, 2ᵉ temps compris, **jusqu'à 3 « pis »**.
 
 ⚠️ La différence n'est pas un relâchement : l'ouvreur de B fait **deux
 paragraphes** (la scène du marché, puis la sienne) là où A n'en fait qu'un.
-Mesuré sur le corps de référence : 57 mots et 3 « pis ». Annoncer 45 et 1
+Mesuré sur les corps de référence : l'ouvreur de A fait **37 mots** et aucun « pis » ; celui de B fait **66 mots** et en porte **2**, son 2ᵉ temps compris. Annoncer 45 et 1
 poussait le modèle à **réécrire un texte fixe** pour tenir la limite — donc à
 produire du texte que personne n'a compté, alors que tout le gabarit repose sur
 « recopier mot pour mot ».
@@ -323,7 +323,11 @@ charge rien. Ça t'intéresse-tu? T'as juste à me dire.
 
 # LONGUEUR
 
-Le corps du courriel vise **200 à 235 mots**, signature exclue. Les relances visent **90 à 110 mots**.
+Le corps du courriel vise **210 à 250 mots**, signature exclue. Les relances visent **90 à 110 mots**.
+
+⚠️ **Ces chiffres sont MESURÉS sur les corps de référence**, pas estimés : A fait 217 mots, B fait 239, et la variante sans site de B monte à 246. Le contrôle automatique, lui, accepte 180 à 270 — il y a donc de la marge des deux côtés. **N'inscris un warning de longueur que si tu sors de 180-270**, jamais parce que tu dépasses la cible : la cible décrit, elle ne contraint pas.
+
+🔴 **Et ne raccourcis JAMAIS le texte fixe pour tenir un chiffre.** Si ton corps dépasse, c'est ton ouvreur qui est trop long, jamais le gabarit.
 
 Le texte fixe est déjà compté. **Si tu tiens l'ouvreur sous 45 mots et que tu recopies le reste exactement, tu es dans la cible sans avoir à compter.** C'est la raison d'être du gabarit.
 

@@ -177,3 +177,73 @@ def test_la_formulation_imposee_est_lisible_de_bout_en_bout() -> None:
     assert "de la excavation" not in bloc
     assert "du piscine" not in bloc
     assert "de l'excavation" in bloc
+
+
+# ---------------- 4. Le lexique se separe en deux ----------------
+
+def test_le_lieu_suit_la_scene_et_les_questions_le_dominant() -> None:
+    """🔴 Les souder écrivait, à un laveur de vitres démarché en décembre sur
+    le déneigement : « Pis toi t'es EN HAUT D'UNE ÉCHELLE » juste après une
+    scène de neige.
+
+    La spec §3 sépare bien les deux : le BLOC SERVICE (les questions) suit le
+    dominant, la SCÈNE de l'ouvreur suit la saison — donc le LIEU aussi.
+    Mesuré : scène ≠ dominant sur 27 % des entreprises.
+    """
+    from datetime import date
+
+    bloc = perso.bloc_metiers_resolus(
+        ["lavage de vitres commercial", "nettoyage de fenêtres",
+         "lavage de vitres résidentiel", "déneigement"],
+        date(2026, 12, 10),
+    )
+    assert "dans la machine" in bloc, "le lieu doit suivre la scène (déneigement)"
+    assert "le nombre d'étages" in bloc, "les questions suivent le dominant (vitres)"
+    assert "en haut d'une échelle" not in bloc
+    assert "DEUX métiers différents" in bloc, (
+        "quand les deux divergent, le rédacteur doit savoir que c'est voulu"
+    )
+
+
+def test_sans_divergence_aucun_avertissement_inutile() -> None:
+    from datetime import date
+
+    bloc = perso.bloc_metiers_resolus(["déneigement"], date(2026, 12, 10))
+    assert "DEUX métiers différents" not in bloc
+
+
+# ---------------- 5. L'apostrophe courbe ne desarme plus rien ----------------
+
+@pytest.mark.parametrize("apostrophe", ["'", "\u2019", "\u02bc"])
+def test_jai_vu_est_attrape_quelle_que_soit_lapostrophe(apostrophe: str) -> None:
+    """Le filet est UNIQUE : `compliance.md` interdit au juge de re-checker
+    cette catégorie. Un caractère invisible désarmait la règle entièrement."""
+    from src.lib import compliance_checks as cc
+
+    corps = f"Bonjour,\n\nJ{apostrophe}ai vu que t{apostrophe}as pas de site web."
+    r = cc.check_first_person_actions(corps)
+    assert not r.passed, f"apostrophe U+{ord(apostrophe):04X} non attrapée"
+
+
+def test_les_motifs_de_la_regle_4_attrapent_vraiment_quelque_chose() -> None:
+    """Test POSITIF : le conseil a relevé qu'aucun ne prouvait que ces trois
+    motifs mordent."""
+    from src.lib import compliance_checks as cc
+
+    for formule in ("j'ai vu ton site", "j'ai lu ta page", "j'ai remarqué ton avis"):
+        assert not cc.check_first_person_actions(f"Bonjour,\n\n{formule}.").passed, formule
+
+
+# ---------------- 6. Les synonymes d'avis ne s'echappent plus ----------------
+
+@pytest.mark.parametrize(
+    "mot", ["avis", "évaluations", "evaluations", "commentaires"]
+)
+def test_un_synonyme_davis_est_compare_a_la_colonne(mot: str) -> None:
+    """« 2,9 sur 504 évaluations Google » échappait DEUX fois : à la
+    comparaison avec la colonne ET au plancher de qualité."""
+    from src.lib import compliance_checks as cc
+
+    corps = f"Bonjour,\n\nGroupe Essa a 2,9 étoiles sur 504 {mot}. Dis-moi."
+    r = cc.check_avis_conformes(corps, google_rating=2.9, google_reviews_count=504)
+    assert not r.passed, f"« {mot} » échappe encore au plancher"

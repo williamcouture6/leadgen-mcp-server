@@ -67,7 +67,23 @@ def bloc_metiers_resolus(
     « Tu fais X aussi » n'affirme rien de temporel et ne peut pas être faux.
     """
     r = resoudre_metiers(services_offered, aujourdhui)
-    lex = lexique_pour(r.dominant)
+
+    # 🔴 Le lexique se SÉPARE en deux, et les souder était un défaut trouvé par
+    # le conseil final.
+    #
+    # La spec §3 dit « le lexique du BLOC SERVICE suit le métier dominant ;
+    # seule la SCÈNE de l'ouvreur suit le métier saisonnier ». Le bloc service,
+    # ce sont les trois QUESTIONS. Le lieu (« où il est »), lui, appartient à
+    # l'ouvreur — donc à la scène.
+    #
+    # Les prendre tous les deux au dominant écrivait, à un laveur de vitres
+    # démarché en décembre sur le déneigement :
+    #   « Quand quelqu'un cherche un entrepreneur pour déneiger son entrée…
+    #     Pis toi t'es EN HAUT D'UNE ÉCHELLE. »
+    # Mesuré : scène ≠ dominant sur 27 % des entreprises, lieu divergent sur
+    # 25 %. Un courriel sur quatre décrivait le gars au mauvais endroit.
+    lex_scene = lexique_pour(r.scene or r.dominant)
+    lex_dominant = lexique_pour(r.dominant)
 
     lignes = ["## Métiers résolus (déjà classés — tu ne recalcules RIEN)"]
 
@@ -116,13 +132,21 @@ def bloc_metiers_resolus(
         else:
             lignes.append("- **Entreprise mono-métier : aucun 2ᵉ temps.** Ne l'invente pas.")
 
+    q = lex_dominant.questions
     lignes += [
         "",
         "## Lexique (choisi par une table — recopie-le TEL QUEL)",
-        f"- Où il est : **{lex.ou_il_est}**",
-        f"- Les trois questions : **{lex.questions[0]}, {lex.questions[1]}, {lex.questions[2]}**",
+        f"- **Où il est**, pour l'OUVREUR (suit le métier de la scène) : **{lex_scene.ou_il_est}**",
+        f"- **Les trois questions**, pour le BLOC SERVICE (suivent le métier dominant) :",
+        f"  **{q[0]}, {q[1]}, {q[2]}**",
     ]
-    if lex.est_repli:
+    if lex_scene.ou_il_est != lex_dominant.ou_il_est:
+        lignes.append(
+            "  ⚠️ Le lieu et les questions viennent de DEUX métiers différents, "
+            "et c'est voulu : l'ouvreur parle de sa saison qui s'en vient, le "
+            "bloc service parle de son métier de tous les jours."
+        )
+    if lex_dominant.est_repli:
         lignes.append(
             "  (lexique de repli : aucun métier reconnu, formulations neutres)"
         )

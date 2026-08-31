@@ -2303,16 +2303,27 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
         limit=payload.limit, max_per_company=payload.max_per_company, track=payload.track,
     )
 
-    # Fetch Cal.com une seule fois pour tout le batch — évite N appels API et
-    # garantit que tous les emails du batch piochent dans la même liste de créneaux.
-    import asyncio
-    from .lib.calcom import CalcomError, get_available_slots
-    try:
-        # Wrap sync httpx.get dans to_thread pour ne pas bloquer l'event loop
-        # pendant l'appel Cal.com (jusqu'à 10s timeout).
-        slots = await asyncio.to_thread(get_available_slots, days_ahead=7)
-    except CalcomError:
-        slots = []
+    # 🔴 Cal.com ne sert PLUS la piste `agence-ia`, et le retirer du prompt ne
+    # suffisait pas : c'est l'APPEL qu'il faut couper.
+    #
+    # Le courriel de tri ne propose aucun rendez-vous (règle nº11 : le RDV se
+    # propose dans la réponse au oui, jamais dans le froid). Tant que la liste
+    # arrivait quand même, `check_cta_slots_real` restait armé en `block` sur
+    # une piste où aucun créneau ne doit exister : un ouvreur qui nommerait un
+    # jour, une date et une heure serait soit refusé irréversiblement, soit
+    # VALIDÉ comme un créneau légitime si l'heure coïncidait.
+    # Bénéfice au passage : un appel réseau et un mode de panne en moins par
+    # lot, sur un service dont on n'a plus besoin ici.
+    slots: list[dict[str, Any]] = []
+    if payload.track != "agence-ia":
+        # Fetch Cal.com une seule fois pour tout le batch — évite N appels API et
+        # garantit que tous les emails du batch piochent dans la même liste.
+        import asyncio
+        from .lib.calcom import CalcomError, get_available_slots
+        try:
+            slots = await asyncio.to_thread(get_available_slots, days_ahead=7)
+        except CalcomError:
+            slots = []
     total_slots = sum(len(s.get("times", [])) for s in slots)
 
     social_proof = _load_client_references()
@@ -2719,7 +2730,10 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             # → on re-fetch Cal.com pour avoir la liste actuelle (acceptable car compliance
             # se fait peu après personalize, slots quasi identiques).
 
-    if not available_slots:
+    # Même raison qu'à la génération : sur `agence-ia`, aucun créneau ne doit
+    # exister dans le corps, donc en fournir une liste n'arme qu'un faux
+    # positif possible. `check_cta_slots_real` passe sur liste vide.
+    if not available_slots and track != "agence-ia":
         try:
             import asyncio
             from .lib.calcom import CalcomError, get_available_slots
