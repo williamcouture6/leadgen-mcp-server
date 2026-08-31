@@ -98,15 +98,11 @@ def bloc_metiers_resolus(
             )
         autres_metiers = [m for m in r.metiers if m != scene]
         if autres_metiers:
-            autres = (
-                " pis ".join(autres_metiers)
-                if len(autres_metiers) <= 2
-                else ", ".join(autres_metiers)
-            )
+            autres = _enumerer_metiers(autres_metiers)
             formule = (
-                f"Tu fais {_avec_article(autres)} aussi."
+                f"Tu fais {autres} aussi."
                 if r.meme_saison
-                else f"Pour le reste de l'année, tu fais {_avec_article(autres)}."
+                else f"Pour le reste de l'année, tu fais {autres}."
             )
             lignes.append(f"- **Ses autres métiers** : {', '.join(autres_metiers)}")
             lignes.append(
@@ -133,19 +129,50 @@ def bloc_metiers_resolus(
     return "\n".join(lignes)
 
 
-def _avec_article(metiers: str) -> str:
-    """« déneigement » → « du déneigement », « tonte » → « de la tonte ».
+# Les métiers féminins du dictionnaire. Les autres sont masculins.
+_METIERS_FEMININS = frozenset({"tonte", "toiture", "piscine", "excavation", "extermination"})
 
-    Petit, mais c'est la différence entre « tu fais tonte » et une phrase que
-    le prospect lit sans buter.
+
+def _avec_article(metier: str) -> str:
+    """« déneigement » → « du déneigement », « piscine » → « de la piscine »,
+    « excavation » → « de l'excavation ».
+
+    🔴 Trois défauts corrigés le 2026-08-30, sur trouvaille du conseil final.
+    Ils comptaient parce que le prompt présente cette phrase comme une
+    **formulation IMPOSÉE** et interdit au rédacteur de la reformuler « même
+    mieux » : le modèle était donc sommé de recopier la faute.
+
+    1. **L'élision passait après le test du féminin**, qui retournait le
+       premier : « de la excavation », « de la extermination ».
+    2. **`piscine` manquait à la liste** : « du piscine ».
+    3. **L'article était posé sur la chaîne DÉJÀ jointe** : « de la excavation
+       pis pavage » — un seul article pour deux métiers. C'est pourquoi cette
+       fonction ne prend plus qu'UN métier, et que la jointure vient après.
+
+    Mesuré : ~19 % des entreprises ayant un `services_offered` tombaient sur
+    l'un des trois.
     """
-    feminins = ("tonte", "toiture", "excavation", "extermination")
-    for f in feminins:
-        if metiers.startswith(f):
-            return f"de la {metiers}"
-    if metiers[:1].lower() in "aeiouéè":
-        return f"de l'{metiers}"
-    return f"du {metiers}"
+    # L'élision D'ABORD : elle l'emporte sur le genre. « excavation » est
+    # féminin ET commence par une voyelle, et c'est l'élision qui gagne.
+    if metier[:1].lower() in "aeiouâàéèêîïôûù":
+        return f"de l'{metier}"
+    if metier in _METIERS_FEMININS:
+        return f"de la {metier}"
+    return f"du {metier}"
+
+
+def _enumerer_metiers(metiers: list[str]) -> str:
+    """« du déneigement pis de la tonte » — un article PAR métier.
+
+    ⚠️ La jointure vient APRÈS l'articulation, jamais avant : « de la
+    excavation pis pavage » était le résultat de l'ordre inverse.
+    """
+    avec = [_avec_article(m) for m in metiers]
+    if len(avec) == 1:
+        return avec[0]
+    if len(avec) == 2:
+        return f"{avec[0]} pis {avec[1]}"
+    return ", ".join(avec[:-1]) + f" pis {avec[-1]}"
 
 
 def _format_input_for_llm(

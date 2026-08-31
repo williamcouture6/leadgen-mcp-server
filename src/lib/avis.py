@@ -68,13 +68,39 @@ def nom_commercial(nom_brut: str | None) -> str:
     nom = (nom_brut or "").strip()
     if not nom:
         return ""
+
+    # 🔴 Un separateur ne coupe QUE s'il est precede d'une espace.
+    #
+    # Correctif du conseil final. La premiere version coupait au premier tiret
+    # trouve, sans regarder ce qui le precedait : le trait d'union INTERNE des
+    # noms propres composes se faisait prendre pour un separateur de mots-cles.
+    # Mesure sur la base : 93 noms sur 816 portent un trait d'union, dont 56
+    # au-dessus du plancher d'avis -- soit ~10 % de la liste dont le SEUL fait
+    # personnalise du courriel, imprime dans l'ancre chiffree, partait ecorche :
+    #
+    #   « Chasse-Neige Express »      -> « Chasse »
+    #   « Deneigement Rive-Sud »      -> « Deneigement Rive »
+    #   « Paysagement Saint-Nicolas » -> « Paysagement Saint »
+    #   « 9265-1234 Quebec inc. »     -> « 9265 »
+    #
+    # Le bourrage de mots-cles, lui, est TOUJOURS precede d'une espace
+    # (« Vitres Ultra Nettes -lavage de vitres condo ») : la regle separe donc
+    # exactement les deux cas.
+    #
+    # ⚠️ La virgule fait exception : elle s'ecrit collee au mot qui precede
+    # (« Piscines Elegance, Quebec »), donc exiger une espace avant elle ne
+    # couperait jamais rien.
     coupe = len(nom)
     for sep in _SEPARATEURS_NOM:
-        i = nom.find(sep)
-        # `i > 0` : un separateur EN TETE ne coupe rien, sinon on rendrait une
-        # chaine vide sur un nom du genre « -Deneigement Rive-Sud ».
-        if i > 0:
-            coupe = min(coupe, i)
+        depart = 1  # un separateur EN TETE ne coupe rien : sinon chaine vide.
+        while True:
+            i = nom.find(sep, depart)
+            if i < 0:
+                break
+            if sep == "," or nom[i - 1] == " ":
+                coupe = min(coupe, i)
+                break
+            depart = i + 1
     return nom[:coupe].strip(" -|,/:") or nom
 
 

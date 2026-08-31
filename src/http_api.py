@@ -2400,6 +2400,33 @@ def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dic
     `tentatives_avant` tolère `None` : `compliance_tentatives` absent d'un
     SELECT rend None, et `None + 1` ferait avorter toute la passe.
     """
+    # 🔴 `error` ne laisse AUCUNE trace, et c'est le correctif du conseil final.
+    #
+    # Le layer 0 de conformité (config LCAP incomplète) rend `error` PRÉCISÉMENT
+    # pour ne pas marquer le brouillon — la faute est dans l'environnement, pas
+    # dans le texte. Mais la route persistait ce verdict comme les autres, et
+    # cette fonction écrivait `compliance_check_passed = ("error" == "approved")
+    # = False`. **La garde écrite pour empêcher le gel des contacts était
+    # exactement ce qui les gelait.**
+    #
+    # Reproduit par exécution : avec `LCAP_MENTIONS_REDUITES=true` et
+    # `INSTANTLY_CAMPAIGN_FOOTER` vide — l'état exact du go-live — chaque
+    # brouillon du lot recevait `passed=false`, quittait la requête de
+    # `/wf5/run` (qui ne reprend que `is.null`) et gelait son contact à vie.
+    # 20 par jour, 255 en deux semaines, zéro courriel, et 1153 tests verts.
+    #
+    # Sur `main`, aucun `error` ne sortait de l'INTÉRIEUR de `compliance_check`
+    # (les seuls venaient des `except` de la route, qui retournent AVANT la
+    # persistance). AC1b a introduit le premier, et personne n'avait rouvert la
+    # question de la persistance.
+    #
+    # ⚠️ `compliance_tentatives` ne bouge pas non plus : une configuration
+    # absente n'est pas une tentative de jugement. L'incrémenter ferait
+    # atteindre le plafond anti-boucle en trois passes, et un problème de
+    # variable d'environnement deviendrait un refus définitif.
+    if verdict == "error":
+        return {"compliance_verdict": verdict}
+
     patch: dict[str, Any] = {
         "compliance_verdict": verdict,
         "compliance_tentatives": (tentatives_avant or 0) + 1,
@@ -2410,7 +2437,8 @@ def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dic
 
 
 def _doit_alerter_wf5(
-    *, needs_revision: int, blocked: int, non_juge: int, orphelins: int = 0
+    *, needs_revision: int, blocked: int, non_juge: int, orphelins: int = 0,
+    errors: int = 0,
 ) -> bool:
     """`non_juge` est dans la condition, et ce n'est pas un détail.
 
@@ -2422,8 +2450,17 @@ def _doit_alerter_wf5(
     dont le message ne repassera JAMAIS devant la conformité (il en sort avec
     `passed = false`). Hors de cette condition, l'unique occasion de le nommer
     serait manquée et l'anomalie deviendrait invisible.
+
+    🔴 `errors` s'y ajoute le 2026-08-30, sur trouvaille du conseil final, et
+    pour la même raison que les deux précédents : depuis le layer 0 de
+    conformité, une CONFIGURATION LCAP incomplète rend `error` sur TOUT le lot.
+    Hors de cette condition, la seule panne qui arrête l'envoi en entier serait
+    aussi la seule totalement muette — le lot rendrait `processed=20,
+    approved=0` sans un mot sur `#alertes`, et le résumé du soir n'aurait rien
+    à dire non plus. Vérifié : le workflow n8n WF-5 ne porte aucun nœud
+    d'alerte, donc le silence serait total, pas seulement côté serveur.
     """
-    return (needs_revision + blocked + non_juge + orphelins) > 0
+    return (needs_revision + blocked + non_juge + orphelins + errors) > 0
 
 
 def _regle_qui_a_tranche(out: compliance_tools.ComplianceCheckOut) -> str:
@@ -2946,7 +2983,7 @@ async def run_wf5(payload: RunWf5In) -> RunWf5Out:
     alerte_envoyee: bool | None = None
     if _doit_alerter_wf5(
         needs_revision=needs_revision, blocked=blocked, non_juge=non_juge,
-        orphelins=orphelins,
+        orphelins=orphelins, errors=errors,
     ):
         alerte_envoyee = await _alerter_wf5(
             processed=len(items), needs_revision=needs_revision,
