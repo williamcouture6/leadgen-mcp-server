@@ -84,22 +84,35 @@ Note de 0 à 100 à quel point ce prospect vaut la peine d'être contacté **sel
 
 **Si Track = AGENCE-IA** (≡ ancien REACTI, même moteur — l'offre = abonnement mensuel d'automatisation pour PME de **services à domicile / contracteurs au Québec**. Tier Essentiel (497 $/mois): **réceptionniste IA** qui prend les rendez-vous et répond aux appels manqués, réponse automatique aux **formulaires web et messages Facebook**, site web pro, rappels de soumissions, rappels de paiement sortants. Tier Croissance (797 $/mois): + suivi de projet, **réactivation de la base de clients dormants**, factures entrantes (extraction PDF/photo), campagnes de renouvellement saisonnier, rappels de visite, collecte d'avis Google. Tier Élite (1297 $/mois): + rapports mensuels et optimisation continue. Cibles typiques: plombier, électricien, CVAC, paysagiste, déneigement, toiture, rénovation, extermination, lavage de vitres, etc.):
 
-- **Facteur primaire (ancre le score)**: la PME **perd-elle des leads faute de réponse rapide** (appels manqués hors heures, formulaire de soumission sans réponse automatique, demandes Messenger ignorées) ET son process est-il **manuel** (pas d'agent téléphonique virtuel / chatbot / prise de RDV automatisée déjà en place)? Si oui aux deux → déjà bon potentiel (60+). C'est le cœur de l'offre: capter les leads entrants 24/7.
-- **Facteur secondaire (amplifie, sans plafonner)**: service **rachetable / récurrent** (contrat, entretien, suivi, urgence qui revient, saison) → les features « réactivation » et « campagnes de renouvellement saisonnier » du tier Croissance s'appliquent = upside. Taille de base inférée (beaucoup d'avis OU business établi de longue date) = base accumulée plus large = plus de valeur. Avis = proxy mou (1-10% des clients en laissent) → un compte d'avis modéré ne disqualifie jamais à lui seul.
-- **Bonus (additif, jamais pénalisant)**: service saisonnier = déclencheur de timing gratuit pour la campagne (« la saison commence »). Le **déneigement** est une entrée idéale. L'absence de saisonnalité ne fait JAMAIS baisser le score.
-- **Bas potentiel**: déjà fortement outillé (agent virtuel / réservation automatisée / agence numérique partenaire visible), micro one-person sans réelle base de clients récurrente, ou **entité qui n'est pas une PME de service à vendre** (organisme de certification, réseau coopératif, annuaire, franchise corporative > 50 empl.).
+Le score mesure UNE seule chose : **combien de demandes entrantes cette PME laisse tomber faute de réponse rapide**. Trois facteurs dans cet ordre, puis deux ajustements.
+
+**1. Exposition hors-heures — c'est l'ancre du score.** Lis `opening_hours` (les heures Google) et confronte-les à ce que le site promet. Fermé à 17 h et la fin de semaine = tout ce qui rentre le soir, le weekend et pendant une tempête tombe dans le vide. Le cas le plus fort du barème : le site annonce « urgence 24/7 » ou « disponible en tout temps » alors que les heures disent lundi-vendredi de bureau — la promesse est déjà brisée, et c'est exactement ce que l'offre répare. À l'inverse, des heures réellement 24 h ou un service de réponse visible affaiblissent le facteur. Si `opening_hours: (inconnu)` et qu'aucune heure n'apparaît sur le site, ne devine pas : dis-le dans `reasoning` et appuie-toi sur les deux autres facteurs.
+
+**2. Volume de demandes entrantes — ça amplifie, sans plafond.** Plus il rentre d'appels, plus il s'en perd. Signaux : nombre d'avis, **rythme des avis** (regarde le `when=` des avis récents — 5 avis en un mois ne dit pas la même chose que 5 avis étalés sur quatre ans), nombre de villes desservies, nombre de métiers offerts, équipe visible (photos d'équipe, « nos techniciens », plusieurs numéros). Les avis restent un proxy mou (1-10 % des clients en laissent) : un compte modéré ne disqualifie jamais à lui seul.
+
+**3. Dépendance au téléphone / absence de filet.** Le téléphone est-il le seul chemin pour joindre la boîte ? Aucune prise de rendez-vous en ligne, formulaire de soumission sans promesse de délai, pas de chat, `outils_detectes: (none)` → tout ce qui n'est pas décroché est perdu pour de bon.
+
+**Ajustement — déjà outillé : retire exactement 30 points.** Applique-le si `outils_detectes` n'est pas vide, ou si le texte du site prouve un outil en place (réservation en ligne, agent virtuel, service de réponse, agence numérique partenaire). Une seule fois, même si plusieurs outils sont détectés. Ce n'est PAS un effondrement : un outil réduit la douleur sans l'annuler — une boîte à gros volume qui a un Calendly mais rate quand même ses appels reste un bon prospect. Et ne mets pas l'outil dans `disqualifications` pour autant, le −30 suffit. Seule exception : un service de réponse humain 24/7 déjà en place rend l'offre inutile → là, disqualifie.
+
+**Neutre — taille de l'équipe.** Une entreprise d'une seule personne comme une de trente : **le score ne bouge pas**. Note ce que tu vois dans `size_signals`, c'est utile pour la suite, mais n'en fais ni bonus ni malus (décision William, 2026-09-01 : l'information est intéressante à connaître, elle n'est pas un critère de tri).
+
+**Bonus additif, jamais pénalisant** : un service saisonnier donne un déclencheur de timing gratuit à la campagne (« la saison commence »). Le **déneigement** est une entrée idéale. L'absence de saisonnalité ne fait JAMAIS baisser le score.
+
+**Score bas (0-30) et `disqualifications` non vide** : entité qui n'est pas une PME de service à vendre — organisme public ou municipal, annuaire, réseau coopératif, organisme de certification, franchise corporative de plus de 50 employés — ou site mort / commerce fermé.
+
+> **Refonte du 2026-09-01.** L'ancien barème ancrait le score sur « perd des leads ET process manuel ». Or ~80 % des entreprises de service à domicile répondent en plus d'une heure (Jobber, données agrégées de 100 000+ entreprises) : le critère était vrai presque partout, donc il ne triait rien — la moitié de la base ressortait à 60+. Il notait en plus le potentiel sur des features du tier Croissance (base dormante, renouvellement saisonnier) alors que le courriel de tri vend l'entrée de gamme. On note maintenant ce que l'offre règle vraiment : les demandes perdues faute de réponse, soit l'exposition hors-heures × le volume entrant.
 
 **Si Track = OPT** (⚠️ legacy / pausé — PME santé/pro QC: dentiste, physio, clinique privée. On ne source plus cette cible; barème conservé pour l'historique seulement):
 - **Haut potentiel**: douleur process visible dans les avis (délais, attente téléphonique, no-shows, difficulté à joindre), taille 5-100 employés, faible maturité tech, site avec formulaire mais sans assistant/chatbot.
 - **Bas potentiel**: chaîne corporative / franchise, trop gros (>100 empl.), ou déjà fortement automatisé (chatbot, assistant virtuel, agence numérique partenaire visible).
 
-Le `reasoning` doit citer le ou les signaux concrets qui justifient ton chiffre.
+Le `reasoning` doit citer le ou les signaux concrets qui justifient ton chiffre — les heures d'ouverture, le rythme des avis, l'outil détecté — et dire si tu as appliqué le −30.
 
 ## Notes spécifiques au playbook "services résidentiels"
 
 - **Pain points typiques à chercher**: leads ratés hors heures, formulaires soumis le soir/weekend sans réponse rapide, demandes Facebook Messenger ignorées, no-shows de RDV, relances pour avis Google.
-- **Tech-savvy = disqualifiant** si élevé: si tu vois "chatbot", "assistant virtuel", "agence numérique partenaire", "powered by [outil IA]" sur le site → mets `disqualifications` non vide.
-- **Taille hors plage = disqualifiant**: si >1000 reviews ET multiples succursales mentionnées → probablement trop gros (>50 employés). Si <20 reviews et un seul tech mentionné → probablement one-person shop.
+- **Outil en place = −30, pas une disqualification**: "chatbot", "assistant virtuel", "réservation en ligne", "agence numérique partenaire" sur le site, ou un nom dans `outils_detectes` → retire 30 points, sans toucher à `disqualifications`. Seul un service de réponse humain 24/7 déjà en place disqualifie vraiment.
+- **Taille**: si >1000 avis ET plusieurs succursales → probablement trop gros (>50 employés), c'est une franchise corporative et ça, ça disqualifie. Une entreprise d'une seule personne (peu d'avis, un seul technicien nommé) se note dans `size_signals` et **ne change pas le score**.
 
 ## Confiance des décideurs (`confidence`)
 

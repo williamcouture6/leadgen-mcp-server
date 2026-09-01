@@ -84,11 +84,65 @@ async def fetch_place_details(google_place_id: str) -> dict[str, Any]:
 
 USER_AGENT = "Mozilla/5.0 (compatible; CoutureIA-Research/0.1; +https://couture-ia.com)"
 
+# Mots VAGUES relevés dans le texte visible : ils disent qu'une boîte *parle*
+# de tech, jamais qu'elle en a. `"ai "` a été retiré le 2026-09-01 — le match
+# est un simple `in` sur du texte français, donc « j'ai », « un délai », « un
+# essai » et « vrai » allumaient tous le drapeau. Pour savoir ce qui TOURNE
+# vraiment sur le site, c'est OUTILS_FINGERPRINTS qui répond.
 TECH_KEYWORDS = (
-    "chatbot", "intelligence artificielle", " ia ", "ai ", "automatisation",
+    "chatbot", "intelligence artificielle", " ia ", "automatisation",
     "agence numérique", "agence numerique", "powered by", "built with",
     "hubspot", "salesforce", "intercom", "drift", "zendesk",
 )
+
+# Empreintes d'outils RÉELLEMENT en place, cherchées dans le HTML BRUT.
+#
+# Pourquoi le HTML et pas le texte : `_clean_text` retire `<script>`, `<iframe>`,
+# `<header>`, `<footer>` et `<nav>` avant d'extraire le texte — or c'est
+# exactement là que vivent les widgets (embed Calendly, bouton « Réserver »
+# Jobber, chat Podium, « powered by » du pied de page). Une PME déjà équipée
+# ressortait donc « manuelle » et se faisait noter comme un prospect en douleur.
+#
+# Ces empreintes pilotent l'ajustement −30 du barème (prompts/research.md) :
+# un outil en place réduit la douleur, il ne l'annule pas.
+OUTILS_FINGERPRINTS: dict[str, tuple[str, ...]] = {
+    # Logiciels de gestion terrain (planification + prise de RDV intégrée)
+    "Jobber": ("getjobber.com", "jobber.com", "clienthub.getjobber"),
+    "Housecall Pro": ("housecallpro", "housecall pro"),
+    "ServiceTitan": ("servicetitan",),
+    "Workiz": ("workiz",),
+    "ServiceM8": ("servicem8",),
+    "FieldEdge": ("fieldedge",),
+    # Prise de rendez-vous en ligne
+    "Calendly": ("calendly",),
+    "Acuity Scheduling": ("acuityscheduling", "acuity scheduling"),
+    "Setmore": ("setmore",),
+    "Booksy": ("booksy",),
+    "SimplyBook": ("simplybook",),
+    "Square Appointments": ("squareup.com/appointments", "square appointments"),
+    # Chat / messagerie / avis
+    "Podium": ("podium.com", "widget.podium"),
+    "Birdeye": ("birdeye.com", "birdeye.co"),
+    "Tawk.to": ("tawk.to",),
+    "LiveChat": ("livechatinc", "livechat.com"),
+    "Crisp": ("crisp.chat",),
+    "Intercom": ("intercom.io", "intercomcdn", "widget.intercom"),
+    "Drift": ("js.driftt.com", "drift.com"),
+    "Zendesk": ("zdassets.com", "zendesk.com"),
+    "HubSpot": ("hs-scripts.com", "hubspot.com", "hsforms"),
+    "Salesforce": ("salesforce.com", "force.com"),
+    "ManyChat": ("manychat",),
+    # Réponse téléphonique déléguée — le concurrent direct de l'offre
+    "Smith.ai": ("smith.ai",),
+    "AnswerConnect": ("answerconnect",),
+    "Ruby Receptionists": ("callruby.com", "ruby.com/receptionist"),
+    "Agent vocal IA": ("retellai", "bland.ai", "synthflow", "vapi.ai"),
+    # Promesse explicite de réservation en ligne, sans outil nommé
+    "Réservation en ligne (générique)": (
+        "prendre rendez-vous en ligne", "prenez rendez-vous en ligne",
+        "réserver en ligne", "reserver en ligne", "book online",
+    ),
+}
 
 # Email scraping — source unique des courriels du pipeline (site officiel de la PME).
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
@@ -658,6 +712,25 @@ def _clean_text(html: str, max_chars: int = 8000) -> str:
     return text[:max_chars]
 
 
+def _mots_tech_du_texte(haystack: str) -> list[str]:
+    """Mots tech vagues relevés dans le texte visible (déjà en minuscules)."""
+    return [kw.strip() for kw in TECH_KEYWORDS if kw in haystack]
+
+
+def _outils_detectes(html: str) -> set[str]:
+    """Outils nommés reconnus dans le HTML brut d'UNE page.
+
+    Rend les noms canoniques (« Calendly »), pas les empreintes : c'est ce que
+    le prompt lit pour appliquer le −30, et « assets.calendly.com » ne lui
+    apprend rien de plus que « Calendly ».
+    """
+    hay = html.lower()
+    return {
+        nom for nom, empreintes in OUTILS_FINGERPRINTS.items()
+        if any(e in hay for e in empreintes)
+    }
+
+
 def _same_host(base: str, candidate: str) -> bool:
     try:
         return urlparse(base).netloc.split(":")[0] == urlparse(candidate).netloc.split(":")[0]
@@ -964,7 +1037,8 @@ async def fetch_site(
     diag = _diag_passe_neuve("unknown")
     out: dict[str, Any] = {
         "url": url, "status": "unknown", "pages": [],
-        "tech_keyword_hits": [], "emails_found": [], "social_links": [],
+        "tech_keyword_hits": [], "outils_detectes": [],
+        "emails_found": [], "social_links": [],
         "jsonld": _signaux_jsonld("", url), "logos_fichiers": [],
         DIAGNOSTIC_KEY: diag,
     }
@@ -972,6 +1046,7 @@ async def fetch_site(
     emails_by_addr: dict[str, dict[str, str]] = {}
     social: set[str] = set()
     logos: set[str] = set()
+    outils: set[str] = set()
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
         try:
@@ -1004,6 +1079,7 @@ async def fetch_site(
         # `fetch_site_rich`) ; les logos, eux, se ramassent sur toutes les pages.
         out["jsonld"] = _signaux_jsonld(r.text, str(r.url))
         logos |= set(_noms_de_fichiers_marques(r.text))
+        outils |= _outils_detectes(r.text)
 
         # Le sitemap voit les pages que le menu cache. Sans lui, /nous-joindre/
         # (9 secteurs desservis chez Gauthier) n'était jamais lue. Les liens du
@@ -1031,6 +1107,7 @@ async def fetch_site(
                         emails_by_addr.setdefault(em["email"], em)
                     social |= set(_extract_social_links(rp.text, str(rp.url)))
                     logos |= set(_noms_de_fichiers_marques(rp.text))
+                    outils |= _outils_detectes(rp.text)
                 else:
                     diag["pages_en_echec"].append(
                         {"url": str(rp.url), "statut": f"http_{rp.status_code}"}
@@ -1042,7 +1119,8 @@ async def fetch_site(
                 continue
 
     haystack = " ".join(p["text"].lower() for p in out["pages"])
-    out["tech_keyword_hits"] = [kw.strip() for kw in TECH_KEYWORDS if kw in haystack]
+    out["tech_keyword_hits"] = _mots_tech_du_texte(haystack)
+    out["outils_detectes"] = sorted(outils)
     out["emails_found"] = list(emails_by_addr.values())
     out["social_links"] = sorted(social)
     out["logos_fichiers"] = sorted(logos)
@@ -1054,6 +1132,11 @@ async def fetch_site(
 # Formatting helpers (réutilisés du proto)
 # ----------------------------------------------------------------------
 
+def _horaires_pour_llm(place: dict[str, Any]) -> str:
+    desc = (place.get("regularOpeningHours") or {}).get("weekdayDescriptions") or []
+    return " · ".join(desc) if desc else "(inconnu)"
+
+
 def _format_place_for_llm(place: dict[str, Any]) -> str:
     lines = [
         f"name: {place.get('displayName', {}).get('text', '')}",
@@ -1062,6 +1145,11 @@ def _format_place_for_llm(place: dict[str, Any]) -> str:
         f"website: {place.get('websiteUri', '')}",
         f"rating: {place.get('rating', '?')} ({place.get('userRatingCount', 0)} reviews)",
         f"business_status: {place.get('businessStatus', '')}",
+        # Le champ est demandé dans PLACE_DETAILS_FIELD_MASK (donc facturé)
+        # depuis toujours, mais il n'était jamais montré au modèle. C'est le
+        # signal le plus direct du barème : ce qui rentre quand c'est fermé
+        # tombe dans le vide. « (inconnu) » explicite pour qu'il ne le devine pas.
+        f"opening_hours: {_horaires_pour_llm(place)}",
         f"primary_type: {place.get('primaryType', '')}",
         f"types: {', '.join(place.get('types', []))}",
         f"google_maps_uri: {place.get('googleMapsUri', '')}",
@@ -1086,6 +1174,10 @@ def _format_site_for_llm(site: dict[str, Any]) -> str:
     parts = [f"website_status: {status}"]
     hits = site.get("tech_keyword_hits") or []
     parts.append(f"tech_keyword_hits: {', '.join(hits) if hits else '(none)'}")
+    # Séparé de `tech_keyword_hits` à dessein : ici ce sont des outils NOMMÉS,
+    # vus dans le HTML. C'est cette ligne, et elle seule, qui déclenche le −30.
+    outils = site.get("outils_detectes") or []
+    parts.append(f"outils_detectes: {', '.join(outils) if outils else '(none)'}")
     # Liste explicite, « (none) » compris : le prompt doit pouvoir conclure
     # « aucune présence sociale » au lieu de la deviner d'après une icône.
     social = site.get("social_links") or []
