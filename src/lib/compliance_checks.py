@@ -56,25 +56,29 @@ FIRST_PERSON_ACTION_PATTERNS: dict[str, str] = {
     r"on s'est parl[ée]": "claim 'on s'est parlé' (conversation probablement non effectuée)",
     r"\bhier soir,?\s+j['e]": "claim temporel 'hier soir, je/j'ai...' (action probablement fausse)",
     r"\bce matin,?\s+j['e]": "claim temporel 'ce matin, je/j'ai...' (action probablement fausse)",
-    # Règle nº4 de la spec §5, ajoutée le 2026-08-30 (AC1b).
-    #
-    # ⚠️ Ce n'est PAS une action inventée comme les autres : « j'ai vu » peut
-    # être vrai. Le motif est là pour une raison de FORME — ces trois formules
-    # sont le tell nº1 du courriel de masse, elles mettent la recherche en
-    # scène au lieu de la prouver. Le juge LLM ne peut pas s'en charger :
-    # `prompts/compliance.md` lui dit explicitement de NE PAS re-checker les
-    # actions au passé en première personne. C'était l'angle mort exact que la
-    # spec nomme.
-    #
-    # 🔴 Il n'a pu être posé qu'APRÈS le 2026-08-30, et pas avant : le bloc
-    # « sans site » disait lui-même « j'ai vu que t'as pas de site web ».
-    # L'ajouter plus tôt aurait bloqué les 97 entreprises sans site — un refus
-    # `block` que `rejuger_a_relire` ne reprend jamais, donc un contact gelé à
-    # vie. Le conseil de revue a trouvé les deux moitiés du piège ensemble.
-    # ⚠️ `[es]?` et pas `\b` seul : « j'ai VUE ton site » — accord fautif mais
-    # très courant à l'écrit rapide — échappait au motif. Vérifié le 2026-08-31
-    # sur un vrai brouillon. Un garde-fou qu'une faute d'orthographe désarme ne
-    # garde rien : même famille que l'apostrophe courbe.
+}
+
+
+# 🔴 SÉPARÉ des actions inventées le 2026-08-31, décision William.
+#
+# Ces trois formules ne sont PAS des mensonges : « j'ai vu ton site » peut être
+# parfaitement vrai. Elles sont interdites pour une raison de FORME — elles
+# mettent la recherche en scène au lieu de la prouver, et c'est le tell nº1 du
+# courriel de masse.
+#
+# Or la règle tranchée le 2026-08-31 est nette : seul ce que le prospect peut
+# VÉRIFIER a le droit de tuer un brouillon. Une mise en scène maladroite n'est
+# pas vérifiable par lui — il ne sait pas qu'une règle existe. Elles passent
+# donc en `info` : écrites dans les notes, comptées au résumé, mais le courriel
+# part.
+#
+# ⚠️ Elles restent SÉPARÉES des actions inventées, et c'est tout l'intérêt de
+# la scission : « j'ai testé ton formulaire » est un mensonge que le prospect
+# peut démentir, « j'ai vu ton site » ne l'est pas. Les garder dans le même
+# dictionnaire forçait à choisir un seul sort pour les deux.
+MISE_EN_SCENE_PATTERNS: dict[str, str] = {
+    # `[es]?` et pas une limite de mot seule : « j'ai VUE ton site » — accord fautif mais très
+    # courant à l'écrit rapide — échappait au motif.
     r"j'ai vu[es]?\b": "formule 'j'ai vu' (met la recherche en scène — règle nº4)",
     r"j'ai lu[es]?\b": "formule 'j'ai lu' (met la recherche en scène — règle nº4)",
     r"j'ai remarqu[ée]": "formule 'j'ai remarqué' (met la recherche en scène — règle nº4)",
@@ -170,7 +174,7 @@ def check_banned_words(email_body: str) -> CheckResult:
     return CheckResult(
         name="banned_words",
         passed=not hits,
-        severity="block",
+        severity="info",
         message=f"{len(hits)} mot(s) banni(s) trouvé(s)" if hits else "aucun mot banni",
         matches=[f"'{snip}' → {label}" for snip, label in hits],
     )
@@ -178,7 +182,7 @@ def check_banned_words(email_body: str) -> CheckResult:
 
 def check_subject_banned_words(subject: str) -> CheckResult:
     if not subject:
-        return CheckResult("subject_banned_words", True, "block", "sujet vide — check ignoré", [])
+        return CheckResult("subject_banned_words", True, "info", "sujet vide — check ignoré", [])
     hits = _find_matches(subject, BANNED_PATTERNS)
     for m in re.finditer(r"\bIA\b", subject):
         start = max(0, m.start() - 20)
@@ -188,7 +192,7 @@ def check_subject_banned_words(subject: str) -> CheckResult:
     return CheckResult(
         name="subject_banned_words",
         passed=not hits,
-        severity="block",
+        severity="info",
         message=f"{len(hits)} mot(s) banni(s) dans le sujet" if hits else "aucun mot banni dans le sujet",
         matches=[f"'{snip}' → {label}" for snip, label in hits],
     )
@@ -444,7 +448,7 @@ def check_loi25_privacy_contact(email_body: str, appended_footer: str = "") -> C
     return CheckResult(
         name="loi25_privacy_contact",
         passed=passed,
-        severity="warn",
+        severity="info",
         message=message,
         matches=[] if passed else ["recommandé: ajouter 'Questions confidentialité : william@couture-ia.com' dans la signature"],
     )
@@ -518,7 +522,7 @@ def check_length(
     return CheckResult(
         name="length",
         passed=in_range,
-        severity="warn",
+        severity="info",
         message=f"{n} mots (cible {min_words}-{max_words}, template={template or '?'})",
         matches=[] if in_range else [f"corps = {n} mots"],
     )
@@ -579,7 +583,7 @@ def check_cta_present(email_body: str) -> CheckResult:
     return CheckResult(
         name="cta_present",
         passed=passed,
-        severity="warn",
+        severity="info",
         message="CTA (invitation explicite) présent" if passed else "CTA faible ou absent",
         matches=[] if passed else [f"invitation_explicite={has_explicit_invite}"],
     )
@@ -702,6 +706,39 @@ def check_avis_conformes(
             else "chiffres d'avis conformes à la colonne"
         ),
         matches=ecarts,
+    )
+
+
+def check_mise_en_scene(email_body: str) -> CheckResult:
+    """La règle nº4 — « j'ai vu / j'ai lu / j'ai remarqué ».
+
+    🔴 **Sévérité `info`, et c'est un choix, pas un oubli.**
+
+    Ces formules ne sont pas des mensonges : « j'ai vu ton site » peut être
+    parfaitement vrai. Elles sont interdites parce qu'elles *mettent la
+    recherche en scène* au lieu de la prouver — le tell nº1 du courriel de
+    masse. Le prospect, lui, n'a aucun moyen de savoir qu'une règle existe.
+
+    Décision William du 2026-08-31 : seul ce que le prospect peut VÉRIFIER a le
+    droit de tuer un brouillon. Une maladresse de forme s'écrit dans les notes
+    et se compte au résumé du soir ; le courriel part.
+
+    ⚠️ À ne pas confondre avec `check_first_person_actions`, qui reste
+    bloquant : « j'ai testé ton formulaire » est un mensonge que le prospect
+    peut démentir.
+    """
+    body = _body_without_signature(email_body)
+    hits = _find_matches(body, MISE_EN_SCENE_PATTERNS)
+    return CheckResult(
+        name="mise_en_scene",
+        passed=not hits,
+        severity="info",
+        message=(
+            f"{len(hits)} formule(s) qui mettent la recherche en scène (règle nº4)"
+            if hits
+            else "la recherche n'est pas mise en scène"
+        ),
+        matches=[f"'{snip}' → {label}" for snip, label in hits],
     )
 
 
@@ -857,7 +894,7 @@ def check_registre(email_body: str, track: str | None = None) -> CheckResult:
     return CheckResult(
         name="registre",
         passed=passed,
-        severity="block",
+        severity="info",
         message=f"registre attendu={attendu} tu={len(tu_hits)} vous={len(vous_hits)}",
         matches=[] if passed else (intrus or [f"registre {attendu} insuffisant"]),
     )
@@ -879,7 +916,7 @@ def check_tics_de_langage(email_body: str) -> CheckResult:
     return CheckResult(
         name="tics_de_langage",
         passed=passed,
-        severity="block",
+        severity="info",
         message=f"{len(hits)} « pis » (max {_MAX_PIS})",
         matches=[] if passed else [f"{len(hits)} occurrences de « pis »"],
     )
@@ -900,6 +937,7 @@ def run_all(
         check_warmup_window(),
         check_avis_conformes(email_body, google_rating, google_reviews_count, track),
         check_site_au_conditionnel(email_body),
+        check_mise_en_scene(email_body),
         check_banned_words(email_body),
         check_subject_banned_words(email_subject or ""),
         check_first_person_actions(email_body),

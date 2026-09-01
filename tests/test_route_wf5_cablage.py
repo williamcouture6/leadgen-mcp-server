@@ -148,7 +148,12 @@ async def test_une_config_complete_ecrit_normalement(
 
     ecritures = [m["patch"] for m in cap["maj"] if m["table"] == "messages"]
     assert ecritures, "un verdict normal doit se persister"
-    assert "compliance_check_passed" in ecritures[0]
+    # ⚠️ On n'exige PAS `compliance_check_passed` : sans ANTHROPIC_API_KEY le
+    # juge tombe et le verdict est `non_juge`, qui laisse volontairement la
+    # colonne NULL pour que le brouillon revienne demain. Ce que ce contrôle
+    # négatif prouve, c'est qu'une config COMPLÈTE écrit quelque chose — par
+    # opposition au cas incomplet, qui n'écrit rien du tout.
+    assert "compliance_verdict" in ecritures[0]
 
 
 # ---------------- Le cablage : ce que la route passe reellement au juge ----------------

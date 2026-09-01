@@ -510,11 +510,20 @@ def test_registre_opt_exige_le_vouvoiement() -> None:
     assert cc.check_registre(corps, track="OPT").passed
 
 
-def test_registre_bloque_le_melange() -> None:
+def test_registre_signale_le_melange() -> None:
+    """⚠️ Sévérité passée de `block` à `info` le 2026-08-31, décision William.
+
+    Un « vous » dans un corps tutoyé est une faute de FORME. Le prospect n'a
+    aucun moyen de savoir qu'une règle de registre existe : ce n'est donc pas
+    un mensonge qu'il peut détecter, et la règle tranchée ce jour-là est que
+    seul le vérifiable a le droit de tuer un brouillon.
+
+    Le contrôle reste ACTIF — il s'écrit dans `compliance_notes` et se compte
+    au résumé du soir. Il ne sort plus le message de la file."""
     corps = "Bonjour,\n\nTon site est beau mais vous pouvez faire mieux, votre équipe.\n\n---\nWilliam"
     r = cc.check_registre(corps, track="agence-ia")
     assert not r.passed
-    assert r.severity == "block"
+    assert r.severity == "info"
 
 
 def test_registre_bloque_le_vouvoiement_sur_agence_ia() -> None:
@@ -690,11 +699,13 @@ def test_tics_accepte_les_corps_du_pivot():
     assert check_tics_de_langage(CORPS_B).passed
 
 
-def test_tics_bloque_au_dela_de_quatre_pis():
+def test_tics_signale_au_dela_de_quatre_pis():
+    """⚠️ Sévérité passée de `block` à `info` le 2026-08-31 : cinq « pis », c'est
+    un texte moins bon, pas un mensonge que le prospect peut détecter."""
     corps = "Bonjour,\n\npis pis pis pis pis\n\n---\nWilliam"
     r = check_tics_de_langage(corps)
     assert not r.passed
-    assert r.severity == "block"
+    assert r.severity == "info"
 
 
 def test_tics_accepte_exactement_quatre():
@@ -721,14 +732,14 @@ def test_run_all_retourne_tous_les_checks() -> None:
     # 16 checks : warmup + avis_conformes + site_au_conditionnel + 6 body
     # + 3 subject + length + cta_present + cta_slots_real + registre
     # + tics_de_langage
-    assert len(results) == 16, f"attendu 16 checks, eu {len(results)}"
+    assert len(results) == 17, f"attendu 17 checks, eu {len(results)}"
     names = [r.name for r in results]
     # Sanity: pas de doublon
-    assert len(set(names)) == 16
+    assert len(set(names)) == 17
 
 
-def test_run_all_retourne_16_checks():
-    assert len(run_all(CORPS_A, 0, template="A", track="agence-ia")) == 16
+def test_run_all_retourne_17_checks():
+    assert len(run_all(CORPS_A, 0, template="A", track="agence-ia")) == 17
 
 
 def test_run_all_ne_bloque_pas_le_corps_du_pivot():

@@ -403,7 +403,8 @@ _VERDICT_ORPHELIN = "orphelin"
 
 
 def _ligne_resume_conformite(
-    *, refuses: int, a_relire: int, non_juges: int, orphelins: int = 0
+    *, refuses: int, a_relire: int, non_juges: int, orphelins: int = 0,
+    partis_avec_remarque: int = 0,
 ) -> str:
     """La ligne « conformité » du résumé quotidien, ou la chaîne vide.
 
@@ -427,13 +428,25 @@ def _ligne_resume_conformite(
     jamais : un orphelin sort du lot dès la première passe, donc `/wf5/run` ne
     le criera qu'une fois. Cette ligne-ci est ce qui reste après.
     """
-    if refuses + non_juges + orphelins == 0:
+    if refuses + non_juges + orphelins + partis_avec_remarque == 0:
         return ""
+
+    # Le cas « rien de refusé, mais des remarques » a sa propre phrase : dire
+    # « 0 drafts refusés » pour introduire une remarque serait du bruit qui
+    # ressemble à une alarme.
+    if refuses + non_juges + orphelins == 0:
+        return (
+            f"📝 *Conformité* — {partis_avec_remarque} courriel(s) parti(s) avec "
+            f"une remarque de forme (lire `compliance_notes`)"
+        )
+
     ligne = f"🚫 *Conformité* — {refuses} drafts refusés (dont {a_relire} à relire)"
     if non_juges:
         ligne += f" · ⚠️ {non_juges} jamais inspecté"
     if orphelins:
         ligne += f" · 🧩 {orphelins} sans contact rattaché"
+    if partis_avec_remarque:
+        ligne += f" · 📝 {partis_avec_remarque} parti(s) avec une remarque"
     return ligne
 
 
@@ -874,6 +887,27 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             "messages",
             params={**vivants, "compliance_verdict": f"eq.{_VERDICT_ORPHELIN}"},
         )
+        # 🔴 Les courriels PARTIS avec une remarque de forme.
+        #
+        # Depuis la décision du 2026-08-31, une faute de forme (registre mêlé,
+        # cinq « pis », mot de vendeur, mise en scène de la recherche) ne tue
+        # plus le brouillon : elle s'écrit dans les notes et le courriel part.
+        #
+        # C'est cette ligne-ci qui empêche la décision de devenir « on a
+        # supprimé les checks ». Sans elle, la remarque existerait dans une
+        # colonne que personne ne lit — donc n'existerait pas.
+        #
+        # ⚠️ On filtre sur `approved` exprès : un brouillon refusé POUR AUTRE
+        # CHOSE peut aussi porter une remarque, mais il n'est jamais parti.
+        # Le compter ici ferait croire à un courriel envoyé qui ne l'est pas.
+        partis_avec_remarque = await sb.count(
+            "messages",
+            params={
+                **vivants,
+                "compliance_verdict": "eq.approved",
+                "compliance_notes": "ilike.*remarque [*",
+            },
+        )
         lecture_conformite_ok = True
     except Exception as e:  # noqa: BLE001
         # Fail-soft, JAMAIS silencieux — même règle que le carnet des leads
@@ -882,12 +916,13 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         # est très exactement le mode d'échec que cette ligne existe pour
         # éteindre.
         print(f"[summary] lecture des verdicts de conformité échouée: {e!r}")
-        refuses = a_relire = non_juges = orphelins = 0
+        refuses = a_relire = non_juges = orphelins = partis_avec_remarque = 0
         lecture_conformite_ok = False
 
     totals["conformite"] = {
         "refuses": refuses, "a_relire": a_relire,
         "non_juges": non_juges, "orphelins": orphelins,
+        "partis_avec_remarque": partis_avec_remarque,
         "lu": lecture_conformite_ok,
     }
     if not lecture_conformite_ok:
@@ -899,7 +934,7 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     else:
         ligne_conformite = _ligne_resume_conformite(
             refuses=refuses, a_relire=a_relire, non_juges=non_juges,
-            orphelins=orphelins,
+            orphelins=orphelins, partis_avec_remarque=partis_avec_remarque,
         )
         if ligne_conformite:
             text += "\n" + ligne_conformite

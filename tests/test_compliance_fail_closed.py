@@ -161,13 +161,19 @@ async def test_track_transmis_aux_checks_deterministes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sans_track_le_registre_bloque_bien() -> None:
-    """Contrôle négatif : sans lui, l'assertion ci-dessus ne prouverait rien."""
+async def test_sans_track_le_registre_est_signale() -> None:
+    """Contrôle négatif de l'assertion précédente : sans track, le registre
+    attendu retombe sur « vous » et le corps tutoyé le viole.
+
+    ⚠️ Depuis le 2026-08-31, `registre` est une remarque de FORME (`info`) et
+    non plus un bloqueur : le prospect ne peut pas détecter une règle de
+    registre, donc elle ne tue plus le brouillon. Ce que ce test prouve reste
+    le même — le track atteint bien `run_all` — mais il le lit dans les
+    remarques au lieu des bloqueurs."""
     out = await _check(skip_llm=True)
 
-    noms = [b["name"] for b in out.deterministic_blockers]
-    assert "registre" in noms
-    assert out.verdict == "blocked"
+    noms = [i["name"] for i in out.deterministic_infos]
+    assert "registre" in noms, f"remarques={noms}"
 
 
 # ---------------- skip_llm n'est PAS une panne ----------------

@@ -178,6 +178,10 @@ class ComplianceCheckOut(BaseModel):
     send_decision: str  # "SEND" | "REVIEW_THEN_SEND" | "DO_NOT_SEND"
     deterministic_blockers: list[dict[str, Any]] = []
     deterministic_warnings: list[dict[str, Any]] = []
+    # Remarques de FORME. Elles n'entrent PAS dans le verdict : le courriel
+    # part quand même. Elles vivent dans `compliance_notes` et se comptent au
+    # résumé du soir. Décision William du 2026-08-31.
+    deterministic_infos: list[dict[str, Any]] = []
     llm_judge: dict[str, Any] | None = None
     reasoning: str = ""
     duration_ms: int | None = None
@@ -300,6 +304,24 @@ async def compliance_check(
 
     det_blockers = [r for r in det_results if not r.passed and r.severity == "block"]
     det_warnings = [r for r in det_results if not r.passed and r.severity == "warn"]
+    # 🔴 Les remarques de FORME n'ont plus le droit de tuer un brouillon.
+    #
+    # Décision William du 2026-08-31. Le raisonnement qui l'a permise : les
+    # corps sont des GABARITS FIXES, seul l'ouvreur est écrit librement. Un
+    # « vous » de trop ou un cinquième « pis » n'est pas un mensonge, c'est un
+    # texte moins bon — et le prospect n'a aucun moyen de savoir qu'une règle a
+    # été enfreinte.
+    #
+    # Ce qui reste fatal : ce que le prospect peut VÉRIFIER (une note d'avis
+    # fausse, une preuve sociale inventée, une action jamais faite, un site
+    # annoncé prêt, un créneau qui n'existe pas) et les deux gardes légales.
+    #
+    # ⚠️ Le geste n'aurait servi à rien en passant les checks de `block` à
+    # `warn` : mesuré, un `warn` produit `needs_revision`, qui écrit
+    # `compliance_check_passed=false` — donc le brouillon meurt EXACTEMENT
+    # comme avec `blocked`. Il fallait une troisième catégorie qui ne touche
+    # pas au verdict du tout.
+    det_infos = [r for r in det_results if not r.passed and r.severity == "info"]
 
     if det_blockers:
         return ComplianceCheckOut(
@@ -308,6 +330,7 @@ async def compliance_check(
             send_decision="DO_NOT_SEND",
             deterministic_blockers=[asdict(r) for r in det_blockers],
             deterministic_warnings=[asdict(r) for r in det_warnings],
+            deterministic_infos=[asdict(r) for r in det_infos],
             llm_judge=None,
             reasoning=f"Layer 1 a bloqué {len(det_blockers)} violation(s) déterministe(s).",
             duration_ms=int((time.monotonic() - started) * 1000),
@@ -375,6 +398,7 @@ async def compliance_check(
         send_decision=final_decision,
         deterministic_blockers=[],
         deterministic_warnings=[asdict(r) for r in det_warnings],
+        deterministic_infos=[asdict(r) for r in det_infos],
         llm_judge=llm_verdict,
         reasoning=reasoning,
         duration_ms=int((time.monotonic() - started) * 1000),
@@ -390,6 +414,13 @@ def format_compliance_notes(out: ComplianceCheckOut) -> str:
             parts.append(f"  - {m}")
     for w in out.deterministic_warnings:
         parts.append(f"warn [{w['name']}]: {w['message']}")
+    # Les remarques de forme sont ECRITES meme si le courriel part : c'est
+    # tout ce qui reste pour les relire. Sans cette boucle, la decision du
+    # 2026-08-31 reviendrait a supprimer les checks au lieu de les degrader.
+    for i in out.deterministic_infos:
+        parts.append(f"remarque [{i['name']}]: {i['message']}")
+        for m in i.get("matches", [])[:2]:
+            parts.append(f"  - {m}")
     if out.llm_judge and not out.llm_judge.get("error"):
         for v in (out.llm_judge.get("semantic_violations") or [])[:5]:
             parts.append(f"semantic [{v.get('category')}]: {v.get('issue')} → {v.get('suggested_fix')}")

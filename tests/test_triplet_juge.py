@@ -58,8 +58,16 @@ async def test_le_triplet_complet_sort_approuve() -> None:
 async def test_une_relance_en_faute_fait_tomber_TOUT_le_verdict() -> None:
     """Le cœur du critère. Le corps de tri est irréprochable ; c'est la relance
     qui pèche, et le draft entier doit être retenu."""
+    # ⚠️ La faute doit être un MENSONGE, pas une maladresse de forme.
+    # Depuis la décision du 2026-08-31, un mot de vendeur ou un registre mêlé
+    # n'a plus le droit de tuer un brouillon : seul ce que le prospect peut
+    # VÉRIFIER le peut. « J'ai testé ton formulaire » en est un — il ne l'a
+    # jamais fait, et le prospect peut le démentir.
     out = await _juger(
-        followups={"relance_1": RELANCE_1, "relance_2": "Bonjour,\n\nNotre solution innovante."}
+        followups={
+            "relance_1": RELANCE_1,
+            "relance_2": "Bonjour,\n\nJ'ai testé ton formulaire. Dis-moi.",
+        }
     )
     assert out.verdict == "blocked"
     noms = [b["name"] for b in out.deterministic_blockers]
@@ -70,8 +78,15 @@ async def test_une_relance_en_faute_fait_tomber_TOUT_le_verdict() -> None:
 async def test_letiquette_dit_LEQUEL_des_trois_corps_est_en_faute() -> None:
     """« cta_present » tout court ne dit pas lequel des trois pèche, et c'est
     la première question qu'on se pose en lisant l'alerte du soir."""
-    out = await _juger(followups={"relance_1": "Bonjour,\n\nTrop court.", "relance_2": RELANCE_2})
-    en_faute = out.deterministic_blockers + out.deterministic_warnings
+    out = await _juger(
+        followups={
+            "relance_1": "Bonjour,\n\nJ'ai appelé ton bureau hier. Dis-moi.",
+            "relance_2": RELANCE_2,
+        }
+    )
+    en_faute = (
+        out.deterministic_blockers + out.deterministic_warnings + out.deterministic_infos
+    )
     assert any("relance 1" in x["name"] or "relance 1" in x["message"] for x in en_faute)
 
 

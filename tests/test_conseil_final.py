@@ -221,8 +221,11 @@ def test_jai_vu_est_attrape_quelle_que_soit_lapostrophe(apostrophe: str) -> None
     from src.lib import compliance_checks as cc
 
     corps = f"Bonjour,\n\nJ{apostrophe}ai vu que t{apostrophe}as pas de site web."
-    r = cc.check_first_person_actions(corps)
+    # ⚠️ `check_mise_en_scene` depuis la scission du 2026-08-31 : la règle nº4
+    # a quitté `check_first_person_actions`, qui ne garde que les MENSONGES.
+    r = cc.check_mise_en_scene(corps)
     assert not r.passed, f"apostrophe U+{ord(apostrophe):04X} non attrapée"
+    assert r.severity == "info", "une mise en scène ne tue plus le brouillon"
 
 
 def test_les_motifs_de_la_regle_4_attrapent_vraiment_quelque_chose() -> None:
@@ -231,7 +234,7 @@ def test_les_motifs_de_la_regle_4_attrapent_vraiment_quelque_chose() -> None:
     from src.lib import compliance_checks as cc
 
     for formule in ("j'ai vu ton site", "j'ai lu ta page", "j'ai remarqué ton avis"):
-        assert not cc.check_first_person_actions(f"Bonjour,\n\n{formule}.").passed, formule
+        assert not cc.check_mise_en_scene(f"Bonjour,\n\n{formule}.").passed, formule
 
 
 # ---------------- 6. Les synonymes d'avis ne s'echappent plus ----------------
@@ -349,4 +352,4 @@ def test_laccord_fautif_ne_desarme_plus_la_regle_4(formule: str) -> None:
     rien : même famille que l'apostrophe courbe."""
     from src.lib import compliance_checks as cc
 
-    assert not cc.check_first_person_actions(f"Bonjour,\n\n{formule}.").passed
+    assert not cc.check_mise_en_scene(f"Bonjour,\n\n{formule}.").passed
