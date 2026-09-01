@@ -294,6 +294,10 @@ def test_blocklist_de_domaines_couvre_les_sous_domaines() -> None:
 async def test_fetch_site_transmet_le_nom_a_l_extraction() -> None:
     # Cas FEXT : www.fext.ca redirige vers exterminationmtl.com, donc info@fext.ca
     # est « hors domaine » du site — mais c'est bien l'adresse de la boîte.
+    # fetch_site sonde le sitemap avant de choisir ses pages : ici, aucun.
+    respx.get(url__regex=r"https?://[^/]+/sitemap(_index)?\.xml").mock(
+        return_value=httpx.Response(404)
+    )
     respx.get("https://www.exterminationmtl.com/").mock(
         return_value=httpx.Response(200, html='<a href="mailto:info@fext.ca">courriel</a>')
     )
