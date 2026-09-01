@@ -137,6 +137,24 @@ def test_prioriser_jette_les_urls_negatives_meme_si_le_budget_reste() -> None:
     assert research._prioriser_urls("https://x.ca/", urls, 5) == ["https://x.ca/contact/"]
 
 
+def test_prioriser_dedupe_au_slash_final() -> None:
+    # Vu en production le 2026-09-01 sur rivenordextermination.com : le menu
+    # porte href="/contacts" ET href="https://.../contacts/". Les deux passaient
+    # la deduplication (chaines differentes), la page etait chargee DEUX fois et
+    # mangeait un des 4 emplacements.
+    urls = ["https://x.ca/contacts", "https://x.ca/contacts/", "https://x.ca/a-propos/"]
+    assert research._prioriser_urls("https://x.ca/", urls, 4) == [
+        "https://x.ca/contacts",
+        "https://x.ca/a-propos/",
+    ]
+
+
+def test_liens_du_menu_dedupes_au_slash_final() -> None:
+    # Meme defaut dans le repli sans sitemap.
+    html = '<a href="/contacts">Contact</a><a href="https://x.ca/contacts/">Nous joindre</a>'
+    assert research._rank_internal_pages("https://x.ca/", html, 5) == ["https://x.ca/contacts"]
+
+
 def test_prioriser_ignore_la_home_et_les_hotes_externes() -> None:
     urls = ["https://x.ca/", "https://autre.ca/contact/", "https://x.ca/contact/"]
     assert research._prioriser_urls("https://x.ca/", urls, 5) == ["https://x.ca/contact/"]

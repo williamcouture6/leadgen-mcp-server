@@ -757,11 +757,15 @@ def _prioriser_urls(base_url: str, urls: list[str], limite: int) -> list[str]:
     notes: list[tuple[int, int, str]] = []
     for ordre, brut in enumerate(urls):
         u = brut.split("#", 1)[0]
-        if not u or u.rstrip("/") == base_no_frag or not _same_host(base_url, u):
+        # Le slash final est cosmetique : un menu porte souvent href="/contacts"
+        # ET href="https://.../contacts/" (vu sur rivenordextermination.com).
+        # Sans normalisation la page est chargee deux fois et mange un emplacement.
+        cle = u.rstrip("/")
+        if not u or cle == base_no_frag or not _same_host(base_url, u):
             continue
-        if u in vus:
+        if cle in vus:
             continue
-        vus.add(u)
+        vus.add(cle)
         score = _score_page_url(u)
         if score <= 0:
             continue
@@ -931,9 +935,11 @@ def _rank_internal_pages(base_url: str, html: str, max_links: int) -> list[str]:
             continue
         hay = href.lower() + " " + a.get_text(" ", strip=True).lower()
         tier = next((t for t, hints in _PAGE_HINT_TIERS if any(h in hay for h in hints)), None)
-        if tier is None or href in seen_urls:
+        # Slash final normalise : voir `_prioriser_urls`, meme defaut ici.
+        cle = href.rstrip("/")
+        if tier is None or cle in seen_urls:
             continue
-        seen_urls.add(href)
+        seen_urls.add(cle)
         scored.append((tier, order, href))
         order += 1
     scored.sort(key=lambda x: (x[0], x[1]))
