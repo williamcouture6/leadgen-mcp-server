@@ -718,16 +718,17 @@ def test_run_all_retourne_tous_les_checks() -> None:
         template="A",
         email_subject="Question rapide",
     )
-    # 15 checks : warmup + avis_conformes + 6 body + 3 subject + length
-    # + cta_present + cta_slots_real + registre + tics_de_langage
-    assert len(results) == 15, f"attendu 15 checks, eu {len(results)}"
+    # 16 checks : warmup + avis_conformes + site_au_conditionnel + 6 body
+    # + 3 subject + length + cta_present + cta_slots_real + registre
+    # + tics_de_langage
+    assert len(results) == 16, f"attendu 16 checks, eu {len(results)}"
     names = [r.name for r in results]
     # Sanity: pas de doublon
-    assert len(set(names)) == 15
+    assert len(set(names)) == 16
 
 
-def test_run_all_retourne_15_checks():
-    assert len(run_all(CORPS_A, 0, template="A", track="agence-ia")) == 15
+def test_run_all_retourne_16_checks():
+    assert len(run_all(CORPS_A, 0, template="A", track="agence-ia")) == 16
 
 
 def test_run_all_ne_bloque_pas_le_corps_du_pivot():

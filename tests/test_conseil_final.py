@@ -299,3 +299,54 @@ def test_le_repli_du_lexique_se_compte() -> None:
 def test_le_compteur_de_repli_est_expose_par_la_route() -> None:
     """Un compteur qui n'atteint pas la sortie de `/wf4/run` ne compte rien."""
     assert "lexique_de_repli" in http_api.RunWf4Out.model_fields
+
+
+# ---------------- 8. La dette d'honnetete, armee en deterministe ----------------
+
+@pytest.mark.parametrize(
+    "formule,pourquoi",
+    [
+        ("j'en ai aussi profité pour te refaire un site", "dit le site DÉJÀ FAIT"),
+        ("j'en ai profité pour te le monter", "même chose, sans « aussi »"),
+        ("ton site web au goût du jour", "présume son site démodé"),
+        ("ton site au gout du jour", "sans accent circonflexe"),
+        ("ton site est prêt", "affirme qu'il existe"),
+        ("ton nouveau site est fait", "idem"),
+        ("tu veux que je te l'envoie?", "présume le site fait"),
+    ],
+)
+def test_le_site_deja_fait_est_BLOQUE(formule: str, pourquoi: str) -> None:
+    """🔴 Vérifié le 2026-08-31 sur un vrai brouillon : « j'en ai aussi profité
+    pour te refaire un site web au goût du jour » passait **les 14 checks**.
+
+    Le juge connaît la règle (compliance.md §1ter) mais il est probabiliste.
+    Ces phrases sont FIXES et la faute coûte une relation : on veut un refus
+    CERTAIN. C'est la dette d'honnêteté refermée le 2026-08-26."""
+    from src.lib import compliance_checks as cc
+
+    r = cc.check_site_au_conditionnel(f"Bonjour,\n\n{formule}")
+    assert not r.passed, pourquoi
+    assert r.severity == "block"
+
+
+@pytest.mark.parametrize("nom", sorted(__import__("tests.fixtures.corps_ac1", fromlist=["x"]).TOUS_LES_CORPS))
+def test_la_copie_validee_reste_au_conditionnel(nom: str) -> None:
+    """Contrôle négatif : le garde-fou ne doit pas refuser la copie de William.
+    « je pourrais t'en faire une version rafraîchie » est vrai et doit passer."""
+    from src.lib import compliance_checks as cc
+    from tests.fixtures import corps_ac1 as fx
+
+    r = cc.check_site_au_conditionnel(fx.TOUS_LES_CORPS[nom])
+    assert r.passed, f"{nom} : {r.matches}"
+
+
+@pytest.mark.parametrize(
+    "formule", ["j'ai vue ton site", "j'ai vus tes avis", "j'ai lue ta page"]
+)
+def test_laccord_fautif_ne_desarme_plus_la_regle_4(formule: str) -> None:
+    """« j'ai VUE » — accord fautif mais très courant à l'écrit rapide —
+    échappait au motif. Un garde-fou qu'une faute d'orthographe désarme ne garde
+    rien : même famille que l'apostrophe courbe."""
+    from src.lib import compliance_checks as cc
+
+    assert not cc.check_first_person_actions(f"Bonjour,\n\n{formule}.").passed

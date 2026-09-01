@@ -71,10 +71,45 @@ FIRST_PERSON_ACTION_PATTERNS: dict[str, str] = {
     # L'ajouter plus tôt aurait bloqué les 97 entreprises sans site — un refus
     # `block` que `rejuger_a_relire` ne reprend jamais, donc un contact gelé à
     # vie. Le conseil de revue a trouvé les deux moitiés du piège ensemble.
-    r"j'ai vu\b": "formule 'j'ai vu' (met la recherche en scène — règle nº4)",
-    r"j'ai lu\b": "formule 'j'ai lu' (met la recherche en scène — règle nº4)",
+    # ⚠️ `[es]?` et pas `\b` seul : « j'ai VUE ton site » — accord fautif mais
+    # très courant à l'écrit rapide — échappait au motif. Vérifié le 2026-08-31
+    # sur un vrai brouillon. Un garde-fou qu'une faute d'orthographe désarme ne
+    # garde rien : même famille que l'apostrophe courbe.
+    r"j'ai vu[es]?\b": "formule 'j'ai vu' (met la recherche en scène — règle nº4)",
+    r"j'ai lu[es]?\b": "formule 'j'ai lu' (met la recherche en scène — règle nº4)",
     r"j'ai remarqu[ée]": "formule 'j'ai remarqué' (met la recherche en scène — règle nº4)",
 }
+
+# 🔴 La dette d'honnêteté du 2026-08-26, armée en déterministe le 2026-08-31.
+#
+# Le site n'existe PAS au moment du courriel : il se fabrique à la main APRÈS
+# une réponse positive. Toute formulation qui le dit fait est un mensonge que le
+# prospect découvrira au pire moment — et c'est le seul destinataire capable de
+# le détecter en une seconde.
+#
+# Pourquoi en déterministe et pas seulement au juge : ces phrases sont FIXES et
+# la faute coûte une relation. Le juge les connaît (`compliance.md` §1ter) mais
+# il est probabiliste ; ici on veut un refus certain. Vérifié le 2026-08-31 :
+# avant ce bloc, « j'en ai aussi profité pour te refaire un site web au goût du
+# jour » passait les 14 checks.
+SITE_DEJA_FAIT_PATTERNS: dict[str, str] = {
+    r"au go[uû]t du jour": (
+        "« au goût du jour » — présume que son site est démodé (jamais regardé), "
+        "et ment aux 97 entreprises qui n'en ont pas"
+    ),
+    r"j'en ai (?:aussi )?profit[ée]": (
+        "« j'en ai profité pour » — dit le site DÉJÀ FAIT. Il se fabrique après "
+        "le oui : c'est la dette d'honnêteté refermée le 2026-08-26"
+    ),
+    r"ton (?:nouveau )?site est (?:pr[êe]t|fait|termin[ée]|refait)": (
+        "affirme que le site existe déjà"
+    ),
+    r"je te (?:l'|le )envoie": (
+        "« je te l'envoie » — présume le site fait. Le CTA demande le OUI, "
+        "la fabrication vient après"
+    ),
+}
+
 
 SOCIAL_PROOF_PATTERNS: dict[str, str] = {
     r"\bd[ée]ploy[ée] chez\b": "claim 'déployé chez' (preuve sociale)",
@@ -670,6 +705,31 @@ def check_avis_conformes(
     )
 
 
+def check_site_au_conditionnel(email_body: str) -> CheckResult:
+    """Le site proposé reste-t-il AU CONDITIONNEL ?
+
+    « je pourrais t'en faire une version rafraîchie » est vrai.
+    « j'en ai profité pour te le refaire » est faux, et le prospect le
+    découvrira — c'est exactement `[[feedback-no-lying-in-outreach]]`.
+
+    ⚠️ Ce check ne juge pas le style : il refuse une classe de MENSONGE
+    vérifiable. C'est pour ça qu'il est `block` et non `warn`.
+    """
+    body = _body_without_signature(email_body)
+    hits = _find_matches(body, SITE_DEJA_FAIT_PATTERNS)
+    return CheckResult(
+        name="site_au_conditionnel",
+        passed=not hits,
+        severity="block",
+        message=(
+            f"{len(hits)} formulation(s) qui disent le site DÉJÀ FAIT"
+            if hits
+            else "le site reste au conditionnel"
+        ),
+        matches=[f"'{snip}' → {label}" for snip, label in hits],
+    )
+
+
 def check_warmup_window(today: date | None = None) -> CheckResult:
     # Désactivation explicite et volontaire du gate.
     if _warmup_disabled():
@@ -839,6 +899,7 @@ def run_all(
     return [
         check_warmup_window(),
         check_avis_conformes(email_body, google_rating, google_reviews_count, track),
+        check_site_au_conditionnel(email_body),
         check_banned_words(email_body),
         check_subject_banned_words(email_subject or ""),
         check_first_person_actions(email_body),
