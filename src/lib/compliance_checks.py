@@ -749,15 +749,28 @@ def check_site_au_conditionnel(email_body: str) -> CheckResult:
     « j'en ai profité pour te le refaire » est faux, et le prospect le
     découvrira — c'est exactement `[[feedback-no-lying-in-outreach]]`.
 
-    ⚠️ Ce check ne juge pas le style : il refuse une classe de MENSONGE
-    vérifiable. C'est pour ça qu'il est `block` et non `warn`.
+    🔴 **DÉCLASSÉ de `block` à `info` le 2026-08-31 — décision William,
+    réaffirmée après avertissement.**
+
+    Son raisonnement : le prospect ne peut pas savoir que le site n'est pas
+    déjà fait, donc ça ne tombe pas sous la règle « seul le vérifiable tue un
+    brouillon » qu'il a tranchée le même jour.
+
+    L'objection posée, une fois, et écartée : le prospect qui répond « envoie-le
+    tout de suite » le découvre — et c'est le plus intéressé de tous. C'est sa
+    décision, son entreprise, sa relation client.
+
+    ⚠️ Le check RESTE ACTIF en `info`. Il n'a pas été supprimé, et c'est
+    délibéré : la formulation continue de s'écrire dans `compliance_notes` et
+    de se compter au résumé du soir. Le jour où quelqu'un rouvre la question,
+    le compteur dit combien de courriels sont partis comme ça.
     """
     body = _body_without_signature(email_body)
     hits = _find_matches(body, SITE_DEJA_FAIT_PATTERNS)
     return CheckResult(
         name="site_au_conditionnel",
         passed=not hits,
-        severity="block",
+        severity="info",
         message=(
             f"{len(hits)} formulation(s) qui disent le site DÉJÀ FAIT"
             if hits

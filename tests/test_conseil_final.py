@@ -318,18 +318,29 @@ def test_le_compteur_de_repli_est_expose_par_la_route() -> None:
         ("tu veux que je te l'envoie?", "présume le site fait"),
     ],
 )
-def test_le_site_deja_fait_est_BLOQUE(formule: str, pourquoi: str) -> None:
-    """🔴 Vérifié le 2026-08-31 sur un vrai brouillon : « j'en ai aussi profité
-    pour te refaire un site web au goût du jour » passait **les 14 checks**.
+def test_le_site_deja_fait_est_SIGNALE(formule: str, pourquoi: str) -> None:
+    """Le check reste ACTIF, mais en `info` depuis le 2026-08-31.
 
-    Le juge connaît la règle (compliance.md §1ter) mais il est probabiliste.
-    Ces phrases sont FIXES et la faute coûte une relation : on veut un refus
-    CERTAIN. C'est la dette d'honnêteté refermée le 2026-08-26."""
+    Historique en deux temps, et il compte parce qu'il explique pourquoi ce
+    test existe encore alors qu'il n'exige plus de refus :
+
+    1. **Posé en `block` le 2026-08-31 (matin).** Vérifié sur un vrai brouillon :
+       « j'en ai aussi profité pour te refaire un site web au goût du jour »
+       passait les 14 checks. Le juge connaît la règle (`compliance.md` §1ter)
+       mais il est probabiliste ; on voulait un refus certain.
+    2. **Déclassé en `info` le même jour**, décision William réaffirmée après
+       avertissement : le prospect ne peut pas savoir que le site n'est pas
+       déjà fait, donc ça sort de la règle « seul le vérifiable tue ».
+
+    Ce que ce test protège désormais : que la formulation reste DÉTECTÉE. Elle
+    s'écrit dans `compliance_notes` et se compte au résumé du soir. Supprimer
+    le check rendrait la décision irréversible et invisible ; le garder en
+    `info` la rend mesurable."""
     from src.lib import compliance_checks as cc
 
     r = cc.check_site_au_conditionnel(f"Bonjour,\n\n{formule}")
     assert not r.passed, pourquoi
-    assert r.severity == "block"
+    assert r.severity == "info"
 
 
 @pytest.mark.parametrize("nom", sorted(__import__("tests.fixtures.corps_ac1", fromlist=["x"]).TOUS_LES_CORPS))
