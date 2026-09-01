@@ -247,7 +247,9 @@ def _mentions_reduites() -> bool:
     )
 
 
-def mentions_manquantes_dans_la_config(appended_footer: str = "") -> list[str]:
+def mentions_manquantes_dans_la_config(
+    appended_footer: str = "", track: str | None = None
+) -> list[str]:
     """Ce qui manque au pied de page DÉCLARÉ, quand les mentions sont réduites.
 
     🔴 **C'est une faute de CONFIGURATION, jamais une faute du brouillon.**
@@ -271,6 +273,33 @@ def mentions_manquantes_dans_la_config(appended_footer: str = "") -> list[str]:
     le bon juge).
     """
     if not _mentions_reduites():
+        # 🔴 LE DRAPEAU ABSENT EST LUI-MÊME UNE FAUTE DE CONFIGURATION sur
+        # `agence-ia`, et c'est le cas PAR DÉFAUT — donc le plus dangereux.
+        #
+        # Trouvé le 2026-08-31 en préparant le go-live. Le layer 0 ne couvrait
+        # que « drapeau POSÉ + pied de page vide ». Or depuis AC1b, les corps
+        # `agence-ia` ne portent PLUS de signature, par conception. Sans le
+        # drapeau, `check_legal_footer` cherche donc l'adresse postale dans un
+        # texte qui n'en a jamais eu, et rend `blocked` :
+        #
+        #     verdict='blocked' → compliance_check_passed=false
+        #     → le brouillon quitte le lot POUR TOUJOURS
+        #     → son contact gèle à vie
+        #
+        # Exactement le désastre que le layer 0 existe pour empêcher, atteint
+        # par l'autre porte. Et par la porte la plus probable : celle qu'on
+        # emprunte quand on OUBLIE de poser une variable sur Railway.
+        #
+        # ⚠️ Ce n'est PAS le cas d'OPT : ses corps portent leur signature, donc
+        # l'absence du drapeau y est le comportement normal et correct.
+        if track == "agence-ia":
+            return [
+                "LCAP_MENTIONS_REDUITES n'est pas posée alors que la piste "
+                "`agence-ia` écrit des corps SANS signature (décision du "
+                "2026-08-30). `check_legal_footer` cherche donc l'adresse "
+                "postale dans un texte qui n'en a jamais eu, et refuserait "
+                "tous les brouillons du lot."
+            ]
         return []
 
     texte = re.sub(r"\s+", " ", (appended_footer or "").lower())

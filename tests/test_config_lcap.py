@@ -149,3 +149,56 @@ def test_check_legal_footer_bloque_toujours_un_corps_nu(
     assert r.severity == "block"
     assert any("company_name" in m for m in r.matches)
     assert any("unsubscribe" in m for m in r.matches)
+
+
+# ---------------- Le drapeau ABSENT est lui-meme une faute de config ----------------
+
+def test_le_drapeau_absent_est_une_faute_sur_agence_ia(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 Trouvé le 2026-08-31, en préparant le go-live. Le layer 0 ne couvrait
+    que « drapeau POSÉ + pied de page vide ». Le cas PAR DÉFAUT — drapeau
+    absent — retombait dans le même désastre par l'autre porte.
+
+    Mesuré : sans le drapeau, tout le reste correctement configuré,
+    `check_legal_footer` rend `blocked` parce qu'il cherche l'adresse postale
+    dans un corps qui n'en a jamais eu — et `blocked` écrit
+    `compliance_check_passed=false`, donc brouillon mort et contact gelé.
+
+    C'est la porte la plus probable : celle qu'on emprunte en OUBLIANT de poser
+    une variable sur Railway.
+    """
+    monkeypatch.delenv("LCAP_MENTIONS_REDUITES", raising=False)
+    manquants = cc.mentions_manquantes_dans_la_config(
+        SIGNATURE_COMPTE_INSTANTLY, track="agence-ia"
+    )
+    assert manquants
+    assert "LCAP_MENTIONS_REDUITES" in manquants[0], (
+        "le message doit NOMMER la variable à poser"
+    )
+
+
+def test_le_drapeau_absent_est_NORMAL_sur_OPT(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Contrôle négatif, et il compte : les corps OPT portent LEUR signature.
+    L'absence du drapeau y est le comportement correct, pas une faute."""
+    monkeypatch.delenv("LCAP_MENTIONS_REDUITES", raising=False)
+    assert cc.mentions_manquantes_dans_la_config(
+        SIGNATURE_COMPTE_INSTANTLY, track="OPT"
+    ) == []
+
+
+@pytest.mark.asyncio
+async def test_sans_le_drapeau_la_passe_sarrete_au_lieu_de_tuer_le_lot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Le verdict doit être `error` (la passe), jamais `blocked` (le message)."""
+    monkeypatch.delenv("LCAP_MENTIONS_REDUITES", raising=False)
+    monkeypatch.setenv("INSTANTLY_CAMPAIGN_FOOTER", SIGNATURE_COMPTE_INSTANTLY)
+
+    out = await _passe()
+
+    assert out.verdict == "error", (
+        f"verdict={out.verdict!r} — un `blocked` écrirait passed=false et "
+        "gèlerait le contact pour une variable oubliée sur Railway"
+    )
+    assert "LCAP_MENTIONS_REDUITES" in (out.error_text or "")

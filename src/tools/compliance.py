@@ -239,7 +239,7 @@ async def compliance_check(
     # les `error`, rien ne bouge en base, et tout repart de soi-meme le jour ou
     # la variable est remplie. La faute est nommee dans `error_text`, avec le
     # nom de la variable a corriger.
-    manquants = mentions_manquantes_dans_la_config(appended_footer)
+    manquants = mentions_manquantes_dans_la_config(appended_footer, track)
     if manquants:
         return ComplianceCheckOut(
             message_id=message_id,
