@@ -107,6 +107,222 @@ def test_legal_footer_stop_mention_acceptable_substitute(
     assert r.passed
 
 
+# ---------------- 1bis. L'interrupteur des mentions réduites ----------------
+#
+# Décision William du 2026-08-30, portée telle quelle. Vérifié le même jour :
+# aucun pied de page de campagne n'est configuré côté Instantly (la variable
+# INSTANTLY_CAMPAIGN_FOOTER n'est qu'une DÉCLARATION lue par compliance.py —
+# aucun code ne la pousse à l'ESP). Ce qui s'ajoute réellement au courriel
+# reçu est la signature du COMPTE d'envoi — nom, domaine — augmentée du lien
+# de désabonnement. Tombent donc : l'adresse postale (identification LCAP) et
+# le canal vie privée explicite (Loi 25).
+#
+# Le correctif est un interrupteur NOMMÉ, pas un assouplissement de regex :
+# on n'ouvre pas une garde en silence. Ces tests pinnent les DEUX moitiés du
+# contrat — ce que le drapeau excuse, et surtout ce qu'il n'excuse PAS.
+
+SIGNATURE_COMPTE_INSTANTLY = (
+    "William Couture\n"
+    "Couture IA\n"
+    "couture-ia.com\n"
+    "Pour te désabonner : https://couture-ia.com/unsubscribe?email=x@y.com"
+)
+
+_CORPS_NU = "Bonjour,\n\nDis-moi juste si tu veux le voir."
+
+
+@pytest.fixture
+def _env_lcap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEGAL_COMPANY_NAME", "William Couture Couture IA")
+    monkeypatch.setenv("LEGAL_COMPANY_ADDRESS", "193 rue de l'Anse, Lévis QC G6K 1C9")
+    monkeypatch.setenv("UNSUBSCRIBE_URL", "https://couture-ia.com/unsubscribe")
+    monkeypatch.delenv("DPO_EMAIL", raising=False)
+
+
+def test_sans_le_drapeau_labsence_dadresse_bloque(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    """Le défaut reste fail-closed. C'est la garde, pas une formalité."""
+    monkeypatch.delenv("LCAP_MENTIONS_REDUITES", raising=False)
+    r = cc.check_legal_footer(_CORPS_NU, appended_footer=SIGNATURE_COMPTE_INSTANTLY)
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_avec_le_drapeau_ladresse_nest_plus_exigee(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+    r = cc.check_legal_footer(_CORPS_NU, appended_footer=SIGNATURE_COMPTE_INSTANTLY)
+    assert r.passed, r.matches
+    assert "mentions réduites" in r.message, (
+        "la trace de l'exception doit rester lisible dans les notes de "
+        "conformité du message, sinon la décision devient invisible"
+    )
+
+
+def test_le_drapeau_nexcuse_PAS_labsence_de_desabonnement(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    """Ce que la décision assume, c'est l'adresse postale. PAS le
+    désabonnement — c'est lui qui protège le destinataire, et il reste exigé
+    drapeau ou pas."""
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+    r = cc.check_legal_footer(
+        _CORPS_NU, appended_footer="William Couture\nCouture IA\ncouture-ia.com"
+    )
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_le_drapeau_neteint_pas_le_nom_legal(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+    r = cc.check_legal_footer(
+        _CORPS_NU,
+        appended_footer=(
+            "couture-ia.com\nPour te désabonner : https://couture-ia.com/unsubscribe"
+        ),
+    )
+    assert not r.passed, "« william » et « couture » sont absents du texte reçu"
+
+
+def test_le_drapeau_ne_sallume_que_sur_une_valeur_explicite(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    """Même forme que WARMUP_DISABLED : une faute de frappe ne doit pas ouvrir
+    la garde, et une chaîne vide non plus."""
+    for valeur in ("", "faux", "0", "no", "peut-etre"):
+        monkeypatch.setenv("LCAP_MENTIONS_REDUITES", valeur)
+        r = cc.check_legal_footer(_CORPS_NU, appended_footer=SIGNATURE_COMPTE_INSTANTLY)
+        assert not r.passed, f"valeur {valeur!r} ne doit PAS ouvrir la garde"
+
+
+def test_loi25_sans_le_drapeau_exige_un_canal(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    monkeypatch.delenv("LCAP_MENTIONS_REDUITES", raising=False)
+    r = cc.check_loi25_privacy_contact(
+        _CORPS_NU, appended_footer=SIGNATURE_COMPTE_INSTANTLY
+    )
+    assert not r.passed
+
+
+def test_loi25_avec_le_drapeau_passe(
+    monkeypatch: pytest.MonkeyPatch, _env_lcap: None
+) -> None:
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+    r = cc.check_loi25_privacy_contact(
+        _CORPS_NU, appended_footer=SIGNATURE_COMPTE_INSTANTLY
+    )
+    assert r.passed
+    assert "mentions réduites" in r.message
+
+
+# ---------------- 1ter. check_avis_conformes ----------------
+#
+# 🔴 Sans ce check, le modèle peut écrire « 5 étoiles sur 47 avis » et LE JUGE
+# EST AVEUGLE PAR CONSTRUCTION : il ne voit pas la valeur de la colonne, donc il
+# n'a aucun moyen de savoir que le chiffre est faux. C'est exactement le bug
+# déjà payé une fois (0732d20 — le juge ne voyait pas la fiche contact et
+# produisait des faux positifs).
+#
+# Un chiffre ne doit jamais dépendre du jugement d'un LLM.
+
+_AVEC_NOTE = "Bonjour,\n\nPaysagement Rivard a 4,8 étoiles sur 47 avis. Dis-moi."
+_SANS_NOTE = "Bonjour,\n\nDu monde qui te cherche, t'en as. Dis-moi."
+
+
+def test_avis_conformes_passe_quand_le_chiffre_correspond() -> None:
+    r = cc.check_avis_conformes(_AVEC_NOTE, google_rating=4.8, google_reviews_count=47)
+    assert r.passed, r.matches
+
+
+def test_avis_conformes_bloque_une_note_qui_ne_correspond_pas() -> None:
+    r = cc.check_avis_conformes(_AVEC_NOTE, google_rating=4.9, google_reviews_count=47)
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_avis_conformes_bloque_un_compte_qui_ne_correspond_pas() -> None:
+    r = cc.check_avis_conformes(_AVEC_NOTE, google_rating=4.8, google_reviews_count=48)
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_avis_conformes_bloque_une_note_entiere_inventee() -> None:
+    """L'exemple exact que la spec donne du risque : « 5 étoiles sur 47 avis ».
+    Un motif qui n'accepterait qu'une décimale le laisserait passer."""
+    corps = "Bonjour,\n\nPaysagement Rivard a 5 étoiles sur 47 avis. Dis-moi."
+    r = cc.check_avis_conformes(corps, google_rating=4.8, google_reviews_count=47)
+    assert not r.passed
+
+
+def test_avis_conformes_bloque_tout_chiffre_quand_la_colonne_est_vide() -> None:
+    """Le cas « inventé » : aucune donnée en base et un chiffre dans le corps.
+    C'est le scénario où le bloc 2 aurait dû sauter et où le modèle a écrit
+    quand même."""
+    r = cc.check_avis_conformes(_AVEC_NOTE, google_rating=None, google_reviews_count=None)
+    assert not r.passed
+    assert r.severity == "block"
+
+
+def test_avis_conformes_passe_sur_le_repli() -> None:
+    """Le repli du bloc 2 retire la citation : plus aucun chiffre, donc plus
+    rien à vérifier. 89 boîtes sur 255 sont dans ce cas."""
+    assert cc.check_avis_conformes(_SANS_NOTE, google_rating=None, google_reviews_count=None).passed
+    assert cc.check_avis_conformes(_SANS_NOTE, google_rating=2.3, google_reviews_count=27).passed
+
+
+def test_avis_conformes_accepte_le_point_comme_le_virgule() -> None:
+    corps = "Bonjour,\n\nPaysagement Rivard a 4.8 étoiles sur 47 avis. Dis-moi."
+    assert cc.check_avis_conformes(corps, google_rating=4.8, google_reviews_count=47).passed
+
+
+def test_avis_conformes_arrondit_la_note_a_une_decimale() -> None:
+    """Google rend parfois 4.75 ; la copie écrit une décimale. L'arrondi est
+    une écriture, pas une invention."""
+    assert cc.check_avis_conformes(_AVEC_NOTE, google_rating=4.75, google_reviews_count=47).passed
+
+
+def test_avis_conformes_refuse_un_compte_approximatif() -> None:
+    """« plus de 40 avis » est REFUSÉ, même si c'est vrai.
+
+    Choix assumé : un faux refus est visible (le brouillon atterrit dans la file
+    « à relire » du résumé quotidien) alors qu'un faux vert expédie un chiffre
+    que personne n'a vérifié. Ouvrir une voie « approximative » serait
+    exactement l'endroit où un faux vert irait se cacher.
+    """
+    corps = "Bonjour,\n\nPaysagement Rivard a plus de 40 avis. Dis-moi."
+    assert not cc.check_avis_conformes(corps, google_rating=4.8, google_reviews_count=47).passed
+
+
+def test_avis_conformes_ne_confond_pas_les_autres_chiffres_du_corps() -> None:
+    """« 60 secondes » et « 24/7 » sont dans tous les corps. Un motif trop
+    large les prendrait pour des avis et bloquerait 100 % des brouillons."""
+    corps = (
+        "Bonjour,\n\nUn système qui répond en moins de 60 secondes. Il reste "
+        "actif 24/7, le soir, la fin de semaine. Dis-moi."
+    )
+    assert cc.check_avis_conformes(corps, google_rating=None, google_reviews_count=None).passed
+
+
+def test_avis_conformes_est_dans_run_all() -> None:
+    """Un check qui existe mais que personne n'appelle ne protège rien."""
+    noms = {r.name for r in run_all(_AVEC_NOTE, 0, template="A", track="agence-ia")}
+    assert "avis_conformes" in noms
+
+
+def test_run_all_bloque_un_corps_dont_la_note_est_inventee() -> None:
+    resultats = run_all(
+        _AVEC_NOTE, 0, template="A", track="agence-ia",
+        google_rating=None, google_reviews_count=None,
+    )
+    avis = next(r for r in resultats if r.name == "avis_conformes")
+    assert not avis.passed and avis.severity == "block"
+
+
 # ---------------- 2. first_person_actions (anti-mensonge) ----------------
 
 @pytest.mark.parametrize("phrase", [
@@ -294,11 +510,20 @@ def test_registre_opt_exige_le_vouvoiement() -> None:
     assert cc.check_registre(corps, track="OPT").passed
 
 
-def test_registre_bloque_le_melange() -> None:
+def test_registre_signale_le_melange() -> None:
+    """⚠️ Sévérité passée de `block` à `info` le 2026-08-31, décision William.
+
+    Un « vous » dans un corps tutoyé est une faute de FORME. Le prospect n'a
+    aucun moyen de savoir qu'une règle de registre existe : ce n'est donc pas
+    un mensonge qu'il peut détecter, et la règle tranchée ce jour-là est que
+    seul le vérifiable a le droit de tuer un brouillon.
+
+    Le contrôle reste ACTIF — il s'écrit dans `compliance_notes` et se compte
+    au résumé du soir. Il ne sort plus le message de la file."""
     corps = "Bonjour,\n\nTon site est beau mais vous pouvez faire mieux, votre équipe.\n\n---\nWilliam"
     r = cc.check_registre(corps, track="agence-ia")
     assert not r.passed
-    assert r.severity == "block"
+    assert r.severity == "info"
 
 
 def test_registre_bloque_le_vouvoiement_sur_agence_ia() -> None:
@@ -474,11 +699,13 @@ def test_tics_accepte_les_corps_du_pivot():
     assert check_tics_de_langage(CORPS_B).passed
 
 
-def test_tics_bloque_au_dela_de_quatre_pis():
+def test_tics_signale_au_dela_de_quatre_pis():
+    """⚠️ Sévérité passée de `block` à `info` le 2026-08-31 : cinq « pis », c'est
+    un texte moins bon, pas un mensonge que le prospect peut détecter."""
     corps = "Bonjour,\n\npis pis pis pis pis\n\n---\nWilliam"
     r = check_tics_de_langage(corps)
     assert not r.passed
-    assert r.severity == "block"
+    assert r.severity == "info"
 
 
 def test_tics_accepte_exactement_quatre():
@@ -488,12 +715,15 @@ def test_tics_accepte_exactement_quatre():
 
 # ---------------- run_all integration ----------------
 
-def test_run_all_returns_13_checks() -> None:
+def test_run_all_retourne_tous_les_checks() -> None:
     """run_all doit toujours retourner tous les checks (pour audit), même
     quand certains sont 'passed=True ignoré'.
 
     MAJ 2026-08-30 : 14 checks depuis l'ajout de `check_tics_de_langage`
-    (tâche AC1a, garde-fou sur le paragraphe généré)."""
+    (tâche AC1a, garde-fou sur le paragraphe généré), puis 15 depuis
+    `check_avis_conformes` (AC1b, garde-fou sur le chiffre d'avis).
+    MAJ 2026-09-01 : 18 depuis `check_statistiques_conformes` (AC1b, garde-fou
+    sur les chiffres de marché de la relance 2)."""
     results = cc.run_all(
         email_body="Bonjour,\nVotre clinique m'intéresse. 15 minutes ?\n\n—\nWilliam",
         social_proof_count=0,
@@ -501,20 +731,61 @@ def test_run_all_returns_13_checks() -> None:
         template="A",
         email_subject="Question rapide",
     )
-    # 14 checks expected: warmup + 6 body + 3 subject + length + cta_present
+    # 18 checks : warmup + avis_conformes + statistiques_conformes
+    # + site_au_conditionnel + 6 body + 3 subject + length + cta_present
     # + cta_slots_real + registre + tics_de_langage
-    assert len(results) == 14, f"attendu 14 checks, eu {len(results)}"
+    assert len(results) == 18, f"attendu 18 checks, eu {len(results)}"
     names = [r.name for r in results]
     # Sanity: pas de doublon
-    assert len(set(names)) == 14
+    assert len(set(names)) == 18
 
 
-def test_run_all_retourne_14_checks():
-    assert len(run_all(CORPS_A, 0, template="A", track="agence-ia")) == 14
+# 🔧 Renommé le 2026-09-01. S'appelait `test_run_all_retourne_17_checks` : un
+# nom qui porte le compte doit être réécrit à chaque ajout de check, et le
+# message d'échec ne disait que « 17 != 18 » — pas LEQUEL manquait. La liste
+# nommée dit tout de suite ce qui est apparu ou disparu.
+CHECKS_ATTENDUS = {
+    "warmup_window",
+    "avis_conformes",
+    "statistiques_conformes",
+    "site_au_conditionnel",
+    "mise_en_scene",
+    "banned_words",
+    "subject_banned_words",
+    "first_person_actions",
+    "subject_first_person_actions",
+    "fake_social_proof",
+    "subject_fake_social_proof",
+    "legal_footer",
+    "loi25_privacy_contact",
+    "length",
+    "cta_present",
+    "cta_slots_real",
+    "registre",
+    "tics_de_langage",
+}
+
+
+def test_run_all_retourne_la_liste_complete_des_checks():
+    obtenus = {r.name for r in run_all(CORPS_A, 0, template="A", track="agence-ia")}
+    assert obtenus == CHECKS_ATTENDUS, (
+        f"apparus : {sorted(obtenus - CHECKS_ATTENDUS)} · "
+        f"disparus : {sorted(CHECKS_ATTENDUS - obtenus)}"
+    )
 
 
 def test_run_all_ne_bloque_pas_le_corps_du_pivot():
-    resultats = run_all(CORPS_A, 0, template="A", track="agence-ia")
+    """Les deux bloqueurs restants sont des gates d'ENVIRONNEMENT, pas de copie :
+    le warmup et les variables LCAP, tous deux couverts par la checklist go-live.
+
+    ⚠️ `avis_conformes` n'est PAS dans la liste, et seulement parce que les
+    valeurs de colonne sont passées : CORPS_A annonce « 4,8 étoiles sur 47 avis ».
+    Sans elles il bloquerait, ce qui est voulu — voir
+    `test_run_all_bloque_un_corps_dont_la_note_est_inventee`."""
+    resultats = run_all(
+        CORPS_A, 0, template="A", track="agence-ia",
+        google_rating=4.8, google_reviews_count=47,
+    )
     bloquants = [r.name for r in resultats if not r.passed and r.severity == "block"]
     assert bloquants == ["warmup_window", "legal_footer"], bloquants
 

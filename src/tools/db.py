@@ -643,7 +643,15 @@ async def list_contacts_to_personalize(
     companies = await db.select(
         "companies",
         params={
-            "select": "id,name,domain,website,city,icp_segment,industry,research_json,track",
+            # google_rating / google_reviews_count : l'ancre factuelle du bloc 2
+            # (AC1b). Sans elles ici, tout le reste du câblage lit None en
+            # silence et le bloc saute 255 fois sur 255.
+            # google_place_id : la garde « sans site » (une entreprise sans
+            # website n'est démarchée que si sa fiche Google est exploitable).
+            "select": (
+                "id,name,domain,website,city,icp_segment,industry,research_json,track,"
+                "google_rating,google_reviews_count,google_place_id"
+            ),
             "id": f"in.({','.join(company_ids)})",
         },
     )
@@ -686,6 +694,8 @@ async def list_contacts_to_personalize(
             continue
         if require_research and not company.get("research_json"):
             continue
+        if not site_ou_fiche_exploitable(company):
+            continue
         eligible.setdefault(c["company_id"], []).append(c)
 
     out: list[dict[str, Any]] = []
@@ -713,6 +723,36 @@ async def list_contacts_to_personalize(
     return out
 
 
+# Seuil de la garde « sans site ». C'est UN BOUTON, pas une vérité : la spec le
+# dit explicitement. En dessous, il n'y a ni matière pour écrire sur eux ni
+# matière pour bâtir un site.
+MIN_AVIS_SANS_SITE = 3
+
+
+def site_ou_fiche_exploitable(company: dict[str, Any]) -> bool:
+    """Une entreprise sans site est-elle démarchable ?
+
+    Les 97 entreprises sans `website` reçoivent la variante « je pourrais te
+    créer un site ». Encore faut-il qu'on ait de quoi écrire : la garde exige
+    une fiche Google exploitable (`google_place_id` renseigné et au moins
+    quelques avis).
+
+    🔴 Sans cette garde, l'implicite produit le mensonge par défaut : les deux
+    gabarits et le repli disent tous « ton site », et le lead sans site ni fiche
+    recevrait un courriel qui parle d'un site inexistant à une entreprise dont
+    on ne sait rien.
+
+    ⚠️ Le motif du saut n'apparaît PAS encore dans `v_pourquoi_pas_de_courriel`
+    — la vue appartient à AC1c, différé. Le lead est donc écarté silencieusement
+    pour l'instant, ce qui est assumé et inscrit au plan.
+    """
+    if (company.get("website") or "").strip():
+        return True
+    if not (company.get("google_place_id") or "").strip():
+        return False
+    return (company.get("google_reviews_count") or 0) >= MIN_AVIS_SANS_SITE
+
+
 class MessageDraftIn(BaseModel):
     contact_id: str
     campaign_id: str | None = None
@@ -725,6 +765,13 @@ class MessageDraftIn(BaseModel):
     compliance_check_passed: bool | None = None
     compliance_notes: str | None = None
     demo_url: str | None = None
+    # Le bras du test A/B REELLEMENT ecrit (migration 0047). Jamais 'AB' : la
+    # contrainte de la colonne l'interdit, parce que le stocker mettrait la
+    # meme valeur sur 100 % des lignes et il n'y aurait aucun test.
+    template_choice: str | None = None
+    # Les corps des relances, {"relance_1": "...", "relance_2": "..."}
+    # (migration 0046). NULL sur la piste OPT, qui n'a pas de relances.
+    followups: dict[str, Any] | None = None
 
 
 async def insert_message_draft(payload: MessageDraftIn) -> dict[str, Any]:

@@ -29,7 +29,13 @@ from anthropic import Anthropic, APIConnectionError, APIStatusError, RateLimitEr
 from pydantic import BaseModel
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from ..lib.compliance_checks import CheckResult, run_all
+from ..lib.avis import bloc_faits_verifies
+from ..lib.relances import RELANCES
+from ..lib.compliance_checks import (
+    CheckResult,
+    mentions_manquantes_dans_la_config,
+    run_all,
+)
 from .research import sans_diagnostic
 
 # ----------------------------------------------------------------------
@@ -53,6 +59,63 @@ def _is_transient_anthropic_error(exc: BaseException) -> bool:
     return False
 
 
+def _message_utilisateur_juge(
+    body: str,
+    subject: str,
+    research_json: dict[str, Any] | None,
+    social_proof: list[dict[str, Any]] | None,
+    contact: dict[str, Any] | None = None,
+    google_rating: float | None = None,
+    google_reviews_count: int | None = None,
+    followups: dict[str, str] | None = None,
+) -> str:
+    """Ce que le juge voit. Extrait en fonction pure pour être testable sans
+    appeler Anthropic — un bloc qui disparaît du prompt doit casser un test,
+    pas une campagne."""
+    # 🔴 Les TROIS corps, pas seulement le premier. Le triplet part ensemble :
+    # juger le courriel seul laissait deux tiers du contenu inspectés par
+    # personne, et c'est exactement ce qui a masqué l'échec des relances sur
+    # `check_cta_present`.
+    bloc_relances = ""
+    for cle, _var, etiquette in RELANCES:
+        texte = ((followups or {}).get(cle) or "").strip()
+        if texte:
+            bloc_relances += f"\n**{etiquette}** (en fil, sans objet) :\n{texte}\n"
+    if bloc_relances:
+        bloc_relances = (
+            "\n## Les relances du même envoi — À JUGER AUSSI\n"
+            "Elles partent au même prospect, à quelques jours d'intervalle. Une "
+            "violation dans une relance est une violation de l'envoi.\n"
+            + bloc_relances
+            + "\n"
+        )
+
+    return (
+        f"## Email à juger\n\n"
+        f"**Sujet**: {subject}\n\n"
+        f"**Corps**:\n{body}\n"
+        f"{bloc_relances}\n"
+        # 🔴 Les avis AVANT tout le reste. Sans la valeur de colonne sous les
+        # yeux, le juge ne peut pas déclarer un chiffre inventé : il n'a aucun
+        # moyen de savoir. C'est le bug de 0732d20, où il ne voyait pas la
+        # fiche contact et criait au contact_mismatch sur des noms vrais.
+        f"{bloc_faits_verifies(google_rating, google_reviews_count)}\n\n"
+        f"## Destinataire (contact vérifié — source de vérité de l'identité)\n"
+        f"```json\n{json.dumps(contact or {}, ensure_ascii=False, indent=2)}\n```\n"
+        f"Le prénom/nom/titre ci-dessus viennent de la fiche contact vérifiée "
+        f"(`email_source`: website_scrape = site officiel ; apollo = contact vérifié hérité). "
+        f"Ils sont ANCRÉS par cette fiche — ne les traite JAMAIS comme un fait inventé "
+        f"ni un contact_mismatch même s'ils n'apparaissent pas dans le research_json.\n\n"
+        f"## research_json (faits vérifiables sur l'ENTREPRISE — pas l'identité du contact)\n"
+        # `sans_diagnostic` retire la télémétrie du scraper d'emails : le juge
+        # n'a pas à voir des compteurs de rejets ni des adresses tierces jetées
+        # (bruit + risque de faux contact_mismatch).
+        f"```json\n{json.dumps(sans_diagnostic(research_json), ensure_ascii=False, indent=2)}\n```\n\n"
+        f"## social_proof disponible\n"
+        f"```json\n{json.dumps(social_proof or [], ensure_ascii=False, indent=2)}\n```\n"
+    )
+
+
 @retry(
     retry=retry_if_exception(_is_transient_anthropic_error),
     wait=wait_exponential(multiplier=2, min=4, max=60),
@@ -67,29 +130,18 @@ def _llm_judge(
     contact: dict[str, Any] | None = None,
     model: str = _DEFAULT_MODEL,
     max_tokens: int = 2500,
+    google_rating: float | None = None,
+    google_reviews_count: int | None = None,
+    followups: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY non défini")
     client = Anthropic(api_key=api_key)
     system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
-    user = (
-        f"## Email à juger\n\n"
-        f"**Sujet**: {subject}\n\n"
-        f"**Corps**:\n{body}\n\n"
-        f"## Destinataire (contact vérifié — source de vérité de l'identité)\n"
-        f"```json\n{json.dumps(contact or {}, ensure_ascii=False, indent=2)}\n```\n"
-        f"Le prénom/nom/titre ci-dessus viennent de la fiche contact vérifiée "
-        f"(`email_source`: website_scrape = site officiel ; apollo = contact vérifié hérité). "
-        f"Ils sont ANCRÉS par cette fiche — ne les traite JAMAIS comme un fait inventé "
-        f"ni un contact_mismatch même s'ils n'apparaissent pas dans le research_json.\n\n"
-        f"## research_json (faits vérifiables sur l'ENTREPRISE — pas l'identité du contact)\n"
-        # `sans_diagnostic` retire la télémétrie du scraper d'emails : le juge
-        # n'a pas à voir des compteurs de rejets ni des adresses tierces jetées
-        # (bruit + risque de faux contact_mismatch).
-        f"```json\n{json.dumps(sans_diagnostic(research_json), ensure_ascii=False, indent=2)}\n```\n\n"
-        f"## social_proof disponible\n"
-        f"```json\n{json.dumps(social_proof or [], ensure_ascii=False, indent=2)}\n```\n"
+    user = _message_utilisateur_juge(
+        body, subject, research_json, social_proof, contact,
+        google_rating, google_reviews_count, followups,
     )
     resp = client.messages.create(
         model=model,
@@ -129,6 +181,10 @@ class ComplianceCheckOut(BaseModel):
     send_decision: str  # "SEND" | "REVIEW_THEN_SEND" | "DO_NOT_SEND"
     deterministic_blockers: list[dict[str, Any]] = []
     deterministic_warnings: list[dict[str, Any]] = []
+    # Remarques de FORME. Elles n'entrent PAS dans le verdict : le courriel
+    # part quand même. Elles vivent dans `compliance_notes` et se comptent au
+    # résumé du soir. Décision William du 2026-08-31.
+    deterministic_infos: list[dict[str, Any]] = []
     llm_judge: dict[str, Any] | None = None
     reasoning: str = ""
     duration_ms: int | None = None
@@ -149,6 +205,9 @@ async def compliance_check(
     model: str = _DEFAULT_MODEL,
     track: str | None = None,
     tentatives: int = 0,
+    google_rating: float | None = None,
+    google_reviews_count: int | None = None,
+    followups: dict[str, str] | None = None,
 ) -> ComplianceCheckOut:
     """Lance les 2 layers de compliance sur un draft donné.
 
@@ -174,18 +233,100 @@ async def compliance_check(
     # (mode dev ou tout est dans le body).
     appended_footer = os.environ.get("INSTANTLY_CAMPAIGN_FOOTER", "")
 
-    # Layer 1 — deterministic
-    det_results: list[CheckResult] = run_all(
-        email_body=body,
-        social_proof_count=len(social_proof),
-        available_slots=available_slots or None,
-        template=template_used,
-        email_subject=subject,
-        appended_footer=appended_footer,
-        track=track,
-    )
+    # Layer 0 — la CONFIGURATION, avant de juger quoi que ce soit.
+    #
+    # Depuis que le corps ne porte plus de signature (decision du 2026-08-30),
+    # le nom legal et le desabonnement ne vivent QUE dans
+    # INSTANTLY_CAMPAIGN_FOOTER. Cette variable vide, `check_legal_footer`
+    # accusait le CORPS d'un manquement venu de l'environnement : verdict
+    # `blocked`, donc `compliance_check_passed = false`, donc le brouillon
+    # quittait le lot POUR TOUJOURS et son contact restait gele a vie.
+    #
+    # On rend donc `error` AVANT toute ecriture : l'appelant ne persiste pas
+    # les `error`, rien ne bouge en base, et tout repart de soi-meme le jour ou
+    # la variable est remplie. La faute est nommee dans `error_text`, avec le
+    # nom de la variable a corriger.
+    manquants = mentions_manquantes_dans_la_config(appended_footer, track)
+    if manquants:
+        return ComplianceCheckOut(
+            message_id=message_id,
+            verdict="error",
+            send_decision="DO_NOT_SEND",
+            reasoning=(
+                "Configuration LCAP incomplete : la passe est refusee AVANT "
+                "d'avoir juge le brouillon. Le brouillon n'est pas en cause et "
+                "n'est pas marque."
+            ),
+            error_text="config_lcap_incomplete: " + " | ".join(manquants),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    # Layer 1 — deterministic, sur LES TROIS CORPS.
+    #
+    # 🔴 Critère de fin nº3 de la spec du 2026-08-26 : le critère ne porte pas
+    # sur le seul corps de tri. C'est cette formulation-là qui masquait l'échec
+    # des deux relances sur `check_cta_present` — un draft « approuvé » dont
+    # deux tiers du contenu n'avaient jamais été regardés.
+    #
+    # Chaque corps est jugé avec SON gabarit : le tri avec A ou B (180-270
+    # mots), les relances avec RELANCE (40-120). Les juger tous sous le même
+    # gabarit refuserait mécaniquement les relances, qui font 97 mots.
+    corps_a_juger: list[tuple[str, str, str | None]] = [("courriel", body, template_used)]
+    for cle, _var, _etiquette in RELANCES:
+        texte = ((followups or {}).get(cle) or "").strip()
+        if texte:
+            # `cle` et pas le libellé : la note de conformité doit nommer ce
+            # qu'on retrouve en base, pas une périphrase.
+            corps_a_juger.append((cle.replace("_", " "), texte, "RELANCE"))
+
+    det_results: list[CheckResult] = []
+    for etiquette, texte, gabarit in corps_a_juger:
+        for r in run_all(
+            email_body=texte,
+            social_proof_count=len(social_proof),
+            available_slots=available_slots or None,
+            template=gabarit,
+            # Le sujet n'appartient qu'au courriel : les relances partent EN FIL
+            # et n'en ont pas. Le passer aux trois ferait juger trois fois le
+            # même sujet, et un warning y compterait triple.
+            email_subject=subject if etiquette == "courriel" else None,
+            appended_footer=appended_footer,
+            track=track,
+            google_rating=google_rating,
+            google_reviews_count=google_reviews_count,
+        ):
+            # L'étiquette voyage avec le résultat : « cta_present » tout court
+            # ne dit pas LEQUEL des trois corps est en faute, et c'est la
+            # première question qu'on se pose en lisant l'alerte.
+            det_results.append(
+                r if etiquette == "courriel"
+                else CheckResult(
+                    name=f"{r.name}[{etiquette}]",
+                    passed=r.passed, severity=r.severity,
+                    message=f"{etiquette} — {r.message}", matches=r.matches,
+                )
+            )
+
     det_blockers = [r for r in det_results if not r.passed and r.severity == "block"]
     det_warnings = [r for r in det_results if not r.passed and r.severity == "warn"]
+    # 🔴 Les remarques de FORME n'ont plus le droit de tuer un brouillon.
+    #
+    # Décision William du 2026-08-31. Le raisonnement qui l'a permise : les
+    # corps sont des GABARITS FIXES, seul l'ouvreur est écrit librement. Un
+    # « vous » de trop ou un cinquième « pis » n'est pas un mensonge, c'est un
+    # texte moins bon — et le prospect n'a aucun moyen de savoir qu'une règle a
+    # été enfreinte.
+    #
+    # Ce qui reste fatal : ce que le prospect peut VÉRIFIER (une note d'avis
+    # fausse, une preuve sociale inventée, une action jamais faite, un site
+    # annoncé prêt, un créneau qui n'existe pas) et les deux gardes légales.
+    #
+    # ⚠️ Le geste n'aurait servi à rien en passant les checks de `block` à
+    # `warn` : mesuré, un `warn` produit `needs_revision`, qui écrit
+    # `compliance_check_passed=false` — donc le brouillon meurt EXACTEMENT
+    # comme avec `blocked`. Il fallait une troisième catégorie qui ne touche
+    # pas au verdict du tout.
+    det_infos = [r for r in det_results if not r.passed and r.severity == "info"]
 
     if det_blockers:
         return ComplianceCheckOut(
@@ -194,6 +335,7 @@ async def compliance_check(
             send_decision="DO_NOT_SEND",
             deterministic_blockers=[asdict(r) for r in det_blockers],
             deterministic_warnings=[asdict(r) for r in det_warnings],
+            deterministic_infos=[asdict(r) for r in det_infos],
             llm_judge=None,
             reasoning=f"Layer 1 a bloqué {len(det_blockers)} violation(s) déterministe(s).",
             duration_ms=int((time.monotonic() - started) * 1000),
@@ -205,6 +347,7 @@ async def compliance_check(
         try:
             llm_verdict = await asyncio.to_thread(
                 _llm_judge, body, subject, research_json, social_proof, contact, model,
+                2500, google_rating, google_reviews_count, followups,
             )
         except Exception as e:  # noqa: BLE001
             llm_verdict = {"error": f"LLM judge failed: {type(e).__name__}: {e}"}
@@ -260,6 +403,7 @@ async def compliance_check(
         send_decision=final_decision,
         deterministic_blockers=[],
         deterministic_warnings=[asdict(r) for r in det_warnings],
+        deterministic_infos=[asdict(r) for r in det_infos],
         llm_judge=llm_verdict,
         reasoning=reasoning,
         duration_ms=int((time.monotonic() - started) * 1000),
@@ -275,6 +419,13 @@ def format_compliance_notes(out: ComplianceCheckOut) -> str:
             parts.append(f"  - {m}")
     for w in out.deterministic_warnings:
         parts.append(f"warn [{w['name']}]: {w['message']}")
+    # Les remarques de forme sont ECRITES meme si le courriel part : c'est
+    # tout ce qui reste pour les relire. Sans cette boucle, la decision du
+    # 2026-08-31 reviendrait a supprimer les checks au lieu de les degrader.
+    for i in out.deterministic_infos:
+        parts.append(f"remarque [{i['name']}]: {i['message']}")
+        for m in i.get("matches", [])[:2]:
+            parts.append(f"  - {m}")
     if out.llm_judge and not out.llm_judge.get("error"):
         for v in (out.llm_judge.get("semantic_violations") or [])[:5]:
             parts.append(f"semantic [{v.get('category')}]: {v.get('issue')} → {v.get('suggested_fix')}")

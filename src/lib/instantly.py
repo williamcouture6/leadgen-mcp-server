@@ -23,6 +23,8 @@ import os
 from typing import Any
 
 import httpx
+
+from .relances import RELANCES
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -121,6 +123,7 @@ async def add_lead_to_campaign(
     campaign_id: str | None = None,
     skip_if_in_workspace: bool = True,
     skip_if_in_campaign: bool = True,
+    followups: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Crée un lead dans la campagne Instantly avec subject + body injectés en
     custom variables.
@@ -145,9 +148,27 @@ async def add_lead_to_campaign(
         "skip_if_in_campaign": skip_if_in_campaign,
         # Custom variables référencées dans le template de la campagne Instantly
         # (Subject = {{email_subject}}, Body = {{email_body}}).
+        #
+        # 🔴 Les relances voyagent ICI, et nulle part ailleurs. Cinq lentilles
+        # sur six du conseil de revue de la spec ont trouvé, SÉPARÉMENT, que
+        # rien ne les transportait : elles étaient écrites, jugées, stockées en
+        # base, et le lead partait avec le seul corps de tri.
+        #
+        # ⚠️ Ce code ne suffit PAS à les faire partir. La campagne Instantly
+        # n'a qu'UNE étape (vérifié avec William le 2026-08-30) : il faut y
+        # ajouter UNE ÉTAPE PAR RELANCE, dont le gabarit est
+        # {{followup_N_body}}. La liste fait foi : `lib/relances.RELANCES`.
+        # C'est une ligne de la checklist go-live, et
+        # sans elle les variables arrivent chez un destinataire qui ne les lit
+        # pas.
         "custom_variables": {
             "email_subject": subject,
             "email_body": body_text,
+            **(
+                {var: followups.get(cle, "") for cle, var, _ in RELANCES}
+                if followups
+                else {}
+            ),
         },
     }
     if first_name:

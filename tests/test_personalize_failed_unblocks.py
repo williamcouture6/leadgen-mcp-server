@@ -35,7 +35,12 @@ def _fake_select_factory(messages: list[dict], captured: dict):
             ]
         if table == "companies":
             return [
-                {"id": "co-1", "name": "Ex Co", "track": "OPT", "research_json": {"x": 1}},
+                # `website` renseigne : depuis AC1b, la garde sans-site ecarte les
+                # entreprises sans site ET sans fiche Google exploitable.
+                # Ce test porte sur l'eligibilite par STATUT de message, pas
+                # sur cette garde.
+                {"id": "co-1", "name": "Ex Co", "track": "OPT",
+                 "website": "https://exco.ca", "research_json": {"x": 1}},
             ]
         if table == "messages":
             captured["params"] = params

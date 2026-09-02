@@ -11,9 +11,17 @@ suffisaient à approuver le lot du jour, et l'alerte (qui compte
 
 Les corps servent ici avec `track="agence-ia"` ET `template_used="A"` : c'est
 la seule combinaison qui laisse le layer 1 totalement vert (0 bloqueur,
-0 warning) sur CORPS_A. Sans ça le test serait FAUX-VERT — soit `registre`
-bloque avant le juge, soit `length` pose un warning qui produit
-`needs_revision` par un chemin qui n'a rien à voir avec la panne.
+0 warning). Sans ça le test serait FAUX-VERT — soit `registre` bloque avant le
+juge, soit `length` pose un warning qui produit `needs_revision` par un chemin
+qui n'a rien à voir avec la panne.
+
+⚠️ Le corps utilisé est **CORPS_A_REPLI_AVIS**, pas CORPS_A, depuis l'ajout de
+`check_avis_conformes` (AC1b). CORPS_A annonce « 4,8 étoiles sur 47 avis » ;
+sans les valeurs de colonne, ce check BLOQUE — correctement, c'est son rôle —
+et le layer 1 s'arrêterait avant d'atteindre le juge. Le test prouverait alors
+le fail-closed du check d'avis au lieu de celui du juge. Le repli n'annonce
+aucun chiffre : il n'y a rien à vérifier, donc rien qui puisse masquer la panne
+qu'on veut observer.
 """
 from __future__ import annotations
 
@@ -22,17 +30,25 @@ from typing import Any
 import pytest
 
 from src.tools import compliance as comp
-from tests.fixtures.corps_ac1 import CORPS_A
+from tests.fixtures.corps_ac1 import CORPS_A_REPLI_AVIS, SIGNATURE_COMPTE_INSTANTLY
 
 
 @pytest.fixture(autouse=True)
 def _env_layer1_vert(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Neutralise les gates d'environnement du layer 1 (fail-closed par défaut)."""
+    """Neutralise les gates d'environnement du layer 1 (fail-closed par défaut).
+
+    L'environnement reproduit la PRODUCTION depuis la décision du 2026-08-30 :
+    le corps ne porte plus de signature, et `INSTANTLY_CAMPAIGN_FOOTER` porte
+    la signature du compte d'envoi. Sans `LCAP_MENTIONS_REDUITES`, l'adresse
+    postale manquerait et `legal_footer` bloquerait avant le juge — le test
+    prouverait alors le fail-closed du footer au lieu de celui du juge.
+    """
     monkeypatch.setenv("WARMUP_DISABLED", "true")
     monkeypatch.setenv("LEGAL_COMPANY_NAME", "Couture IA")
     monkeypatch.setenv("LEGAL_COMPANY_ADDRESS", "193 rue de l'Anse")
     monkeypatch.setenv("UNSUBSCRIBE_URL", "https://couture-ia.com/unsubscribe")
-    monkeypatch.setenv("INSTANTLY_CAMPAIGN_FOOTER", "")
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+    monkeypatch.setenv("INSTANTLY_CAMPAIGN_FOOTER", SIGNATURE_COMPTE_INSTANTLY)
 
 
 def _juge_qui_tombe(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -42,7 +58,7 @@ def _juge_qui_tombe(*args: Any, **kwargs: Any) -> dict[str, Any]:
 async def _check(**extra: Any) -> comp.ComplianceCheckOut:
     base: dict[str, Any] = dict(
         message_id="msg-1",
-        body=CORPS_A,
+        body=CORPS_A_REPLI_AVIS,
         subject="Une question",
         template_used="A",
         research_json={},
@@ -135,7 +151,7 @@ async def test_tentatives_none_ne_fait_pas_planter(
 
 @pytest.mark.asyncio
 async def test_track_transmis_aux_checks_deterministes() -> None:
-    """CORPS_A tutoie ; sans le track, `check_registre` retombe sur `vous`."""
+    """Le corps tutoie ; sans le track, `check_registre` retombe sur `vous`."""
     out = await _check(track="agence-ia", skip_llm=True)
 
     noms = [b["name"] for b in out.deterministic_blockers]
@@ -145,13 +161,19 @@ async def test_track_transmis_aux_checks_deterministes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sans_track_le_registre_bloque_bien() -> None:
-    """Contrôle négatif : sans lui, l'assertion ci-dessus ne prouverait rien."""
+async def test_sans_track_le_registre_est_signale() -> None:
+    """Contrôle négatif de l'assertion précédente : sans track, le registre
+    attendu retombe sur « vous » et le corps tutoyé le viole.
+
+    ⚠️ Depuis le 2026-08-31, `registre` est une remarque de FORME (`info`) et
+    non plus un bloqueur : le prospect ne peut pas détecter une règle de
+    registre, donc elle ne tue plus le brouillon. Ce que ce test prouve reste
+    le même — le track atteint bien `run_all` — mais il le lit dans les
+    remarques au lieu des bloqueurs."""
     out = await _check(skip_llm=True)
 
-    noms = [b["name"] for b in out.deterministic_blockers]
-    assert "registre" in noms
-    assert out.verdict == "blocked"
+    noms = [i["name"] for i in out.deterministic_infos]
+    assert "registre" in noms, f"remarques={noms}"
 
 
 # ---------------- skip_llm n'est PAS une panne ----------------

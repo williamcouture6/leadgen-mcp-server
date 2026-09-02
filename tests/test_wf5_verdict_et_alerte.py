@@ -572,8 +572,23 @@ async def test_wf5_crie_le_message_id_de_l_orphelin(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_wf5_exception_de_passe_reste_comptee_en_erreurs(monkeypatch):
+    """Le COMPTEUR reste distinct des verdicts de refus, et c'est ce que ce
+    test protège depuis le début : `errors` n'est ni `non_juge` ni `blocked`.
+
+    ⚠️ **Ce qui a changé le 2026-08-30, et pourquoi ce n'est pas un test
+    assoupli.** L'assertion `cap["pings"] == []` exigeait le SILENCE sur une
+    erreur de passe. Elle tenait tant que `errors` ne comptait que des
+    exceptions isolées sur un draft. Depuis le layer 0 de conformité, une
+    CONFIGURATION LCAP incomplète rend `error` sur **tout le lot** : la seule
+    panne qui arrête l'envoi en entier serait devenue la seule totalement
+    muette. Et le workflow n8n WF-5 ne porte aucun nœud d'alerte, donc le
+    silence aurait été complet, pas seulement côté serveur.
+
+    Le contrat testé se déplace donc d'un cran : `errors` garde son compteur
+    propre — ce qui est l'objet du test — mais il crie.
+    """
     cap = _socle_wf5(monkeypatch, verdicts=[("a", None)])
     out = await http_api.run_wf5(RunWf5In(limit=10))
     assert out.errors == 1
-    assert out.non_juge == 0
-    assert cap["pings"] == [], "une exception de passe n'est pas un verdict de refus"
+    assert out.non_juge == 0, "errors ne doit jamais être confondu avec non_juge"
+    assert cap["pings"], "une erreur de passe ne doit pas être silencieuse"
