@@ -58,12 +58,33 @@ def test_le_budget_de_pis_est_respecte(nom: str, corps: str) -> None:
     assert cc.check_tics_de_langage(corps).passed, nom
 
 
+# Les corps qui ferment en douceur, sans demander de geste.
+#
+# Textes de William, remarque `cta_present` signalée et assumée le 2026-09-01.
+# La relance 1 finit sur « J'espère pouvoir t'en parler un peu plus! » et la
+# relance 3 est un ADIEU : lui coller un « dis-moi juste si » contredirait la
+# phrase « je ne vais plus t'écrire » qui la précède.
+FERMETURES_DOUCES = frozenset({"RELANCE_1", "RELANCE_3"})
+
+
 @pytest.mark.parametrize("nom,corps", CORPS)
 def test_chaque_corps_demande_explicitement_une_reponse(nom: str, corps: str) -> None:
     """`check_cta_present` a été mesuré FAUX VERT à deux moitiés sur CORPS_A.
     Les relances doivent porter une invitation explicite, elles aussi — c'est
-    le test qui manquait à la spec du 26 et qui aurait révélé le défaut."""
-    assert cc.check_cta_present(corps).passed, nom
+    le test qui manquait à la spec du 26 et qui aurait révélé le défaut.
+
+    🔧 Deux exceptions NOMMÉES depuis le 2026-09-01, et vérifiées dans les deux
+    sens : si l'une d'elles se met à porter un vrai CTA, le test échoue et
+    demande de la retirer de la liste. Une exception qu'on n'entretient pas
+    devient une permission oubliée."""
+    resultat = cc.check_cta_present(corps)
+    if nom in FERMETURES_DOUCES:
+        assert not resultat.passed, (
+            f"{nom} porte maintenant un CTA explicite — le retirer de "
+            f"FERMETURES_DOUCES dans le même commit"
+        )
+    else:
+        assert resultat.passed, nom
 
 
 @pytest.mark.parametrize("nom", ["CORPS_A_REPLI_AVIS", "CORPS_B_REPLI_AVIS"])
@@ -81,7 +102,11 @@ def test_le_repli_retire_le_chiffre_mais_garde_le_paragraphe(nom: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "nom", ["CORPS_A_SANS_SITE", "CORPS_B_SANS_SITE", "RELANCE_2_SANS_SITE"]
+    # RELANCE_2_SANS_SITE a disparu le 2026-09-01 : la relance 2 réécrite ne
+    # parle plus du site, donc il n'y a plus de bascule à tester.
+    "nom", ["CORPS_A_SANS_SITE", "CORPS_B_SANS_SITE",
+            "CORPS_C_SANS_SITE", "CORPS_D_SANS_SITE",
+            "CORPS_C_REPLI_SANS_SITE", "CORPS_D_REPLI_SANS_SITE"]
 )
 def test_la_variante_sans_site_ne_promet_jamais_de_rafraichir(nom: str) -> None:
     """97 boîtes sur 255 n'ont pas de site. Leur promettre une « version
@@ -92,10 +117,27 @@ def test_la_variante_sans_site_ne_promet_jamais_de_rafraichir(nom: str) -> None:
     l'envoie ». Il se fabrique à la main APRÈS le oui — c'est la dette
     d'honnêteté refermée le 2026-08-26."""
     corps = f.TOUS_LES_CORPS[nom]
+
+    # 🔴 L'INVARIANT QUI VAUT POUR LES QUATRE GABARITS : on ne REFAIT jamais un
+    # site qui n'existe pas. C'est le mensonge que le destinataire repère en une
+    # seconde, et il tient quelle que soit la décision sur le reste.
     assert "rafraîchie" not in corps, nom
-    assert "au goût du jour" not in corps, nom
-    # Casse insensible : la relance 2 commence sa phrase par « Je pourrais ».
-    assert "je pourrais" in corps.lower(), nom
+    assert "refaire" not in corps.lower(), nom
+
+    # 🔧 Ce qui suit ne vaut QUE pour A et B. C et D disent le site déjà fait
+    # (« j'en ai aussi profité pour te faire un site web au goût du jour ») —
+    # décision William du 2026-08-31. Leur appliquer la règle du conditionnel
+    # reviendrait à tester une copie qui n'existe plus ; la sauter en silence
+    # laisserait A et B se dégrader sans bruit. On nomme donc les deux mondes.
+    if nom in ("CORPS_A_SANS_SITE", "CORPS_B_SANS_SITE"):
+        assert "au goût du jour" not in corps, nom
+        # Casse insensible : la phrase peut commencer par « Je pourrais ».
+        assert "je pourrais" in corps.lower(), nom
+    else:
+        assert "au goût du jour" in corps, (
+            f"{nom} ne dit plus le site fait — si la copie a changé, ce test et "
+            f"CORPS_QUI_DISENT_LE_SITE_FAIT doivent bouger dans le même commit"
+        )
 
 
 @pytest.mark.parametrize("nom", ["CORPS_A_SANS_SITE", "CORPS_B_SANS_SITE"])

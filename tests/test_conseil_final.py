@@ -44,6 +44,24 @@ def test_le_verdict_error_ne_consomme_pas_de_tentative() -> None:
     assert "compliance_tentatives" not in patch
 
 
+# Les corps qui disent le site DÉJÀ FAIT, et qui ont le droit.
+#
+# Décision William du 2026-08-31, réaffirmée après avertissement : le prospect
+# ne peut pas savoir que le site n'est pas encore construit, donc ça sort de la
+# règle « seul le vérifiable tue ». Le contrôle reste ACTIF sur eux — il écrit
+# dans les notes et se compte au résumé du soir — mais il ne bloque plus.
+#
+# 🔴 CETTE LISTE EST UNE PERMISSION NOMMÉE, PAS UNE EXCEPTION GÉNÉRALE. A et B
+# gardent le conditionnel, et le test ci-dessous continue de l'exiger d'eux. Le
+# jour où un corps A se met à dire le site fait, il échoue — c'est tout
+# l'intérêt de nommer plutôt que de désactiver.
+CORPS_QUI_DISENT_LE_SITE_FAIT = frozenset({
+    "CORPS_C", "CORPS_C_REPLI_AVIS", "CORPS_C_SANS_SITE", "CORPS_C_REPLI_SANS_SITE",
+    "CORPS_D", "CORPS_D_REPLI_AVIS", "CORPS_D_SANS_SITE", "CORPS_D_REPLI_SANS_SITE",
+    "RELANCE_3",
+})
+
+
 @pytest.mark.parametrize(
     "verdict,passed_attendu",
     [("approved", True), ("blocked", False), ("needs_revision", False)],
@@ -344,14 +362,28 @@ def test_le_site_deja_fait_est_SIGNALE(formule: str, pourquoi: str) -> None:
 
 
 @pytest.mark.parametrize("nom", sorted(__import__("tests.fixtures.corps_ac1", fromlist=["x"]).TOUS_LES_CORPS))
+
+
 def test_la_copie_validee_reste_au_conditionnel(nom: str) -> None:
     """Contrôle négatif : le garde-fou ne doit pas refuser la copie de William.
-    « je pourrais t'en faire une version rafraîchie » est vrai et doit passer."""
+    « je pourrais t'en faire une version rafraîchie » est vrai et doit passer.
+
+    🔧 Depuis le 2026-09-01, C, D et la relance 3 assument l'inverse. On vérifie
+    donc les deux sens : les corps nommés DOIVENT porter la formulation, les
+    autres NE DOIVENT PAS. Un test qui se contenterait de sauter les exceptions
+    laisserait passer le jour où C cesse d'en parler."""
     from src.lib import compliance_checks as cc
     from tests.fixtures import corps_ac1 as fx
 
     r = cc.check_site_au_conditionnel(fx.TOUS_LES_CORPS[nom])
-    assert r.passed, f"{nom} : {r.matches}"
+    if nom in CORPS_QUI_DISENT_LE_SITE_FAIT:
+        assert not r.passed, (
+            f"{nom} ne dit plus le site fait — si la copie a changé, retirer le "
+            f"nom de CORPS_QUI_DISENT_LE_SITE_FAIT dans le même commit"
+        )
+        assert r.severity == "info", "la formulation doit rester signalée, jamais bloquer"
+    else:
+        assert r.passed, f"{nom} : {r.matches}"
 
 
 @pytest.mark.parametrize(

@@ -12,14 +12,17 @@ from typing import Any
 import pytest
 
 from src.tools import compliance as comp
-from tests.fixtures.corps_ac1 import (
+from tests.fixtures.corps_ac1 import (  # noqa: F401
     CORPS_A,
     RELANCE_1,
     RELANCE_2,
+    RELANCE_3,
     SIGNATURE_COMPTE_INSTANTLY,
 )
 
-TRIPLET = {"relance_1": RELANCE_1, "relance_2": RELANCE_2}
+# Les TROIS, depuis le 2026-09-01. Une relance absente d'ici est une relance
+# que le juge ne voit pas, alors qu'elle part au même prospect.
+TRIPLET = {"relance_1": RELANCE_1, "relance_2": RELANCE_2, "relance_3": RELANCE_3}
 
 
 @pytest.fixture(autouse=True)
@@ -125,9 +128,14 @@ def test_le_message_du_juge_porte_les_relances() -> None:
         body=CORPS_A, subject="s", research_json={}, social_proof=[], contact=None,
         google_rating=4.8, google_reviews_count=47, followups=TRIPLET,
     )
-    assert "Relance 1" in msg and "Relance 2" in msg
-    assert "Pour te donner une idée de quoi ça a l'air" in msg
-    assert "Ce que ça change dans une semaine normale" in msg
+    # Les trois, pas deux : une relance absente du message est une relance que
+    # personne ne juge, alors qu'elle part au même prospect.
+    assert "Relance 1" in msg and "Relance 2" in msg and "Relance 3" in msg
+    # Une phrase distinctive de chacune : les libellés seuls prouveraient que
+    # l'en-tête est écrit, pas que le CORPS a suivi.
+    assert "remettre mon courriel sur le dessus" in msg
+    assert "s'est pas encore perdu à travers les autres" in msg
+    assert "Je ne vais plus t'écrire" in msg
 
 
 def test_le_message_du_juge_dit_de_les_juger_AUSSI() -> None:

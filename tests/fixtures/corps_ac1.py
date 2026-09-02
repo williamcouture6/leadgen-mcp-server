@@ -96,47 +96,30 @@ Si c'est pas toi qui gères ça, tu peux-tu me pointer la bonne personne?
 
 
 # ----------------------------------------------------------------------
-# Relances — en fil, jour 3 et jour 7
+# Relances — le fichier ne les DÉFINIT plus, il les IMPORTE
 # ----------------------------------------------------------------------
-# Réécrites au cadrage du 2026-08-30. Ce qui a changé par rapport à la
-# version de la spec du 26, et pourquoi :
-#   · « Deux minutes après » retiré — le courriel 1 promet 60 secondes ;
-#     deux chiffres dans le même fil se contredisent.
-#   · « ton site web au goût du jour » retiré — présume que son site est
-#     démodé (jamais regardé), et ment aux 97 boîtes sans site.
-#   · « tu veux que je te l'envoie? » retiré — laisse croire que le site
-#     EXISTE déjà. Il est fait à la main APRÈS le oui. C'est la dette
-#     d'honnêteté refermée le 2026-08-26.
-#   · tiret cadratin dans la phrase retiré (règle nº1) ; séparateur `---`
-#     devenu sans objet, la signature ayant quitté le corps.
+# 🔴 Elles vivaient ici en copie, et elles avaient DÉJÀ divergé le 2026-09-01,
+# le jour même où William les a réécrites. Les tests mesuraient donc des textes
+# qui ne partaient plus : forme, longueur, budget de « pis » — tout était vert
+# sur les anciennes versions.
+#
+# C'est le défaut exact que `lib/relances.py` a supprimé côté production le
+# matin même (six endroits codaient « il y a deux relances »), reproduit côté
+# tests l'après-midi. Une copie ne diverge pas parce qu'on est négligent : elle
+# diverge parce que rien ne l'oblige à suivre.
+#
+# Les fixtures ré-exportent donc la source de vérité. Un texte, un endroit.
+from src.lib.relances import CORPS_RELANCES  # noqa: E402
 
-RELANCE_1 = """Bonjour,
+RELANCE_1 = CORPS_RELANCES["relance_1"] + "\n"
+RELANCE_2 = CORPS_RELANCES["relance_2"] + "\n"
+RELANCE_3 = CORPS_RELANCES["relance_3"] + "\n"
 
-Ça doit t'arriver de recevoir des textos que tu peux pas répondre tout de
-suite. La tonte, ça se fait pas le téléphone à la main, pis le client,
-lui, il attend une réponse.
-
-Pour te donner une idée de quoi ça a l'air : quand tu réponds pas, ça
-prend le relais, ça pose les questions, et ça fixe le rendez-vous dans
-ton agenda. Après, t'as un texto avec le nom, le numéro, l'adresse et ce
-que le client veut. Tu te présentes, c'est tout.
-
-Pour le site, l'offre tient toujours. Juste à me dire.
-"""
-
-RELANCE_2 = """Bonjour,
-
-Ça doit t'arriver que du monde appelle quand t'es fermé. Un terrain à
-tondre, ça attend pas au lendemain matin, pis celui qui tombe sur ta
-boîte vocale, il appelle probablement la compétition.
-
-Ce que ça change dans une semaine normale : t'as plus à choisir entre
-finir ta job et répondre au téléphone. Les deux se font. Le soir, t'as
-une liste de vrais clients à rappeler au lieu d'une boîte vocale pleine.
-
-Et la version rafraîchie de ton site, ça tient toujours. Je te charge
-rien. Tu veux-tu la voir? T'as juste à me dire.
-"""
+# ⚠️ `RELANCE_2_SANS_SITE` a été SUPPRIMÉE, pas oubliée. La relance 2 réécrite
+# ne parle plus du site du tout : il n'y a donc plus de bascule à faire, et une
+# variante vide aurait été une fixture qui teste une différence inexistante.
+# La contradiction qu'elle portait — le courriel disant le site fait, la relance
+# le disant à faire — disparaît avec elle.
 
 
 def _sans(corps: str, cible: str, remplacement: str = "") -> str:
@@ -205,16 +188,129 @@ CORPS_B_SANS_SITE = _sans(
     "pour ça.",
 )
 
-# La relance 1 ne bascule PAS : « Pour le site, l'offre tient toujours » ne
-# dit rien de l'état du site, donc la même phrase sert aux deux cas. Une
-# variante de moins à maintenir.
-RELANCE_2_SANS_SITE = _sans(
-    RELANCE_2,
-    "Et la version rafraîchie de ton site, ça tient toujours. Je te charge\n"
-    "rien. Tu veux-tu la voir? T'as juste à me dire.",
-    "Et le site, l'offre tient toujours. Je pourrais t'en monter un, je te\n"
-    "charge rien. Ça t'intéresse-tu? T'as juste à me dire.",
+
+
+
+
+# ----------------------------------------------------------------------
+# Courriel 1, gabarits C et D — jour 0, l'angle de la saison
+# ----------------------------------------------------------------------
+# Écrits par William les 2026-08-31 et 2026-09-01, gelés dans
+# `docs/superpowers/specs/../plans/2026-08-30-ac1b-copie.md`.
+#
+# Même entreprise d'exemple que A et B pour que les quatre se comparent :
+# Paysagement Rivard, tonte + aménagement paysager, 4,8 ⭐ sur 47 avis, a un
+# site, contacté en février.
+#
+# 🔴 CE QUI LES DISTINGUE DE A ET B, ET QUI COMPTE POUR LES TESTS :
+# le 1er paragraphe est FIXE. Il ne porte que le métier et la ville, tous deux
+# fournis. Il n'y a pas d'ouvreur généré, donc pas de longueur variable, donc
+# le compte de mots ci-dessous est le compte RÉEL — pas une estimation avec
+# une marge pour ce que le modèle ajoutera.
+#
+# C et D partagent leurs 1er, 2e, 6e et 7e paragraphes. Seuls les 4e et 5e
+# changent : C décrit le service en vague, D met la mécanique en vitrine.
+
+_CD_TETE = """Bonjour,
+
+J'ai vu que tu fais du paysagement dans la région de Laval. La saison
+approche, pis je me disais que je pourrais te contacter pour te parler de
+quelque chose qui pourrait t'intéresser.
+
+Avec ton entreprise, je vois que tu as 4,8 étoiles sur 47 avis. On
+comprend que tes clients aiment ton travail! Pourtant je suis certain
+qu'il serait possible de te simplifier la vie avec la gestion de tes
+clients et t'en amener plus en même temps."""
+
+_CD_PIED = """Je te pousse à rien, mais si ça t'intéresse t'as juste à me le dire et je
+pourrais t'expliquer un peu plus!
+
+J'en ai aussi profité pour te refaire un site web au goût du jour. Je
+pourrais te montrer ça aussi si t'es intéressé.
+"""
+
+CORPS_C = f"""{_CD_TETE}
+
+Je veux pas donner l'impression de trop pousser, mais je me présente. Moi
+c'est William, et j'aide les PME de paysagement à se simplifier la vie,
+gagner du temps et des clients. Ce que je fais, c'est construire un
+système, pour ton entreprise, de réponse automatique aux appels, textos,
+formulaires ou courriels que tu pourrais avoir manqués, ou juste pas eu le
+temps de répondre à temps.
+
+Les avantages d'avoir un système comme ça, c'est d'être le plus vite à
+répondre à un prospect qui autrement irait chez ta compétition. Ça
+augmente aussi la satisfaction de tes clients et te sauve du temps au
+passage.
+
+{_CD_PIED}"""
+
+CORPS_D = f"""{_CD_TETE}
+
+Je veux pas donner l'impression de trop pousser, mais je me présente. Moi
+c'est William, et je monte des systèmes qui répondent en moins de 60
+secondes à tout ce qui rentre : les appels manqués, les textos, les
+formulaires, les courriels. Le système pose les questions qu'il faut pour
+savoir ce que le client cherche, il t'envoie un résumé de la demande, et
+il peut même fixer le rendez-vous.
+
+Pourquoi ça compte : tes clients trouvent ça pas mal plus agréable, pis le
+premier qui rappelle est bien souvent celui qui décroche le contrat, même
+quand il est pas le moins cher.
+
+{_CD_PIED}"""
+
+
+# ----------------------------------------------------------------------
+# C et D — le repli du bloc 2
+# ----------------------------------------------------------------------
+# 🔴 Le repli de C et D ne se contente pas de RETIRER le chiffre, contrairement
+# à celui de A et B : il met les SERVICES RÉELS à la place. Exigence de William
+# du 2026-08-31 — « il faudrait modifier le deuxième paragraphe pour qu'il soit
+# personnalisé même si on enlève les infos de Google ». Un repli générique
+# aurait vidé le seul paragraphe qui parle de l'entreprise.
+#
+# La phrase du milieu change aussi, et c'est voulu : « tes clients aiment ton
+# travail » découle d'une note, « tu en couvres beaucoup » découle d'une liste.
+# La chute est identique dans les deux versions.
+
+_REPLI_ANCRE = (
+    "Avec ton entreprise, je vois que tu fais autant la tonte que\n"
+    "l'aménagement paysager pis les plates-bandes. On comprend que tu en\n"
+    "couvres beaucoup! Pourtant je suis certain"
 )
+_NOTE_ANCRE = (
+    "Avec ton entreprise, je vois que tu as 4,8 étoiles sur 47 avis. On\n"
+    "comprend que tes clients aiment ton travail! Pourtant je suis certain"
+)
+
+CORPS_C_REPLI_AVIS = _sans(CORPS_C, _NOTE_ANCRE, _REPLI_ANCRE)
+CORPS_D_REPLI_AVIS = _sans(CORPS_D, _NOTE_ANCRE, _REPLI_ANCRE)
+
+
+# ----------------------------------------------------------------------
+# C et D — la bascule « sans site »
+# ----------------------------------------------------------------------
+# Un seul mot change, et c'est le bon : on ne « refait » pas un site qui
+# n'existe pas. La formulation dit le site DÉJÀ fait dans les deux cas —
+# décision William du 2026-08-31, réaffirmée après avertissement. Le contrôle
+# `site_au_conditionnel` la détecte toujours et l'écrit dans les notes ; il ne
+# bloque plus.
+
+_SITE_REFAIT = "J'en ai aussi profité pour te refaire un site web"
+_SITE_FAIT = "J'en ai aussi profité pour te faire un site web"
+
+CORPS_C_SANS_SITE = _sans(CORPS_C, _SITE_REFAIT, _SITE_FAIT)
+CORPS_D_SANS_SITE = _sans(CORPS_D, _SITE_REFAIT, _SITE_FAIT)
+
+# ⚠️ La QUATRIÈME combinaison existe pour C et D alors qu'elle n'existe pas
+# pour A et B, et ce n'est pas une inconsistance : une entreprise sous le
+# plancher d'avis ET sans site est un cas réel de la liste. Chez A et B les
+# deux bascules sont indépendantes et se composent sans surprise ; chez C et D
+# le repli réécrit tout le paragraphe 2, donc la composition mérite d'être
+# mesurée plutôt que supposée.
+CORPS_C_REPLI_SANS_SITE = _sans(CORPS_C_REPLI_AVIS, _SITE_REFAIT, _SITE_FAIT)
+CORPS_D_REPLI_SANS_SITE = _sans(CORPS_D_REPLI_AVIS, _SITE_REFAIT, _SITE_FAIT)
 
 
 # ----------------------------------------------------------------------
@@ -233,24 +329,40 @@ CORPS_A_SANS_RENVOI = _sans(
 TOUS_LES_CORPS: dict[str, str] = {
     "CORPS_A": CORPS_A,
     "CORPS_B": CORPS_B,
+    "CORPS_C": CORPS_C,
+    "CORPS_D": CORPS_D,
     "CORPS_A_REPLI_AVIS": CORPS_A_REPLI_AVIS,
     "CORPS_B_REPLI_AVIS": CORPS_B_REPLI_AVIS,
+    "CORPS_C_REPLI_AVIS": CORPS_C_REPLI_AVIS,
+    "CORPS_D_REPLI_AVIS": CORPS_D_REPLI_AVIS,
     "CORPS_A_SANS_SITE": CORPS_A_SANS_SITE,
     "CORPS_B_SANS_SITE": CORPS_B_SANS_SITE,
+    "CORPS_C_SANS_SITE": CORPS_C_SANS_SITE,
+    "CORPS_D_SANS_SITE": CORPS_D_SANS_SITE,
+    "CORPS_C_REPLI_SANS_SITE": CORPS_C_REPLI_SANS_SITE,
+    "CORPS_D_REPLI_SANS_SITE": CORPS_D_REPLI_SANS_SITE,
     "RELANCE_1": RELANCE_1,
     "RELANCE_2": RELANCE_2,
-    "RELANCE_2_SANS_SITE": RELANCE_2_SANS_SITE,
+    "RELANCE_3": RELANCE_3,
 }
 
 # Le gabarit à passer à `check_length` pour chacun.
 GABARIT: dict[str, str] = {
     "CORPS_A": "A",
     "CORPS_B": "B",
+    "CORPS_C": "C",
+    "CORPS_D": "D",
     "CORPS_A_REPLI_AVIS": "A",
     "CORPS_B_REPLI_AVIS": "B",
+    "CORPS_C_REPLI_AVIS": "C",
+    "CORPS_D_REPLI_AVIS": "D",
     "CORPS_A_SANS_SITE": "A",
     "CORPS_B_SANS_SITE": "B",
+    "CORPS_C_SANS_SITE": "C",
+    "CORPS_D_SANS_SITE": "D",
+    "CORPS_C_REPLI_SANS_SITE": "C",
+    "CORPS_D_REPLI_SANS_SITE": "D",
     "RELANCE_1": "RELANCE",
     "RELANCE_2": "RELANCE",
-    "RELANCE_2_SANS_SITE": "RELANCE",
+    "RELANCE_3": "RELANCE",
 }
