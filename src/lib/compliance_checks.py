@@ -546,7 +546,20 @@ _BORNES_LONGUEUR = {
     # les corps réels : 97 et 98 mots, et la variante sans site à 102, donc
     # DÉJÀ en échec. La spec interdit explicitement de laisser une marge d'un
     # mot ; 120 donne ~20 mots de jeu à chacune.
-    ("agence-ia", "RELANCE"): (40, 120),
+    # 🔧 Borne haute portée de 120 à 145 le 2026-09-01. Les deux relances ont été
+    # réécrites par William et sont désormais des textes ENTIÈREMENT FIXES — ni
+    # métier, ni ville, ni ouvreur généré. Leur longueur est donc déterministe :
+    # 86 mots pour la relance 1, 125 pour la relance 2 avec ses deux chiffres.
+    #
+    # Laisser la borne à 120 aurait posé une remarque `length` sur CHAQUE envoi,
+    # pour toujours, sans qu'aucune action ne soit possible — le texte est
+    # décidé. Une remarque permanente n'informe de rien : elle apprend à ignorer
+    # les remarques, et la prochaine, la vraie, passerait avec elle.
+    #
+    # 145 laisse 20 mots de jeu à la relance 2. La borne garde donc son seul rôle
+    # utile ici : attraper un modèle qui réécrirait la relance au lieu de la
+    # recopier.
+    ("agence-ia", "RELANCE"): (40, 145),
 }
 _BORNES_DEFAUT = (60, 95)
 
@@ -1004,6 +1017,105 @@ def check_tics_de_langage(email_body: str) -> CheckResult:
     )
 
 
+# 🔴 Les chiffres de marché autorisés dans la relance 2 — décision William du
+# 2026-09-01, prise en connaissance de cause.
+#
+# CE QUE CES CHIFFRES SONT RÉELLEMENT. Écrit ici parce que ce contrôle sera relu
+# par quelqu'un qui n'aura pas assisté à la décision, et qu'il doit savoir ce
+# qu'il garde. Recherche du 2026-09-01 : 13 agents, 56 chiffres distincts, 6
+# passés à un réfutateur.
+#
+#   « 78 % des clients signent avec la première compagnie qui répond »
+#     AUCUNE SOURCE PRIMAIRE. Attribué partout à un « sondage Lead Connect »
+#     jamais publié. caseyresponse.com — un CONCURRENT direct qui vend la même
+#     offre aux services résidentiels — l'attribue à la Lead Response Management
+#     Study d'Oldroyd ; or le texte primaire de cette étude écrit, ligne 752 :
+#     « This study did not address close ratios. » Le chiffre change aussi de
+#     population selon qui le cite (« acheteurs », « propriétaires »,
+#     « homeowners »), ce qui est le marqueur d'un chiffre sans origine.
+#
+#   « 21 fois plus de clients [retenus] en répondant en 5 minutes plutôt qu'en
+#     30 » — LE CHIFFRE EXISTE, texte primaire retrouvé deux fois sur deux
+#     serveurs indépendants : « The odds of QUALIFYING a lead if called in 5
+#     minutes versus 30 minutes drop 21 times. » Il mesure la QUALIFICATION, pas
+#     la rétention ni la vente. Six entreprises d'hypothèque et d'assurance où le
+#     même lead est revendu à 4-7 acheteurs — une course qui n'existe pas pour un
+#     déneigeur qui reçoit un formulaire sur son propre site. Données 2004-2007,
+#     payées et copyrightées par InsideSales.com, dont le PDG est co-auteur.
+#
+# La position a été présentée à William avec ces éléments, il a tranché « on
+# garde », c'est son entreprise et sa relation client. CE CONTRÔLE N'EST PAS LÀ
+# POUR REDISCUTER ÇA. Il est là pour la seule chose qui reste défendable : que
+# le chiffre écrit soit celui qui a été décidé, et pas une dérive du modèle.
+#
+# POURQUOI `block` ET PAS `info`. Un 21 devenu 210, ou un 78 devenu 87, est un
+# mensonge que le prospect peut vérifier — la catégorie que William a
+# explicitement gardée fatale le 2026-08-31. Le chiffre décidé engage William ;
+# un chiffre halluciné n'engage personne et ne protège rien.
+#
+# ⚠️ CE CONTRÔLE NE VALIDE PAS LA PHRASE ENTIÈRE, seulement l'ancre + le nombre.
+# Exiger la prose au mot près bloquerait des variantes légitimes de rédaction et
+# ferait mourir des brouillons pour une virgule. Ce qui est gardé, c'est le
+# chiffre attaché à ce qu'il prétend mesurer.
+STATISTIQUES_APPROUVEES: dict[str, tuple[str, str, str]] = {
+    "multiplicateur_clients": (
+        r"(\d+)\s*fois plus de clients",
+        "21",
+        "le multiplicateur de la réponse en 5 minutes",
+    ),
+    "delai_court": (
+        r"en moins de\s*(\d+)\s*minutes",
+        "5",
+        "le délai court de la comparaison",
+    ),
+    "delai_long": (
+        r"attend\s*(\d+)\s*minutes",
+        "30",
+        "le délai long de la comparaison",
+    ),
+    "part_premier_repondant": (
+        r"(\d+)\s*%\s*des clients",
+        "78",
+        "la part des clients qui signent avec le premier répondant",
+    ),
+}
+
+
+def check_statistiques_conformes(email_body: str) -> CheckResult:
+    """Le chiffre écrit est-il celui qui a été décidé ?
+
+    Absent = conforme : tous les corps ne portent pas de statistique. Présent
+    avec la mauvaise valeur = `block`.
+
+    Le contrôle porte sur le CORPS ENTIER, signature comprise — contrairement à
+    la plupart des autres. Une statistique glissée sous la ligne de séparation
+    partirait quand même chez le prospect.
+    """
+    ecarts: list[str] = []
+    texte = email_body.replace("’", "'").replace("ʼ", "'")
+
+    for nom, (motif, attendu, quoi) in STATISTIQUES_APPROUVEES.items():
+        for m in re.finditer(motif, texte, flags=re.IGNORECASE):
+            trouve = m.group(1)
+            if trouve != attendu:
+                ecarts.append(
+                    f"'{m.group(0).strip()}' → {quoi} devrait être {attendu}, "
+                    f"le corps dit {trouve} ({nom})"
+                )
+
+    return CheckResult(
+        name="statistiques_conformes",
+        passed=not ecarts,
+        severity="block",
+        message=(
+            f"{len(ecarts)} chiffre(s) de marché dérivé(s) de la valeur décidée"
+            if ecarts
+            else "aucun chiffre de marché dérivé"
+        ),
+        matches=ecarts,
+    )
+
+
 def run_all(
     email_body: str,
     social_proof_count: int,
@@ -1018,6 +1130,7 @@ def run_all(
     return [
         check_warmup_window(),
         check_avis_conformes(email_body, google_rating, google_reviews_count, track),
+        check_statistiques_conformes(email_body),
         check_site_au_conditionnel(email_body),
         check_mise_en_scene(email_body),
         check_banned_words(email_body),

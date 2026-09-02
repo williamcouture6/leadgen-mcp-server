@@ -721,7 +721,9 @@ def test_run_all_retourne_tous_les_checks() -> None:
 
     MAJ 2026-08-30 : 14 checks depuis l'ajout de `check_tics_de_langage`
     (tâche AC1a, garde-fou sur le paragraphe généré), puis 15 depuis
-    `check_avis_conformes` (AC1b, garde-fou sur le chiffre d'avis)."""
+    `check_avis_conformes` (AC1b, garde-fou sur le chiffre d'avis).
+    MAJ 2026-09-01 : 18 depuis `check_statistiques_conformes` (AC1b, garde-fou
+    sur les chiffres de marché de la relance 2)."""
     results = cc.run_all(
         email_body="Bonjour,\nVotre clinique m'intéresse. 15 minutes ?\n\n—\nWilliam",
         social_proof_count=0,
@@ -729,17 +731,47 @@ def test_run_all_retourne_tous_les_checks() -> None:
         template="A",
         email_subject="Question rapide",
     )
-    # 16 checks : warmup + avis_conformes + site_au_conditionnel + 6 body
-    # + 3 subject + length + cta_present + cta_slots_real + registre
-    # + tics_de_langage
-    assert len(results) == 17, f"attendu 17 checks, eu {len(results)}"
+    # 18 checks : warmup + avis_conformes + statistiques_conformes
+    # + site_au_conditionnel + 6 body + 3 subject + length + cta_present
+    # + cta_slots_real + registre + tics_de_langage
+    assert len(results) == 18, f"attendu 18 checks, eu {len(results)}"
     names = [r.name for r in results]
     # Sanity: pas de doublon
-    assert len(set(names)) == 17
+    assert len(set(names)) == 18
 
 
-def test_run_all_retourne_17_checks():
-    assert len(run_all(CORPS_A, 0, template="A", track="agence-ia")) == 17
+# 🔧 Renommé le 2026-09-01. S'appelait `test_run_all_retourne_17_checks` : un
+# nom qui porte le compte doit être réécrit à chaque ajout de check, et le
+# message d'échec ne disait que « 17 != 18 » — pas LEQUEL manquait. La liste
+# nommée dit tout de suite ce qui est apparu ou disparu.
+CHECKS_ATTENDUS = {
+    "warmup_window",
+    "avis_conformes",
+    "statistiques_conformes",
+    "site_au_conditionnel",
+    "mise_en_scene",
+    "banned_words",
+    "subject_banned_words",
+    "first_person_actions",
+    "subject_first_person_actions",
+    "fake_social_proof",
+    "subject_fake_social_proof",
+    "legal_footer",
+    "loi25_privacy_contact",
+    "length",
+    "cta_present",
+    "cta_slots_real",
+    "registre",
+    "tics_de_langage",
+}
+
+
+def test_run_all_retourne_la_liste_complete_des_checks():
+    obtenus = {r.name for r in run_all(CORPS_A, 0, template="A", track="agence-ia")}
+    assert obtenus == CHECKS_ATTENDUS, (
+        f"apparus : {sorted(obtenus - CHECKS_ATTENDUS)} · "
+        f"disparus : {sorted(CHECKS_ATTENDUS - obtenus)}"
+    )
 
 
 def test_run_all_ne_bloque_pas_le_corps_du_pivot():
