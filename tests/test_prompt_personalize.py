@@ -110,11 +110,39 @@ def test_le_prompt_porte_linterdiction(interdiction: str) -> None:
     assert interdiction in PROMPT, f"interdiction absente : {interdiction!r}"
 
 
-def test_le_prompt_exige_A_ou_B_jamais_AB() -> None:
-    """`template_choice="AB"` fait générer les deux variantes, mais la colonne
-    `messages.template_choice` stockerait « AB » sur 100 % des lignes : pas de
-    test, juste deux textes et aucune trace de qui a reçu quoi."""
-    assert 'jamais `"AB"`' in PROMPT
+def test_le_prompt_exige_un_gabarit_nomme_jamais_une_consigne() -> None:
+    """Une consigne d'alternance dans `messages.template_choice` la mettrait sur
+    100 % des lignes : pas de test, juste quatre textes et aucune trace de qui a
+    reçu quoi.
+
+    🔧 Réécrit le 2026-09-01. L'assertion cherchait la chaîne « jamais "AB" »,
+    qui ne survit pas à l'arrivée de « ABCD » et « CD » — le prompt parle
+    maintenant de consignes d'alternance en général. Chercher une chaîne exacte
+    dans un texte destiné à être réécrit rend le test fragile sans le rendre
+    plus sûr ; on vérifie l'IDÉE, en trois morceaux."""
+    bas = PROMPT.lower()
+    assert "consigne d'alternance" in bas, "le prompt ne nomme plus le cas"
+    assert "réellement envoyée" in bas, "le prompt ne dit plus ce que la colonne porte"
+    assert "aucune trace de qui a reçu quoi" in bas, "la conséquence a disparu"
+
+
+def test_le_prompt_annonce_les_quatre_gabarits() -> None:
+    """C et D doivent être décrits, pas seulement autorisés dans le schéma."""
+    assert "LES GABARITS C ET D" in PROMPT
+    assert '"template_used": "A | B | C | D"' in PROMPT
+    assert "{BLOC_SITE_CD}" in PROMPT
+    assert "{ANCRE_CD}" in PROMPT
+
+
+def test_le_prompt_dit_que_C_et_D_n_ont_pas_d_ouvreur_genere() -> None:
+    """Sans ça, le modèle réécrirait un premier paragraphe qui est fixe.
+
+    C'est la différence de forme la plus facile à rater entre A/B et C/D : la
+    section de l'ouvreur occupe 80 lignes et ne concerne que la moitié des
+    gabarits.
+    """
+    assert "Cette section ne concerne QUE A et B" in PROMPT
+    assert "pas d'ouvreur généré" in PROMPT
 
 
 def test_le_prompt_interdit_darrondir_la_note() -> None:

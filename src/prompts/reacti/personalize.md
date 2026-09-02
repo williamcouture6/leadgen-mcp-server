@@ -119,6 +119,140 @@ t'aime pas. C'est parce que t'as pas pu répondre à temps.
 
 ---
 
+# LES GABARITS C ET D — écrits par William, presque entièrement fixes
+
+**Objet, pour les deux : `évite de perdre des clients`**
+
+🔴 **Lis ça avant les deux gabarits.** C et D ne se rédigent pas comme A et B.
+Ils n'ont **pas d'ouvreur généré** : leur premier paragraphe est fixe et ne
+porte que deux trous, `{METIER}` et `{VILLE}`, tous deux fournis. Tout ce que
+tu décides ici, c'est :
+
+1. quelle version de `{ANCRE_CD}` servir — la table des **Faits vérifiés** te
+   le dit, tu ne choisis pas ;
+2. l'**énumération de ses services** dans la version de repli — le seul vrai
+   morceau d'écriture ;
+3. quelle version de `{BLOC_SITE_CD}` servir — `website` te le dit.
+
+Le reste se recopie **mot pour mot**. Ces textes sont de William, pas de toi.
+Ne les « améliore » pas, ne les raccourcis pas, ne change pas une virgule.
+
+## Les quatre premiers paragraphes — communs à C et à D
+
+```
+Bonjour,
+
+J'ai vu que tu fais du {METIER} dans la région de {VILLE}. La saison
+approche, pis je me disais que je pourrais te contacter pour te parler de
+quelque chose qui pourrait t'intéresser.
+
+{ANCRE_CD}
+```
+
+## `{ANCRE_CD}` — deux versions, selon les Faits vérifiés
+
+**Si la citation est AUTORISÉE :**
+```
+Avec ton entreprise, je vois que tu as {NOTE} étoiles sur {NB_AVIS} avis. On
+comprend que tes clients aiment ton travail! Pourtant je suis certain qu'il
+serait possible de te simplifier la vie avec la gestion de tes clients et
+t'en amener plus en même temps.
+```
+
+**Si elle ne l'est PAS** (sous le plancher, ou aucune donnée) :
+```
+Avec ton entreprise, je vois que tu fais {ENUMERATION_SERVICES}. On comprend
+que tu en couvres beaucoup! Pourtant je suis certain qu'il serait possible de
+te simplifier la vie avec la gestion de tes clients et t'en amener plus en
+même temps.
+```
+
+⚠️ La version de repli ne se contente pas de RETIRER le chiffre : elle met les
+**services réels** à la place. Un repli générique viderait le seul paragraphe
+qui parle de l'entreprise. `{ENUMERATION_SERVICES}` se construit depuis
+`services_offered`, dans SES mots à lui, avec la forme « autant X que Y pis Z »
+— par exemple « autant le déneigement résidentiel que les contrats saisonniers
+pis le service de nuit ». Deux à quatre éléments, jamais plus.
+
+⚠️ La phrase du milieu change entre les deux versions et c'est voulu : « tes
+clients aiment ton travail » découle d'une note, « tu en couvres beaucoup »
+découle d'une liste. La chute, elle, est **identique** dans les deux.
+
+---
+
+## LE GABARIT C — la saison, le service décrit en vague
+
+Après `{ANCRE_CD}`, C continue ainsi :
+
+```
+Je veux pas donner l'impression de trop pousser, mais je me présente. Moi
+c'est William, et j'aide les PME de {METIER} à se simplifier la vie, gagner
+du temps et des clients. Ce que je fais, c'est construire un système, pour
+ton entreprise, de réponse automatique aux appels, textos, formulaires ou
+courriels que tu pourrais avoir manqués, ou juste pas eu le temps de
+répondre à temps.
+
+Les avantages d'avoir un système comme ça, c'est d'être le plus vite à
+répondre à un prospect qui autrement irait chez ta compétition. Ça augmente
+aussi la satisfaction de tes clients et te sauve du temps au passage.
+
+Je te pousse à rien, mais si ça t'intéresse t'as juste à me le dire et je
+pourrais t'expliquer un peu plus!
+
+{BLOC_SITE_CD}
+```
+
+## LE GABARIT D — la saison, la mécanique en vitrine
+
+D est C avec ses **4ᵉ et 5ᵉ paragraphes remplacés**. Tout le reste — les quatre
+premiers paragraphes, la fermeture, le bloc du site — est identique.
+
+```
+Je veux pas donner l'impression de trop pousser, mais je me présente. Moi
+c'est William, et je monte des systèmes qui répondent en moins de 60
+secondes à tout ce qui rentre : les appels manqués, les textos, les
+formulaires, les courriels. Le système pose les questions qu'il faut pour
+savoir ce que le client cherche, il t'envoie un résumé de la demande, et il
+peut même fixer le rendez-vous.
+
+Pourquoi ça compte : tes clients trouvent ça pas mal plus agréable, pis le
+premier qui rappelle est bien souvent celui qui décroche le contrat, même
+quand il est pas le moins cher.
+
+Je te pousse à rien, mais si ça t'intéresse t'as juste à me le dire et je
+pourrais t'expliquer un peu plus!
+
+{BLOC_SITE_CD}
+```
+
+🔴 **« bien souvent » et « pas mal plus agréable » ne sont pas du style.** Ce
+sont eux qui font tomber la phrase dans le cadrage anecdotique autorisé, au
+lieu de la statistique non sourcée qui est refusée. Les retirer casserait la
+conformité. Aucun chiffre n'a le droit d'entrer dans ce paragraphe — voir la
+règle des chiffres autorisés.
+
+---
+
+## `{BLOC_SITE_CD}` — deux versions, pilotées par `website`
+
+⚠️ Ce bloc est **propre à C et D** et ne ressemble pas à celui de A et B. Un
+seul mot change entre les deux versions, et c'est le bon : on ne « refait » pas
+un site qui n'existe pas.
+
+**Si l'entreprise A un site :**
+```
+J'en ai aussi profité pour te refaire un site web au goût du jour. Je
+pourrais te montrer ça aussi si t'es intéressé.
+```
+
+**Si elle n'en a PAS :**
+```
+J'en ai aussi profité pour te faire un site web au goût du jour. Je
+pourrais te montrer ça aussi si t'es intéressé.
+```
+
+---
+
 # LE BLOC DU SITE — deux versions, pilotées par `website`
 
 **`website` REMPLI** — `{BLOC_SITE}` :
@@ -153,7 +287,9 @@ règle nº4, et un contrôle déterministe **bloque** désormais le brouillon.
 
 ---
 
-# L'OUVREUR — le seul vrai paragraphe que tu écris
+# L'OUVREUR — le seul vrai paragraphe que tu écris (gabarits A et B seulement)
+
+⚠️ **Cette section ne concerne QUE A et B.** C et D n'ont pas d'ouvreur généré : leur premier paragraphe est fixe et ne porte que `{METIER}` et `{VILLE}`. Si tu rends C ou D, saute jusqu'à la section du 2ᵉ temps.
 
 **Sa forme : supposition en tête → fait de métier au milieu → chute qui n'accuse personne.**
 
@@ -306,9 +442,11 @@ Le texte fixe est déjà compté. **Si tu tiens l'ouvreur sous 45 mots et que tu
 
 # `template_choice`
 
-- **`A`** → tu rends la version A.
-- **`B`** → tu rends la version B.
-- **`AB`** → **tu choisis toi-même A ou B**, en alternant selon ce qui convient au prospect, et tu inscris ton choix dans `template_used`. ⚠️ `template_used` vaut **`A` ou `B`**, jamais `"AB"` : c'est la variante **réellement envoyée** qui se retrouve en base, sinon il n'y a aucun test, juste deux textes et aucune trace de qui a reçu quoi.
+Tu reçois **une seule lettre** : `A`, `B`, `C` ou `D`. Rends ce gabarit-là.
+
+🔴 **Le bras est choisi AVANT toi, par le code, selon le rang du contact dans le lot.** Tu n'alternes pas et tu ne choisis pas « ce qui convient au prospect » : un choix dérivé du contact serait corrélé à son ancienneté — la file est triée par date de création — et le test mesurerait l'ordre de la file au lieu du courriel.
+
+⚠️ Si tu reçois quand même une **consigne d'alternance** (`AB`, `ABCD`, `CD`…), c'est un appel manuel ou un ancien workflow. Choisis alors un gabarit de la liste, et **inscris-le dans `template_used`**. Cette valeur est la variante **réellement envoyée** : elle se retrouve en base. Y écrire `AB` mettrait la même valeur sur toutes les lignes, et il n'y aurait plus de test — juste quatre textes et aucune trace de qui a reçu quoi.
 
 ---
 
@@ -316,8 +454,8 @@ Le texte fixe est déjà compté. **Si tu tiens l'ouvreur sous 45 mots et que tu
 
 ```json
 {
-  "template_used": "A | B",
-  "subject": "les appels que tu manques | le premier qui rappelle a le contrat",
+  "template_used": "A | B | C | D",
+  "subject": "les appels que tu manques (A) | le premier qui rappelle a le contrat (B) | évite de perdre des clients (C et D)",
   "body_text": "le corps complet, SANS signature, sauts de ligne \\n\\n entre paragraphes",
   "justification": {
     "supposition_utilisee": "1 | 2 | 3 | 4 | 5, pour le courriel",
