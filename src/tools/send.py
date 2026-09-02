@@ -32,6 +32,7 @@ sur le 1er vrai bounce (cf `classify_lead_outcome` + docs/go-live-checklist.md).
 """
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -432,6 +433,65 @@ async def _horodater_tentative(message_id: str) -> None:
         pass
 
 
+async def _alerter_file_bloquee(track: str) -> bool:
+    """Crie sur #alertes quand WF-6 repart les mains vides SANS que la file
+    le soit.
+
+    Rend `True` si une alerte est partie. Ne lève jamais : une alerte est un
+    filet, elle n'a pas le droit de faire tomber l'envoi qu'elle surveille.
+
+    ⚠️ Le silence qu'on répare ici est le pire de tous, parce qu'il ressemble
+    à un succès. `processed=0, errors=0` fait partir le nœud IF de n8n sur
+    « Log OK ». Rien dans les journaux ne distingue « la campagne est finie »
+    de « WF-5 n'a jamais été activé ».
+    """
+    from ..lib import slack as slack_lib
+
+    try:
+        en_attente = await db.select(
+            "messages",
+            params={
+                "select": "id",
+                "direction": "eq.outbound",
+                "status": "eq.draft",
+                "compliance_check_passed": "is.null",
+                "track": f"eq.{track}",
+                "limit": "1000",
+            },
+        )
+    except Exception:  # noqa: BLE001 — un filet ne casse pas ce qu'il surveille
+        return False
+
+    if not en_attente:
+        # File réellement vide : rien à signaler, c'est une fin de liste.
+        return False
+
+    corps = "\n".join([
+        f"🚨 WF-6 — 0 courriel poussé, mais {len(en_attente)} brouillon(s) "
+        f"attendent encore un verdict de conformité (track {track}).",
+        "La file n'est PAS vide : quelque chose en amont ne tourne pas.",
+        "Piste nº1 : **WF-5 conformité n'est pas activé.** WF-4 écrit "
+        "`compliance_check_passed = NULL` et WF-6 n'accepte que `true` — "
+        "sans WF-5 entre les deux, aucun brouillon ne devient envoyable.",
+        "⚠️ Sans cette alerte, ce cas rend `processed=0, errors=0` et se lit "
+        "comme un succès.",
+    ])
+    try:
+        envoyee = await slack_lib.notify(
+            text=corps, context="wf6_file_bloquee", category="alerts",
+        )
+    except Exception:  # noqa: BLE001
+        envoyee = False
+    if not envoyee:
+        # Même réflexe que `_alerter_famine_wf4` : une alerte perdue qui se
+        # croit partie est le pire des deux mondes.
+        logging.getLogger("wf6").error(
+            "alerte file bloquée #alertes NON partie — track=%s en_attente=%s",
+            track, len(en_attente),
+        )
+    return envoyee
+
+
 async def run_wf6(payload: RunWf6In) -> RunWf6Out:
     """Pass complet WF-6 : pousse jusqu'à `limit` drafts approuvés à Instantly,
     en respectant le daily cap (compté sur fenêtre Toronto)."""
@@ -478,6 +538,26 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             "limit": str(min(effective_limit * DRAFT_OVERFETCH_FACTOR, DRAFT_OVERFETCH_MAX)),
         },
     )
+
+    # 🔴 UN LOT VIDE N'EST PAS FORCÉMENT UNE FILE VIDE. Ajouté le 2026-09-01
+    # après l'audit de bout en bout.
+    #
+    # Le scénario, entièrement muet : on active WF-6 sans avoir activé WF-5.
+    # WF-4 écrit des brouillons avec `compliance_check_passed = NULL` ; le
+    # filtre ci-dessus exige `is.true` ; le lot revient vide. `run_wf6` rend
+    # `processed=0, errors=0`, le nœud IF de n8n part sur « Log OK », et la
+    # checklist se coche entièrement pendant que RIEN ne part.
+    #
+    # Le même silence couvre une file pleine de brouillons refusés en
+    # `needs_revision` — cas où il n'y a rien à attendre non plus.
+    #
+    # On distingue donc « plus rien à envoyer » de « quelque chose est cassé
+    # en amont », et on crie dans le second cas. Calqué sur
+    # `_alerter_famine_wf4` : l'alerte NOMME ce qui attend, parce que « 0 push »
+    # ne distingue pas une panne d'une fin de liste, et une alerte qu'on ne
+    # peut pas interpréter finit ignorée.
+    if not drafts:
+        await _alerter_file_bloquee(track)
 
     for d in drafts:
         # La sur-récolte regarde plus loin dans la file ; elle n'envoie pas
