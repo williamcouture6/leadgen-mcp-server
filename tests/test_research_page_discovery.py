@@ -155,6 +155,25 @@ def test_liens_du_menu_dedupes_au_slash_final() -> None:
     assert research._rank_internal_pages("https://x.ca/", html, 5) == ["https://x.ca/contacts"]
 
 
+def test_prioriser_reconnait_la_home_malgre_les_parametres_de_campagne() -> None:
+    # Beaucoup de fiches Google Places portent le site avec des `?utm_source=`
+    # (Piscines Rive-Nord, 2026-09-01). La home du sitemap n'a pas ces
+    # parametres : sans normalisation elle passe pour une page interne et se
+    # fait charger une DEUXIEME fois. Le defaut ne se voit que sur un petit
+    # site, ou elle n'est pas evincee par des pages mieux notees.
+    base = "https://x.ca/?utm_source=google&utm_medium=local"
+    urls = ["https://x.ca/", "https://x.ca/contact/"]
+    assert research._prioriser_urls(base, urls, 4) == ["https://x.ca/contact/"]
+
+
+def test_prioriser_garde_une_page_designee_par_un_parametre() -> None:
+    # La borne du correctif precedent. Le menu des Entretiens Gauthier pointe
+    # ses promotions vers /?page_id=75 : c'est une VRAIE page, distincte de la
+    # home. Retirer les parametres en bloc la ferait disparaitre.
+    urls = ["https://x.ca/?page_id=75"]
+    assert research._prioriser_urls("https://x.ca/", urls, 4) == ["https://x.ca/?page_id=75"]
+
+
 def test_prioriser_ignore_la_home_et_les_hotes_externes() -> None:
     urls = ["https://x.ca/", "https://autre.ca/contact/", "https://x.ca/contact/"]
     assert research._prioriser_urls("https://x.ca/", urls, 5) == ["https://x.ca/contact/"]
