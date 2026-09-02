@@ -46,7 +46,7 @@ POIDS: dict[str, int] = {
     "saisonnier": 4,
     # Ce qui fait descendre — jamais disqualifier : la boîte reste joignable.
     "outil_en_place": -20,
-    "service_reponse_humain_24_7": -35,
+    "service_reponse_humain_24_7": -25,
 }
 
 

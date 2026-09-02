@@ -83,13 +83,13 @@ def test_outil_en_place_fait_descendre_sans_disqualifier() -> None:
 
 
 def test_service_humain_24_7_descend_fort_mais_reste_joignable() -> None:
-    score, _ = calculer_score({
-        "avis_total": 500, "ferme_soir_ou_weekend": True,
-        "service_reponse_humain_24_7": True,
-    })
-    assert score < POIDS["base"]
-    # Décision William : ce n'est PAS une disqualification.
-    assert score == 25 + 14 + 12 - 35
+    socle = {"avis_total": 500, "ferme_soir_ou_weekend": True}
+    avant = calculer_score(socle)[0]
+    apres = calculer_score({**socle, "service_reponse_humain_24_7": True})[0]
+    assert apres - avant == POIDS["service_reponse_humain_24_7"] == -25
+    # Décision William : ça descend, ça ne disqualifie pas — la boîte reste
+    # joignable, donc elle reste dans la liste avec un score non nul.
+    assert apres > 0
 
 
 def test_le_plancher_est_zero() -> None:
