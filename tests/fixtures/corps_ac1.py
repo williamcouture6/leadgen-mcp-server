@@ -18,14 +18,43 @@ corps SANS signature, les comptes ne bougent pas.
 
 # Ce qu'Instantly ajoute réellement au courriel reçu (signature du compte
 # d'envoi + lien de désabonnement). Sert d'`appended_footer` aux checks.
-# ⚠️ La ligne « Couture IA — Automatisation IA pour PME » de la signature
-# actuelle est à RETIRER côté Instantly avant le premier envoi : le mot « IA »
-# est interdit dans tout ce qu'un prospect lit (règle du 2026-08-25), et il
-# partirait sur les 255 courriels.
+#
+# 🔴 CE TEXTE DOIT ÊTRE IDENTIQUE À TROIS ENDROITS, et rien ne le vérifie :
+#   1. la signature du compte d'envoi, dans Instantly ;
+#   2. la variable `INSTANTLY_CAMPAIGN_FOOTER` sur Railway ;
+#   3. ici.
+#
+# Aucun code ne lit la vraie signature d'Instantly. `INSTANTLY_CAMPAIGN_FOOTER`
+# n'est qu'une DÉCLARATION de ce qu'elle contient — et cette fixture est la
+# copie sur laquelle les tests mesurent. Si les trois divergent, les contrôles
+# valident un pied de page qui n'existe plus, et les mentions légales
+# manquent aux courriels réellement partis sans que personne puisse le voir.
+#
+# ⚠️ La conséquence est asymétrique. Une déclaration TROP PAUVRE fait échouer
+# la configuration : verdict `error`, rien n'est envoyé, rien n'est gelé, tout
+# repart dès la correction. Une déclaration TROP RICHE — qui promet des
+# mentions que la vraie signature n'a pas — passe au vert et laisse partir
+# 255 courriels sans désabonnement valide. C'est le seul sens dangereux.
+#
+# 🔧 Mise à jour du 2026-09-02, signature choisie par William :
+#   · « Automatisation IA pour PME » → « Systèmes de réponse pour PME ».
+#     Le mot « IA » est interdit dans tout ce qu'un prospect lit (règle du
+#     2026-08-25) et « automatisation » est sur la liste des mots bannis. Ni
+#     l'un ni l'autre n'était détecté ici : les checks de mots bannis lisent le
+#     CORPS, jamais le pied de page.
+#   · le tiret cadratin devient un point médian « · » — le cadratin est le tell
+#     nº1 d'un texte écrit par une machine (règle de rédaction nº1).
+#   · « Couture IA » RESTE : c'est le nom de l'entreprise et le domaine. Le
+#     contrôle des mots bannis fait lui-même cette exception.
+#   · le lien porte `?email={{email}}`. Sans le paramètre la page fonctionne
+#     quand même — elle demande l'adresse — mais une faute de frappe
+#     enregistrerait le désabonnement d'une adresse inexistante pendant que la
+#     vraie continue de recevoir.
 SIGNATURE_COMPTE_INSTANTLY = """William Couture
-Couture IA
+Couture IA · Systèmes de réponse pour PME
 couture-ia.com
-Pour te désabonner : https://couture-ia.com/unsubscribe?email={{email}}"""
+
+https://couture-ia.com/unsubscribe?email={{email}}"""
 
 
 # ----------------------------------------------------------------------
