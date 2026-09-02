@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from ..lib.avis import bloc_faits_verifies, nom_commercial
 from ..lib.lexique_metiers import lexique_pour
+from ..lib.gabarits import est_un_gabarit
 from ..lib.relances import CLES_RELANCES, CORPS_RELANCES
 from ..lib.metiers import resoudre_metiers
 from . import research as research_tools
@@ -398,14 +399,15 @@ async def personalize(payload: PersonalizeIn) -> PersonalizeOut:
     # n'y aurait pas de test A/B — juste deux textes et aucune trace de qui a
     # reçu quoi.
     template_used = (email_json.get("template_used") or "").strip().upper()
-    if template_used not in ("A", "B"):
+    if not est_un_gabarit(template_used):
         template_used = payload.template_choice
-        if template_used not in ("A", "B"):
+        if not est_un_gabarit(template_used):
             # Dernier recours : le modèle n'a pas dit sa variante ET le
             # paramètre était « AB ». On refuse de deviner, mais on le DIT.
             email_json.setdefault("warnings", []).append(
-                "template_used absent de la sortie et template_choice='AB' : "
-                "la variante envoyée n'est pas traçable"
+                "template_used absent de la sortie et template_choice est une "
+                "consigne d'alternance (AB, ABCD…) : la variante envoyée n'est "
+                "pas traçable"
             )
 
     # 🔴 Les relances sont INJECTÉES, pas générées. Décision du 2026-09-01 :

@@ -540,6 +540,20 @@ _BORNES_LONGUEUR = {
     # soit on baisse la borne, mais on ne laisse pas une marge d'un mot ».
     ("agence-ia", "A"): (180, 270),
     ("agence-ia", "B"): (180, 270),
+    # C et D, ajoutés le 2026-09-01. Mesurés sur les quatre variantes de chacun
+    # (avec la note / repli sur les services, avec site / sans site) :
+    #   C : 230 · 230 · 237 · 237     D : 228 · 228 · 235 · 235
+    # Les mêmes bornes que A et B, et ce n'est pas de la paresse : les quatre
+    # gabarits partagent la même contrainte de lecture — un courriel froid à un
+    # contracteur qui le lit sur son téléphone entre deux jobs.
+    #
+    # ⚠️ Sans ces deux lignes, C et D n'auraient PAS été refusés : `check_length`
+    # retombe sur les bornes de ("agence-ia", "A") pour un gabarit inconnu de la
+    # même piste. Le repli aurait donc donné le bon résultat par accident. On
+    # les écrit quand même — un repli qui tombe juste masque le jour où il
+    # tombera faux, et la borne de C doit se lire ici, pas se déduire.
+    ("agence-ia", "C"): (180, 270),
+    ("agence-ia", "D"): (180, 270),
     # 🔧 Borne haute montée de 100 à 120 le 2026-08-30 (AC1b). Les 100 avaient
     # été posés sur une ESTIMATION (« ≈ 88 mots ») qui ne comptait pas de vrai
     # ouvreur — or l'ouvreur généré fait jusqu'à 45 mots à lui seul. Mesuré sur

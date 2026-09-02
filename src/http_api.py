@@ -18,6 +18,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from pydantic import BaseModel
 
 from . import supabase_client as sb
+from .lib.gabarits import GABARITS, bras_demandes, bras_du_lot, est_un_gabarit
 from .lib.relances import CLES_RELANCES
 from .tools import booking as booking_tools
 from .tools import compliance as compliance_tools
@@ -1944,26 +1945,12 @@ def _tombe_sur_le_repli_du_lexique(company_row: dict[str, Any]) -> bool:
     return resoudre_metiers(research.get("services_offered"), date.today()).dominant is None
 
 
-def _bras_ab(template_choice: str, rang: int) -> str:
-    """Le bras du test A/B pour le n-ième contact du lot.
-
-    `"AB"` demande l'alternance ; `"A"` ou `"B"` force un bras (mode manuel,
-    rejeu d'un lead précis).
-
-    🔴 L'alternance se fait par RANG DANS LE LOT, jamais par une propriété du
-    contact. La spec du 2026-08-26 le dit : sans ça, « A part sur les contacts
-    les plus anciens et B sur les plus récents, et le test mesure l'ordre de la
-    file au lieu du courriel ». La file est triée `created_at.asc`, donc toute
-    répartition dérivée du contact serait corrélée à son ancienneté.
-
-    ⚠️ Le rang est celui du lot, pas un compteur global : deux lots consécutifs
-    recommencent tous les deux par A. Sur des lots de 10 à 20 c'est sans effet
-    sur l'équilibre ; ça le deviendrait sur des lots de 1, cas qui n'existe
-    qu'en rejeu manuel — où le bras se force de toute façon.
-    """
-    if template_choice.strip().upper() != "AB":
-        return template_choice
-    return "A" if rang % 2 == 0 else "B"
+# 🔧 `_bras_ab` a déménagé dans `lib/gabarits.bras_du_lot` le 2026-09-01, avec
+# l'arrivée de C et D. Le nom est conservé ici comme alias : il est cité dans
+# des tests et des docstrings, et le renommer n'apprendrait rien à personne.
+# ⚠️ Le paramètre LISTE désormais les bras : « AB » garde son sens exact,
+# « ABCD » ouvre aux quatre. Voir l'en-tête de `lib/gabarits.py`.
+_bras_ab = bras_du_lot
 
 
 async def _personalize_one(
@@ -2056,7 +2043,7 @@ async def _personalize_one(
                     # ceinture ; celle-ci est la première.
                     "template_choice": (
                         out.template_used
-                        if out.template_used in ("A", "B")
+                        if est_un_gabarit(out.template_used)
                         else template_choice
                     ),
                     # Le paramètre d'entrée reste tracé, séparément, pour qu'on
@@ -2100,7 +2087,7 @@ async def _personalize_one(
                     # a reçu quoi. La contrainte de la colonne refuse 'AB'.
                     template_choice=(
                         out.template_used
-                        if out.template_used in ("A", "B")
+                        if est_un_gabarit(out.template_used)
                         else None
                     ),
                     # Les relances (migration 0046). Absentes sur OPT.
@@ -2795,11 +2782,18 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             # toujours, contacts gelés à vie.
             template_used = (outp.get("template_used")
                              or inp.get("template_choice"))
-            if (template_used or "").upper() == "AB":
-                # Ceinture de sécurité pour les agent_runs ÉCRITS AVANT ce
-                # correctif : ils portent « AB » des deux côtés. On préfère un
-                # gabarit approximatif de la bonne piste à un refus certain.
-                template_used = "A"
+            if not est_un_gabarit(template_used):
+                # Ceinture de sécurité pour les agent_runs ÉCRITS AVANT le
+                # correctif du 2026-08-30 : ils portent « AB » des deux côtés.
+                # On préfère un gabarit approximatif de la bonne piste à un
+                # refus certain.
+                # 🔧 Le test porte sur « est-ce UN gabarit » et non sur « est-ce
+                # la chaîne AB » : depuis l'arrivée de C et D le paramètre peut
+                # valoir « ABCD » ou « CD », qui auraient traversé l'ancienne
+                # condition et fait retomber `check_length` sur les bornes OPT
+                # — 60 à 95 mots pour un corps de 228, donc 100 % de refus.
+                bras = bras_demandes(template_used) or GABARITS
+                template_used = bras[0]
             # available_slots peut être stocké dans input_payload mais on a juste un count
             # → on re-fetch Cal.com pour avoir la liste actuelle (acceptable car compliance
             # se fait peu après personalize, slots quasi identiques).
