@@ -1068,8 +1068,23 @@ STATISTIQUES_APPROUVEES: dict[str, tuple[str, str, str]] = {
         "5",
         "le délai court de la comparaison",
     ),
+    # 🔧 Ancre changée le 2026-09-01 avec la copie. Était `attend (\d+) minutes`
+    # (« comparé à un lead qui attend 30 minutes ») ; William a réécrit en
+    # « comparé à celles qui répondent en 30 minutes » — la comparaison portait
+    # sur un LEAD alors que le sujet de la phrase est les ENTREPRISES.
+    #
+    # ⚠️ Sans ce changement, l'ancre ne matchait plus rien et la garde du 30
+    # serait MORTE EN SILENCE. C'est le défaut propre aux gardes par ancre : un
+    # motif qui ne trouve rien est indistinguable d'un corps sans statistique,
+    # puisque « absent = conforme ». D'où
+    # `test_aucune_ancre_ne_doit_etre_morte`, qui vérifie que les quatre
+    # s'allument bien sur le texte canonique — c'est LUI qui rattrape la
+    # prochaine réécriture, pas la relecture.
+    #
+    # `répondent en (\d+)` ne peut pas attraper le délai court : « répondent en
+    # MOINS DE 5 minutes » intercale deux mots avant le chiffre.
     "delai_long": (
-        r"attend\s*(\d+)\s*minutes",
+        r"répondent en\s*(\d+)\s*minutes",
         "30",
         "le délai long de la comparaison",
     ),

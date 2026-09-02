@@ -37,8 +37,8 @@ système comme ça.
 
 Juste pour te dire, les entreprises qui ont un système similaire sont capables
 de retenir en moyenne 21 fois plus de clients si elles répondent en moins de
-5 minutes comparé à un lead qui attend 30 minutes. Sans compter qu'en moyenne
-78 % des clients signent avec la première compagnie qui répond.
+5 minutes comparé à celles qui répondent en 30 minutes. Sans compter qu'en
+moyenne 78 % des clients signent avec la première compagnie qui répond.
 
 Bref, si t'as des questions hésite pas
 """
@@ -46,6 +46,38 @@ Bref, si t'as des questions hésite pas
 
 def test_les_valeurs_decidees_passent() -> None:
     assert cc.check_statistiques_conformes(RELANCE_2).passed
+
+
+def test_aucune_ancre_ne_doit_etre_morte() -> None:
+    """🔴 LE TEST LE PLUS IMPORTANT DU FICHIER.
+
+    « Absent = conforme » est voulu — tous les corps ne portent pas de
+    statistique — mais ça rend une ancre MORTE indistinguable d'un texte sain :
+    dans les deux cas le check est vert.
+
+    Le cas s'est produit le 2026-09-01, le jour même. William a réécrit
+    « comparé à un lead qui ATTEND 30 minutes » en « comparé à celles qui
+    RÉPONDENT en 30 minutes ». L'ancre `attend (\\d+) minutes` cessait de
+    matcher : la garde du 30 serait devenue silencieuse, et rien — ni les
+    tests, ni la suite complète — ne l'aurait signalé.
+
+    Ce test est le seul filet. Il échoue à la prochaine réécriture de la copie
+    qui déplacerait une ancre, et c'est exactement ce qu'on veut : c'est un
+    rappel de mettre à jour `STATISTIQUES_APPROUVEES`, pas une nuisance.
+    """
+    import re
+
+    for nom, (motif, attendu, quoi) in cc.STATISTIQUES_APPROUVEES.items():
+        trouves = re.findall(motif, RELANCE_2, flags=re.IGNORECASE)
+        assert trouves, (
+            f"ancre MORTE : le motif de « {quoi} » ({nom}) ne trouve plus rien dans "
+            f"la relance 2. La copie a été réécrite sans que le motif suive — la "
+            f"garde de ce chiffre ne protège plus rien, en silence."
+        )
+        assert attendu in trouves, (
+            f"l'ancre de « {quoi} » ({nom}) trouve {trouves} mais pas la valeur "
+            f"décidée {attendu!r}"
+        )
 
 
 def test_un_corps_sans_statistique_passe() -> None:
@@ -62,7 +94,7 @@ def test_un_corps_sans_statistique_passe() -> None:
         ("21 fois", "12 fois", "le multiplicateur, chiffres inversés"),
         ("78 %", "87 %", "la part du premier répondant, chiffres inversés"),
         ("moins de\n5 minutes", "moins de 2 minutes", "le délai court"),
-        ("attend 30 minutes", "attend 60 minutes", "le délai long"),
+        ("répondent en 30 minutes", "répondent en 60 minutes", "le délai long"),
     ],
 )
 def test_une_derive_est_bloquee(avant: str, apres: str, quoi: str) -> None:
