@@ -1,22 +1,29 @@
-"""« Je n'arrive pas à les joindre » → tête de la file de prospection.
+"""« Je n'arrive pas à les joindre » → tête de la file, sans toucher au score.
 
 Décision William du 2026-09-01 : un avis Google où un client se plaint de ne
-pas réussir à joindre l'entreprise met ce lead au-dessus de tous les autres,
-**quoi que dise le reste du barème** — seule une disqualification le devance.
-Ces clients décrivent mot pour mot le problème que l'offre règle.
+pas réussir à joindre l'entreprise place ce lead devant les autres — mais
+**son score reste celui du barème**. Un lead à 8 reste à 8 : son score dit ce
+qu'il vaut, et une note écrite à côté dit pourquoi il passe quand même devant.
+Écraser le score à 100 aurait détruit l'information et rendu tous les leads
+prioritaires indistinguables.
 
 Le garde-fou est mesuré, pas théorique. Sur les 405 fiches recherchées en
-prod, l'appariement de mots-clés (`rappel`, `répond`, `joindre`, `retour
-d'appel`, `oublié`) sur la citation d'avis marque **60 boîtes** — dont **35
-avis 5 ★ qui vantent la rapidité de réponse**. Les citations de ce fichier
-sont réelles, prises dans la base : quatre plaintes, deux félicitations. Avec
-un écrasement à 100, un faux positif propulserait un client satisfait en tête
-de file, d'où la double garde : le modèle lit le SENS, le code exige qu'un
-avis du lot porte une note assez basse pour attester d'une plainte.
+prod, l'appariement des mots-clés prévus par la spec 2026-08-27 (`rappel`,
+`répond`, `joindre`, `retour d'appel`, `oublié`) sur la citation d'avis marque
+**60 boîtes** — dont **35 avis 5 ★ qui vantent la rapidité de réponse**. Les
+citations de ce fichier sont réelles, prises dans la base : quatre plaintes,
+deux félicitations. Le modèle lit le sens ; le code exige en plus qu'un avis
+du lot porte une note assez basse pour attester d'une plainte.
 """
 from __future__ import annotations
 
-from src.lib.lead_scoring import NOTE_MAX_PLAINTE, SCORE_INJOIGNABLE, calculer_score
+from src.lib.lead_scoring import (
+    MARQUEUR_TETE_DE_FILE,
+    NOTE_MAX_PLAINTE,
+    calculer_score,
+    est_tete_de_file,
+)
+from src.tools import db
 from src.tools.research import _note_la_plus_basse, signaux_mesures
 
 # Citations réelles de la base (companies.research_json->recent_review_snippet).
@@ -32,36 +39,13 @@ FELICITATIONS = [
 ]
 
 
+# --- le signal ---------------------------------------------------------------
+
 def test_une_plainte_met_le_lead_en_tete() -> None:
     for note, citation in PLAINTES:
-        score, trace = calculer_score({
-            "avis_disent_injoignable": True,
-            "avis_note_min": note,
-        })
-        assert score == SCORE_INJOIGNABLE, citation
-        assert "avis_disent_injoignable" in trace[0]
-
-
-def test_la_tete_de_file_ignore_tout_le_reste_du_bareme() -> None:
-    # Une boîte par ailleurs sans intérêt : ouverte 24 h, outillée, sans avis
-    # récents. Elle passe quand même devant tout le monde.
-    score, _ = calculer_score({
-        "avis_disent_injoignable": True, "avis_note_min": 1,
-        "ferme_soir_ou_weekend": False,
-        "outil_en_place": True,
-        "service_reponse_humain_24_7": True,
-    })
-    assert score == SCORE_INJOIGNABLE
-
-
-def test_la_disqualification_reste_souveraine() -> None:
-    # « sauf s'il est disqualifié » — décision William. Une municipalité dont
-    # un citoyen dit qu'elle ne rappelle pas n'est pas un prospect.
-    score, trace = calculer_score(
-        {"avis_disent_injoignable": True, "avis_note_min": 1}, disqualifie=True
-    )
-    assert score == 0
-    assert trace == ["disqualifie -> 0"]
+        assert est_tete_de_file(
+            {"avis_disent_injoignable": True, "avis_note_min": note}
+        ), citation
 
 
 def test_un_avis_elogieux_ne_propulse_personne() -> None:
@@ -69,36 +53,112 @@ def test_un_avis_elogieux_ne_propulse_personne() -> None:
     # 5 ★ qui félicitent la rapidité. Si le modèle se trompe de sens, la note
     # de l'avis le rattrape.
     for note, citation in FELICITATIONS:
-        score, _ = calculer_score({
-            "avis_disent_injoignable": True,
-            "avis_note_min": note,
-            "avis_total": 138,
-        })
-        assert score < SCORE_INJOIGNABLE, citation
-        # Le lead retombe sur son score normal, il n'est pas puni non plus.
-        assert score == calculer_score({"avis_total": 138})[0]
+        assert not est_tete_de_file(
+            {"avis_disent_injoignable": True, "avis_note_min": note}
+        ), citation
 
 
 def test_sans_note_d_avis_le_constat_tombe() -> None:
     # Aucun avis dans le lot : le modèle ne peut pas avoir lu une plainte.
-    score, _ = calculer_score({"avis_disent_injoignable": True, "avis_note_min": None})
-    assert score < SCORE_INJOIGNABLE
+    assert not est_tete_de_file({"avis_disent_injoignable": True, "avis_note_min": None})
 
 
 def test_la_bordure_de_la_garde_est_incluse() -> None:
-    assert calculer_score({
-        "avis_disent_injoignable": True, "avis_note_min": NOTE_MAX_PLAINTE,
-    })[0] == SCORE_INJOIGNABLE
-    assert calculer_score({
-        "avis_disent_injoignable": True, "avis_note_min": NOTE_MAX_PLAINTE + 1,
-    })[0] < SCORE_INJOIGNABLE
+    assert est_tete_de_file(
+        {"avis_disent_injoignable": True, "avis_note_min": NOTE_MAX_PLAINTE}
+    )
+    assert not est_tete_de_file(
+        {"avis_disent_injoignable": True, "avis_note_min": NOTE_MAX_PLAINTE + 1}
+    )
 
 
-def test_un_constat_absent_ne_change_rien() -> None:
+def test_une_boite_disqualifiee_ne_passe_jamais_devant() -> None:
+    # « sauf s'il est disqualifié » — décision William. Une municipalité dont
+    # un citoyen dit qu'elle ne rappelle pas n'est pas un prospect.
+    assert not est_tete_de_file(
+        {"avis_disent_injoignable": True, "avis_note_min": 1}, disqualifie=True
+    )
+
+
+# --- le score ne bouge pas ---------------------------------------------------
+
+def test_le_score_reste_celui_du_bareme() -> None:
     socle = {"avis_total": 138, "ferme_soir_ou_weekend": True}
-    assert calculer_score(socle)[0] == calculer_score(
-        {**socle, "avis_disent_injoignable": False, "avis_note_min": 1}
-    )[0]
+    sans = calculer_score(socle)[0]
+    avec = calculer_score({
+        **socle, "avis_disent_injoignable": True, "avis_note_min": 1,
+    })[0]
+    assert avec == sans, "le signal marque le lead, il ne gonfle pas sa note"
+
+
+def test_un_petit_score_reste_petit() -> None:
+    # Le cas réel : cVert Québec est à 8 et son avis dit « jamais eu de retour
+    # d'appel ». Il passe devant, il reste à son score.
+    signaux = {
+        "avis_disent_injoignable": True, "avis_note_min": 1,
+        "outil_en_place": True, "service_reponse_humain_24_7": True,
+    }
+    assert calculer_score(signaux)[0] < 10
+    assert est_tete_de_file(signaux)
+
+
+# --- la note écrite en base --------------------------------------------------
+
+def test_la_note_explique_la_place_en_tete() -> None:
+    patch = db.extract_lead_potential_patch({
+        "lead_potential": {
+            "signaux": {
+                "avis_disent_injoignable": True, "avis_note_min": 1,
+                "avis_total": 138,
+            },
+            "reasoning": "138 avis, un client dit ne jamais avoir eu de retour d'appel.",
+        }
+    })
+    raison = patch["lead_potential_reason"]
+    assert raison.startswith(MARQUEUR_TETE_DE_FILE), raison
+    assert "138 avis" in raison, "la justification du modèle est conservée"
+    # Le score, lui, n'a pas bougé.
+    assert patch["lead_potential_score"] == calculer_score({"avis_total": 138})[0]
+
+
+def test_la_marque_tient_meme_sans_justification_du_modele() -> None:
+    patch = db.extract_lead_potential_patch({
+        "lead_potential": {"signaux": {"avis_disent_injoignable": True, "avis_note_min": 2}}
+    })
+    assert patch["lead_potential_reason"] == MARQUEUR_TETE_DE_FILE
+
+
+def test_pas_de_marque_sans_signal() -> None:
+    patch = db.extract_lead_potential_patch({
+        "lead_potential": {"signaux": {"avis_total": 138}, "reasoning": "rien de spécial"}
+    })
+    assert patch["lead_potential_reason"] == "rien de spécial"
+
+
+def test_une_disqualification_efface_la_marque_et_le_score() -> None:
+    patch = db.extract_lead_potential_patch({
+        "disqualifications": ["installation municipale"],
+        "lead_potential": {
+            "signaux": {"avis_disent_injoignable": True, "avis_note_min": 1},
+            "reasoning": "ville de Québec",
+        },
+    })
+    assert patch["lead_potential_score"] == 0
+    assert MARQUEUR_TETE_DE_FILE not in patch["lead_potential_reason"]
+
+
+def test_la_troncature_a_500_garde_la_marque_lisible() -> None:
+    patch = db.extract_lead_potential_patch({
+        "lead_potential": {
+            "signaux": {"avis_disent_injoignable": True, "avis_note_min": 1},
+            "reasoning": "x" * 900,
+        }
+    })
+    raison = patch["lead_potential_reason"]
+    assert len(raison) == 500
+    # La marque est en tête, donc elle survit — c'est ce qui rend le
+    # `like '⚑%'` fiable pour sortir la file prioritaire.
+    assert raison.startswith(MARQUEUR_TETE_DE_FILE)
 
 
 # --- la mesure de la note la plus basse -------------------------------------

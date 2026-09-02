@@ -103,7 +103,7 @@ Tu n'écris pas l'email. Tu extrais des **faits vérifiables et des signaux** �
 | `villes_desservies` | nombre de villes ou secteurs desservis annoncés |
 | `metiers_offerts` | nombre de métiers distincts offerts (plomberie + chauffage + drain = 3) |
 
-🔴 **`avis_disent_injoignable` — attention au sens, pas aux mots.** Ce constat propulse le lead en **tête de la file de prospection**, devant tous les autres : un client qui écrit publiquement qu'il n'arrive pas à joindre l'entreprise décrit mot pour mot le problème que l'offre règle. Il n'y a donc aucune place pour l'à-peu-près.
+🔴 **`avis_disent_injoignable` — attention au sens, pas aux mots.** Ce constat place le lead en **tête de la file de prospection** — sans toucher à son score, qui continue de dire ce que la boîte vaut : une note explicative est inscrite à côté. Un client qui écrit publiquement qu'il n'arrive pas à joindre l'entreprise décrit mot pour mot le problème que l'offre règle. Il n'y a donc aucune place pour l'à-peu-près.
 
 Mets `true` uniquement pour une **plainte** :
 

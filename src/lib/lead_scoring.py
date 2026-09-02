@@ -24,9 +24,13 @@ from typing import Any
 # Un signal inconnu (`None`) ne vaut JAMAIS un signal absent : il ne rapporte
 # ni ne retire rien. Sans ça, une fiche Google sans horaires ferait chuter une
 # boîte qui ferme peut-être le soir.
-# Le score d'un lead dont les avis disent qu'on n'arrive pas à le joindre. Ce
-# n'est pas un poids : c'est un écrasement, il court-circuite l'addition.
-SCORE_INJOIGNABLE = 100
+# Un lead dont les avis disent qu'on n'arrive pas à le joindre passe en tête de
+# file — mais son score N'EST PAS gonflé pour autant (décision William,
+# 2026-09-01) : un lead à 8 reste à 8, son score continue de dire ce qu'il
+# vaut, et c'est cette marque, écrite dans `lead_potential_reason`, qui
+# explique sa place. Écraser le score aurait détruit l'information et rendu
+# les leads prioritaires indistinguables entre eux.
+MARQUEUR_TETE_DE_FILE = "⚑ TÊTE DE FILE — un avis dit ne pas réussir à joindre l'entreprise."
 # La plainte doit être attestée par la note de l'avis, sinon le constat tombe.
 NOTE_MAX_PLAINTE = 3
 
@@ -75,23 +79,6 @@ def calculer_score(
         return 0, ["disqualifie -> 0"]
     if not isinstance(signaux, dict):
         return 0, ["aucun signal"]
-
-    # Décision William 2026-09-01 : un client qui écrit publiquement qu'il
-    # n'arrive pas à joindre l'entreprise décrit EXACTEMENT le problème que
-    # l'offre règle. Ce lead passe en tête, quoi que dise le reste du barème.
-    # Seule la disqualification (ci-dessus) le devance.
-    if signaux.get("avis_disent_injoignable") is True:
-        note_min = _entier(signaux.get("avis_note_min"))
-        if note_min is not None and note_min <= NOTE_MAX_PLAINTE:
-            return SCORE_INJOIGNABLE, [
-                f"avis_disent_injoignable (note {note_min}) -> {SCORE_INJOIGNABLE}"
-            ]
-        # Garde-fou déterministe. Mesuré le 2026-09-01 sur les 405 fiches
-        # recherchées : l'appariement de mots-clés seul marque 60 boîtes, dont
-        # 35 pour des avis 5 ★ qui VANTENT la rapidité de réponse — « Rappel
-        # tôt samedi am », « a répondu rapidement à mon appel ». Sans note
-        # d'avis assez basse pour attester d'une plainte, on ignore le constat
-        # plutôt que de propulser un satisfait en tête de file.
 
     score = POIDS["base"]
     trace = [f"base +{POIDS['base']}"]
@@ -156,3 +143,25 @@ def calculer_score(
     if borne != score:
         trace.append(f"borne 0-100 ({score} -> {borne})")
     return borne, trace
+
+
+def est_tete_de_file(signaux: Any, *, disqualifie: bool = False) -> bool:
+    """Ce lead doit-il passer devant les autres, score mis à part ?
+
+    Double garde, parce que le mot-clé seul se trompe une fois sur deux.
+    Mesuré le 2026-09-01 sur les 405 fiches recherchées : l'appariement des
+    racines prévues par la spec (`rappel`, `répond`, `joindre`, `retour
+    d'appel`, `oublié`) marque 60 boîtes, dont **35 avis 5 ★ qui VANTENT la
+    rapidité de réponse** — « Rappel tôt samedi am », « a répondu rapidement à
+    mon appel ». Le modèle juge donc le SENS de l'avis, et le code exige en
+    plus qu'un avis du lot porte une note assez basse pour attester d'une
+    plainte.
+
+    Une boîte disqualifiée ne passe jamais devant : ce n'est plus un prospect.
+    """
+    if disqualifie or not isinstance(signaux, dict):
+        return False
+    if signaux.get("avis_disent_injoignable") is not True:
+        return False
+    note_min = _entier(signaux.get("avis_note_min"))
+    return note_min is not None and note_min <= NOTE_MAX_PLAINTE

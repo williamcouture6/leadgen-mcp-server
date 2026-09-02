@@ -15,7 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from .. import supabase_client as db
-from ..lib.lead_scoring import calculer_score
+from ..lib.lead_scoring import MARQUEUR_TETE_DE_FILE, calculer_score, est_tete_de_file
 from ..lib.owner_match import summarize_company_decideur
 from ..lib.pricing import estimated_cost_usd
 
@@ -858,11 +858,10 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     if not isinstance(lp, dict):
         return {}
     signaux = lp.get("signaux")
+    disqualifie = bool(research_json.get("disqualifications"))
     if isinstance(signaux, dict) and signaux:
         # Forme actuelle : des constats, pondérés par le code.
-        score, _ = calculer_score(
-            signaux, disqualifie=bool(research_json.get("disqualifications"))
-        )
+        score, _ = calculer_score(signaux, disqualifie=disqualifie)
     else:
         # Forme héritée (les 283 lignes recherchées avant le 2026-09-01) : le
         # modèle rendait le chiffre lui-même. On le recopie tel quel — le
@@ -875,8 +874,15 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
             return {}
         score = base
     patch: dict[str, Any] = {"lead_potential_score": score}
-    reason = lp.get("reasoning")
-    if isinstance(reason, str):
+    reason = lp.get("reasoning") if isinstance(lp.get("reasoning"), str) else ""
+    # La marque de tête de file vit DANS la justification, pas dans le score :
+    # le lead garde la note que le barème lui donne (un 8 reste un 8) et cette
+    # phrase dit pourquoi il passe quand même devant. Elle est en tête de
+    # chaîne pour rester lisible après la troncature à 500 et pour qu'un
+    # `like '⚑%'` suffise à sortir la file prioritaire.
+    if est_tete_de_file(signaux, disqualifie=disqualifie):
+        reason = f"{MARQUEUR_TETE_DE_FILE} {reason}".strip()
+    if reason:
         patch["lead_potential_reason"] = reason[:500]
     return patch
 
