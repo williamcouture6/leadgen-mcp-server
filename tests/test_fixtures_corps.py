@@ -106,6 +106,7 @@ def test_le_repli_retire_le_chiffre_mais_garde_le_paragraphe(nom: str) -> None:
     # parle plus du site, donc il n'y a plus de bascule à tester.
     "nom", ["CORPS_A_SANS_SITE", "CORPS_B_SANS_SITE",
             "CORPS_C_SANS_SITE", "CORPS_D_SANS_SITE",
+            "CORPS_A_REPLI_SANS_SITE", "CORPS_B_REPLI_SANS_SITE",
             "CORPS_C_REPLI_SANS_SITE", "CORPS_D_REPLI_SANS_SITE"]
 )
 def test_la_variante_sans_site_ne_promet_jamais_de_rafraichir(nom: str) -> None:
@@ -129,7 +130,7 @@ def test_la_variante_sans_site_ne_promet_jamais_de_rafraichir(nom: str) -> None:
     # décision William du 2026-08-31. Leur appliquer la règle du conditionnel
     # reviendrait à tester une copie qui n'existe plus ; la sauter en silence
     # laisserait A et B se dégrader sans bruit. On nomme donc les deux mondes.
-    if nom in ("CORPS_A_SANS_SITE", "CORPS_B_SANS_SITE"):
+    if nom.startswith(("CORPS_A", "CORPS_B")):
         assert "au goût du jour" not in corps, nom
         # Casse insensible : la phrase peut commencer par « Je pourrais ».
         assert "je pourrais" in corps.lower(), nom

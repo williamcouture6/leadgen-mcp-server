@@ -303,14 +303,43 @@ _SITE_FAIT = "J'en ai aussi profité pour te faire un site web"
 CORPS_C_SANS_SITE = _sans(CORPS_C, _SITE_REFAIT, _SITE_FAIT)
 CORPS_D_SANS_SITE = _sans(CORPS_D, _SITE_REFAIT, _SITE_FAIT)
 
-# ⚠️ La QUATRIÈME combinaison existe pour C et D alors qu'elle n'existe pas
-# pour A et B, et ce n'est pas une inconsistance : une entreprise sous le
-# plancher d'avis ET sans site est un cas réel de la liste. Chez A et B les
-# deux bascules sont indépendantes et se composent sans surprise ; chez C et D
-# le repli réécrit tout le paragraphe 2, donc la composition mérite d'être
-# mesurée plutôt que supposée.
+# La QUATRIÈME combinaison : sous le plancher d'avis ET sans site.
+#
+# 🔧 Corrigé le 2026-09-01. Elle n'existait d'abord que pour C et D, au motif
+# que « chez A et B les deux bascules se composent sans surprise, chez C et D
+# le repli réécrit tout le paragraphe 2 ». C'était FAUX, et mesuré depuis :
+# dans les QUATRE gabarits, le repli touche le paragraphe de l'ancre et la
+# bascule sans-site celui du site — deux paragraphes différents, aucune
+# interaction. C et D n'avaient rien de spécial.
+#
+# Le motif de les écrire toutes les quatre n'est donc pas structurel, il est
+# factuel : une entreprise sous le plancher d'avis ET sans site est un cas réel
+# de la liste, et rien ne la mesurait.
 CORPS_C_REPLI_SANS_SITE = _sans(CORPS_C_REPLI_AVIS, _SITE_REFAIT, _SITE_FAIT)
 CORPS_D_REPLI_SANS_SITE = _sans(CORPS_D_REPLI_AVIS, _SITE_REFAIT, _SITE_FAIT)
+
+# A et B composent leurs deux bascules exactement pareil. Leur bloc du site
+# n'est pas celui de C et D — ils restent au conditionnel — d'où des
+# remplacements propres plutôt que `_SITE_FAIT`.
+CORPS_A_REPLI_SANS_SITE = _sans(
+    CORPS_A_REPLI_AVIS,
+    "En regardant ton site, je me suis aussi dit que je pourrais t'en faire\n"
+    "une version rafraîchie. Je te charge rien pour ça, c'est pour que tu voies\n"
+    "comment je travaille avant qu'on parle du reste.",
+    "En regardant ton entreprise, je me suis aussi dit que je pourrais te\n"
+    "créer un site, parce que je pense que t'en as pas. Je te charge rien\n"
+    "pour ça, c'est pour que tu voies comment je travaille avant qu'on parle\n"
+    "du reste.",
+)
+
+CORPS_B_REPLI_SANS_SITE = _sans(
+    CORPS_B_REPLI_AVIS,
+    "En regardant ton site, je me suis aussi dit que je pourrais t'en faire\n"
+    "une version rafraîchie. Je te charge rien pour ça.",
+    "En regardant ton entreprise, je me suis aussi dit que je pourrais te\n"
+    "créer un site, parce que je pense que t'en as pas. Je te charge rien\n"
+    "pour ça.",
+)
 
 
 # ----------------------------------------------------------------------
@@ -339,6 +368,8 @@ TOUS_LES_CORPS: dict[str, str] = {
     "CORPS_B_SANS_SITE": CORPS_B_SANS_SITE,
     "CORPS_C_SANS_SITE": CORPS_C_SANS_SITE,
     "CORPS_D_SANS_SITE": CORPS_D_SANS_SITE,
+    "CORPS_A_REPLI_SANS_SITE": CORPS_A_REPLI_SANS_SITE,
+    "CORPS_B_REPLI_SANS_SITE": CORPS_B_REPLI_SANS_SITE,
     "CORPS_C_REPLI_SANS_SITE": CORPS_C_REPLI_SANS_SITE,
     "CORPS_D_REPLI_SANS_SITE": CORPS_D_REPLI_SANS_SITE,
     "RELANCE_1": RELANCE_1,
@@ -360,6 +391,8 @@ GABARIT: dict[str, str] = {
     "CORPS_B_SANS_SITE": "B",
     "CORPS_C_SANS_SITE": "C",
     "CORPS_D_SANS_SITE": "D",
+    "CORPS_A_REPLI_SANS_SITE": "A",
+    "CORPS_B_REPLI_SANS_SITE": "B",
     "CORPS_C_REPLI_SANS_SITE": "C",
     "CORPS_D_REPLI_SANS_SITE": "D",
     "RELANCE_1": "RELANCE",
