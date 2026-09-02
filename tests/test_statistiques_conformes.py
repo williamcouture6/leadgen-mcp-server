@@ -24,24 +24,20 @@ import pytest
 
 from src.lib import compliance_checks as cc
 
-RELANCE_2 = """Salut!
+# 🔴 IMPORTÉE, PAS RECOPIÉE — corrigé le 2026-09-01 sur trouvaille du conseil.
+#
+# Ce fichier portait 18 lignes de relance 2 recopiées à la main. Le test qui se
+# décrit comme « le plus important du fichier » — celui qui vérifie qu'aucune
+# ancre n'est morte — interrogeait donc une COPIE. Le jour où la vraie relance 2
+# est reformulée, l'ancre cesse de mordre, « absent = conforme » rend le check
+# vert, et le test écrit contre ce scénario reste vert lui aussi : il lisait
+# l'ancien texte.
+#
+# C'est le défaut consolidé ailleurs le même jour (trois copies devenues une).
+# Il en restait une, précisément dans le fichier écrit pour s'en protéger.
+from src.lib.relances import CORPS_RELANCES  # noqa: E402
 
-J'espère que mon courriel d'avant s'est pas encore perdu à travers les autres.
-
-Je te réécris juste pour te dire que si jamais t'as des questions à propos du
-système de réponse automatique que je te propose, t'as juste à me les demander,
-y'a aucun problème.
-
-Je pense vraiment qu'une entreprise comme la tienne pourrait profiter d'un
-système comme ça.
-
-Juste pour te dire, les entreprises qui ont un système similaire sont capables
-de retenir en moyenne 21 fois plus de clients si elles répondent en moins de
-5 minutes comparé à celles qui répondent en 30 minutes. Sans compter qu'en
-moyenne 78 % des clients signent avec la première compagnie qui répond.
-
-Bref, si t'as des questions hésite pas
-"""
+RELANCE_2 = CORPS_RELANCES["relance_2"]
 
 
 def test_les_valeurs_decidees_passent() -> None:
@@ -93,7 +89,7 @@ def test_un_corps_sans_statistique_passe() -> None:
         ("21 fois", "210 fois", "le multiplicateur"),
         ("21 fois", "12 fois", "le multiplicateur, chiffres inversés"),
         ("78 %", "87 %", "la part du premier répondant, chiffres inversés"),
-        ("moins de\n5 minutes", "moins de 2 minutes", "le délai court"),
+        ("moins de 5 minutes", "moins de 2 minutes", "le délai court"),
         ("répondent en 30 minutes", "répondent en 60 minutes", "le délai long"),
     ],
 )
