@@ -599,6 +599,25 @@ def _contact_priority_score(contact: dict[str, Any]) -> int:
     return 9
 
 
+# Champs lus pour ordonner la file d'envoi, jamais transmis à l'agent de
+# personnalisation — voir le commentaire dans `list_contacts_to_personalize`.
+CHAMPS_INTERNES = ("lead_potential_score", "lead_potential_reason")
+
+
+def _rang_de_priorite(company: dict[str, Any]) -> tuple[int, int]:
+    """Clé de tri d'une company dans la file d'envoi. Plus petit = plus tôt.
+
+    1. Tête de file : un avis dit qu'on n'arrive pas à joindre l'entreprise.
+    2. Potentiel décroissant ; un score absent passe en dernier, jamais devant
+       un lead mesuré.
+    """
+    raison = company.get("lead_potential_reason") or ""
+    tete = 0 if raison.startswith(MARQUEUR_TETE_DE_FILE) else 1
+    score = company.get("lead_potential_score")
+    rang_score = -score if isinstance(score, int) and not isinstance(score, bool) else 1
+    return (tete, rang_score)
+
+
 async def list_contacts_to_personalize(
     limit: int = 20,
     *,
@@ -644,7 +663,12 @@ async def list_contacts_to_personalize(
     companies = await db.select(
         "companies",
         params={
-            "select": "id,name,domain,website,city,icp_segment,industry,research_json,track",
+            "select": (
+                "id,name,domain,website,city,icp_segment,industry,research_json,track,"
+                # Servent UNIQUEMENT à ordonner le lot ci-dessous : ces deux
+                # champs sont retirés avant d'être rendus (voir CHAMPS_INTERNES).
+                "lead_potential_score,lead_potential_reason"
+            ),
             "id": f"in.({','.join(company_ids)})",
         },
     )
@@ -696,6 +720,18 @@ async def list_contacts_to_personalize(
         if c["company_id"] in eligible and c["company_id"] not in seen_companies:
             seen_companies.append(c["company_id"])
 
+    # Ordre d'émission. Jusqu'au 2026-09-01, le lot sortait dans l'ordre
+    # d'arrivée des contacts (`created_at.asc`) et le score de potentiel ne
+    # triait RIEN — il était écrit, jamais lu. Désormais : les leads dont un
+    # avis dit qu'on n'arrive pas à joindre l'entreprise passent devant, puis
+    # le potentiel décroissant, puis l'ordre d'arrivée (le tri est stable).
+    #
+    # ⚠️ Portée : ce tri ordonne les contacts DÉJÀ récupérés — l'over-fetch
+    # ci-dessus lit les plus vieux. Un lead prioritaire créé hier n'entrera
+    # donc pas dans le lot tant que la file des anciens n'a pas défilé. C'est
+    # la famine WF-4 connue, et elle appartient à son propre lot.
+    seen_companies.sort(key=lambda cid: _rang_de_priorite(by_id[cid]))
+
     # Dédup global sur email : si plusieurs companies pointent vers le même email
     # (cas chaînes où Google Places retourne plusieurs succursales), garder
     # uniquement la première company rencontrée pour ce email.
@@ -708,7 +744,18 @@ async def list_contacts_to_personalize(
             if email_key in seen_emails:
                 continue
             seen_emails.add(email_key)
-            out.append({"contact": c, "company": by_id[company_id]})
+            out.append({
+                "contact": c,
+                # Le marqueur de tête de file est INTERNE : écrire « j'ai vu que
+                # tes clients disent que tu ne rappelles pas » citerait un tiers
+                # au prospect à son sujet et ruinerait le courriel. Il ordonne,
+                # il ne parle pas. On le retire donc du dict qui descend vers
+                # l'agent de personnalisation.
+                "company": {
+                    k: v for k, v in by_id[company_id].items()
+                    if k not in CHAMPS_INTERNES
+                },
+            })
             if len(out) >= limit:
                 return out
     return out
