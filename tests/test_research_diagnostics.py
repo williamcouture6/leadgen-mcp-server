@@ -25,6 +25,14 @@ from src.tools import research
 _CFEMAIL = "3f565159507f595a4d525a57504d4b565c50535a535e5550565a115c5052"
 
 
+def _sans_sitemap() -> None:
+    """`fetch_site` sonde le sitemap avant de choisir ses pages internes. Ici on
+    répond 404 : ces tests portent sur le repli par les liens du menu."""
+    respx.get(url__regex=r"https?://[^/]+/sitemap(_index)?\.xml").mock(
+        return_value=httpx.Response(404)
+    )
+
+
 def _diag(url: str = "https://maboite.com/", statut: str = "http_200") -> dict[str, Any]:
     return research._diag_page_neuve(url, statut)
 
@@ -163,6 +171,7 @@ async def test_fetch_site_diagnostic_de_passe() -> None:
         '<a href="/cdn-cgi/l/email-protection">'
         f'<span data-cfemail="{_CFEMAIL}">[email&#160;protected]</span></a>'
     )
+    _sans_sitemap()
     respx.get("https://famillelajoie.com/").mock(return_value=httpx.Response(200, html=home))
     respx.get("https://famillelajoie.com/contact/").mock(
         return_value=httpx.Response(200, html=contact)
@@ -197,6 +206,7 @@ async def test_fetch_site_diagnostic_de_passe() -> None:
 
 @respx.mock
 async def test_fetch_site_signale_la_coquille_spa() -> None:
+    _sans_sitemap()
     respx.get("https://spa.ca/").mock(
         return_value=httpx.Response(
             200, html='<div id="root"></div><script src="/app.js"></script>'
@@ -234,6 +244,7 @@ async def test_fetch_site_home_4xx_est_un_echec_compte() -> None:
 async def test_fetch_site_agrege_les_rejets_hors_domaine_de_toutes_les_pages() -> None:
     home = '<a href="/contact/">Contact</a><a href="mailto:un@tierstotal.net">x</a>'
     contact = '<a href="mailto:deux@autrechose.org">y</a>'
+    _sans_sitemap()
     respx.get("https://plomberiedupont.ca/").mock(return_value=httpx.Response(200, html=home))
     respx.get("https://plomberiedupont.ca/contact/").mock(
         return_value=httpx.Response(200, html=contact)

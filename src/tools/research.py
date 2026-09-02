@@ -3,7 +3,9 @@
 Produit un `research_json` structuré pour une company à partir de :
   1. Google Places Details (re-fetch pour inclure les reviews — le FieldMask de WF-1
      n'inclut PAS `reviews` pour économiser les crédits)
-  2. Scrape léger du site web (homepage + jusqu'à 2 pages "à propos/contact/services")
+  2. Scrape léger du site web : homepage + jusqu'à 4 pages internes, choisies par
+     `_prioriser_urls` parmi le sitemap ET les liens du menu (contact/à-propos/
+     services d'abord, blogue et doublons de langue jetés)
   3. Appel Claude Sonnet avec le prompt système de `src/prompts/research.md`
 
 Le prompt système est marqué `cache_control: ephemeral` pour profiter du prompt
@@ -33,6 +35,7 @@ from tenacity import (
 )
 
 from ..config import settings
+from ..lib import brandkit_parse as bk_parse
 
 # ----------------------------------------------------------------------
 # Google Places Details (avec reviews)
@@ -672,24 +675,293 @@ _PAGE_HINT_TIERS: tuple[tuple[int, tuple[str, ...]], ...] = (
 )
 
 
+# Classement d'une URL par ce qu'elle est susceptible de porter. Sert au sitemap,
+# qui rend des URL nues : aucun texte de lien à interroger, seulement le chemin.
+# `_PAGE_HINT_TIERS` ne connaît que « contact » ; le site des Entretiens Gauthier
+# nomme sa page /nous-joindre/ et c'est elle qui porte les 9 secteurs desservis.
+_URL_VALEUR: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (90, ("contact", "joindre", "soumission", "estimation", "devis")),
+    (80, ("propos", "about", "equipe", "team", "qui-sommes", "histoire")),
+    (70, ("service", "tarif", "pricing", "prix", "forfait")),
+    (60, ("secteur", "territoire", "zone", "realisation", "portfolio", "galerie",
+          "promotion", "promo", "rabais", "financement")),
+    (50, ("faq", "avis", "temoignage", "garantie")),
+)
+# Retranchées, pas éliminées : une page peut cumuler (un billet de blogue rangé
+# sous /services/ reste un billet de blogue).
+_URL_MALUS: tuple[tuple[int, str], ...] = (
+    (-100, r"/(blog(ue)?s?|actualites?|nouvelles?|news|articles?|category|categorie|tag|author)(/|$)"),
+    (-100, r"/\d{4}/\d{2}/"),
+    (-80, r"/(politique|confidentialite|privacy|conditions|termes?|terms|mentions)"),
+    # -120, pas -80 : ces pages contiennent souvent le mot qui les ferait gagner
+    # (BL Vitres a un /merci-de-nous-avoir-contacte/). Le malus doit dominer.
+    (-120, r"/(panier|cart|checkout|compte|login|connexion|merci|404)"),
+    # On prospecte des clients, pas des candidats. /emploi/ prenait la place de
+    # la page de services chez Lauzon.
+    (-120, r"/(emplois?|carrieres?|careers?|postuler|jobs?|recrutement|stage)"),
+)
+# Un site bilingue double toutes ses pages. Le doublon ne dit rien de neuf et
+# coûte le même prix : sur BL Vitres, 12 des 25 pages lues étaient des `/en/`.
+_URL_AUTRE_LANGUE = re.compile(r"/(en|es|it|de|pt)(/|$)", re.I)
+_URL_VALEUR_DEFAUT = 10
+# Un billet à permalien plat n'a ni /blog/ ni date : son seul signe distinctif est
+# d'être une PHRASE. Mesuré sur les 5 sites du banc — un vrai nom de page monte à
+# 5 tirets (« service-darboriculture-et-darbres-a-quebec »), un titre d'article
+# commence à 8 (« quel-est-le-prix-dun-lavage-de-vitres-professionnel »). Sans ce
+# malus, « restez-en-contact-avec-les-visiteurs-de-votre-site... » raflait la note
+# maximale grâce au mot « contact » et évinçait /services-extermination.
+_URL_SLUG_PHRASE_TIRETS = 7
+
+
+def _slug_final(chemin: str) -> str:
+    segments = [s for s in chemin.split("/") if s]
+    return segments[-1] if segments else ""
+
+
+def _score_page_url(url: str) -> int:
+    """Valeur attendue d'une page pour la recherche, d'après son seul chemin.
+
+    Positif = vaut le fetch, négatif = à écarter. Le sitemap ne fournit que des
+    URL, donc tout le jugement passe par là."""
+    try:
+        chemin = (urlparse(url).path or "/").lower()
+    except ValueError:
+        return _URL_VALEUR_DEFAUT
+    chemin = _sans_accents(chemin)
+    score = next(
+        (v for v, indices in _URL_VALEUR if any(i in chemin for i in indices)),
+        _URL_VALEUR_DEFAUT,
+    )
+    for malus, motif in _URL_MALUS:
+        if re.search(motif, chemin):
+            score += malus
+    if _slug_final(chemin).count("-") >= _URL_SLUG_PHRASE_TIRETS:
+        score -= 100
+    # À mot-clé égal, la page de premier niveau est LA page ; ce qui vit en
+    # dessous est une déclinaison (/zone-de-services/exterminateur-sainte-marie
+    # contre /services-extermination, relevé chez Pelchat).
+    score -= 5 * max(0, len([s for s in chemin.split("/") if s]) - 1)
+    if _URL_AUTRE_LANGUE.search(chemin):
+        score -= 200
+    return score
+
+
+# Paramètres qui ne désignent JAMAIS une page — seulement d'où vient le visiteur.
+# Les fiches Google Places portent souvent le site avec `?utm_source=google`
+# (Piscines Rive-Nord) : sans les retirer, la home du sitemap passe pour une page
+# interne et se fait charger deux fois.
+# ⚠️ On ne retire QUE ceux-là : `?page_id=75` désigne une vraie page distincte
+# (le menu des Entretiens Gauthier y pointe ses promotions).
+_PARAMS_DE_SUIVI = ("gclid", "fbclid", "msclkid", "gad_source", "mc_cid", "mc_eid", "_ga")
+
+
+def _cle_url(u: str) -> str:
+    """Clé de comparaison d'une URL : sans fragment, sans paramètres de suivi,
+    sans slash final. Deux URL de même clé désignent la même page."""
+    p = urlparse(u.split("#", 1)[0])
+    params = [
+        kv for kv in p.query.split("&")
+        if kv and not kv.split("=", 1)[0].lower().startswith("utm_")
+        and kv.split("=", 1)[0].lower() not in _PARAMS_DE_SUIVI
+    ]
+    requete = ("?" + "&".join(params)) if params else ""
+    return f"{p.scheme}://{p.netloc}{p.path}{requete}".rstrip("/")
+
+
+def _prioriser_urls(base_url: str, urls: list[str], limite: int) -> list[str]:
+    """Garde au plus `limite` URL internes, les mieux notées d'abord.
+
+    Écarte la home (déjà lue), les hôtes externes et tout ce qui note négatif —
+    même s'il reste du budget : une page de blogue lue « parce qu'on pouvait »
+    coûte autant qu'une page de contact et ne rapporte rien."""
+    base_no_frag = _cle_url(base_url)
+    vus: set[str] = set()
+    notes: list[tuple[int, int, str]] = []
+    for ordre, brut in enumerate(urls):
+        u = brut.split("#", 1)[0]
+        # Le slash final est cosmetique : un menu porte souvent href="/contacts"
+        # ET href="https://.../contacts/" (vu sur rivenordextermination.com).
+        # Sans normalisation la page est chargee deux fois et mange un emplacement.
+        cle = _cle_url(u)
+        if not u or cle == base_no_frag or not _same_host(base_url, u):
+            continue
+        if cle in vus:
+            continue
+        vus.add(cle)
+        score = _score_page_url(u)
+        if score <= 0:
+            continue
+        notes.append((-score, ordre, u))
+    notes.sort()
+    return [u for _, _, u in notes[:limite]]
+
+
+# Deux tentatives, pas plus : au-delà on paie des allers-retours pour des sites
+# qui n'ont simplement pas de sitemap.
+_SITEMAP_CHEMINS = ("/sitemap_index.xml", "/sitemap.xml")
+_SITEMAP_SOUS_MAX = 5
+_SITEMAP_URLS_MAX = 300
+# WordPress range lui-même ses billets à part (`post-sitemap.xml`) de ses pages
+# (`page-sitemap.xml`) : on se sert de SON classement au lieu de le deviner. Sur
+# BL Vitres, `post-sitemap.xml` est déclaré en premier et noyait les pages utiles.
+_SITEMAP_SOUS_EXCLUS = ("post-sitemap", "post_tag", "category", "categorie",
+                        "author", "tag-sitemap", "blog-posts")
+
+
+def _sous_sitemap_utile(url: str) -> bool:
+    return not any(motif in url.lower() for motif in _SITEMAP_SOUS_EXCLUS)
+
+
+def _locs_du_xml(texte: str) -> list[str]:
+    return re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", texte or "")
+
+
+async def _urls_du_sitemap(client: httpx.AsyncClient, base_url: str) -> list[str]:
+    """URL déclarées par le sitemap du site, index suivi. Fail-soft : toute erreur
+    (absence, HTML déguisé en XML, réseau) rend une liste vide et le scrape
+    retombe sur les liens du menu."""
+    p = urlparse(base_url)
+    racine = f"{p.scheme}://{p.netloc}"
+    for chemin in _SITEMAP_CHEMINS:
+        try:
+            r = await client.get(racine + chemin)
+        except httpx.HTTPError:
+            continue
+        if r.status_code >= 400:
+            continue
+        locs = _locs_du_xml(r.text)
+        if not locs:
+            continue
+        sous = [u for u in locs if u.lower().endswith(".xml")]
+        if not sous:
+            return locs[:_SITEMAP_URLS_MAX]
+        sous = [u for u in sous if _sous_sitemap_utile(u)]
+        pages: list[str] = []
+        for s in sous[:_SITEMAP_SOUS_MAX]:
+            try:
+                rs = await client.get(s)
+            except httpx.HTTPError:
+                continue
+            if rs.status_code < 400:
+                pages.extend(_locs_du_xml(rs.text))
+        if pages:
+            return pages[:_SITEMAP_URLS_MAX]
+    return []
+
+
+# Liens sociaux : seul un vrai href compte. Le pied de page des Entretiens
+# Gauthier affiche « Facebook / Instagram / TikTok » en texte pur, sans lien —
+# une lecture par mots-clés y voit une présence Instagram qui n'existe pas.
+_SOCIAL_HOTES = (
+    "facebook.com", "instagram.com", "linkedin.com", "tiktok.com",
+    "youtube.com", "youtu.be", "twitter.com", "x.com", "threads.net",
+    "linktr.ee", "beacons.ai",
+)
+
+
+def _extract_social_links(html: str, base_url: str) -> list[str]:
+    soup = BeautifulSoup(html, "html.parser")
+    trouves: set[str] = set()
+    for a in soup.find_all("a", href=True):
+        href = urljoin(base_url, a["href"]).split("#", 1)[0]
+        try:
+            hote = urlparse(href).netloc.split(":")[0].lower()
+        except ValueError:
+            continue
+        hote = hote[4:] if hote.startswith("www.") else hote
+        if any(hote == h or hote.endswith("." + h) for h in _SOCIAL_HOTES):
+            # Le slash final varie d'une page à l'autre pour un même compte
+            # (relevé chez Lauzon) : deux entrées feraient croire à deux comptes.
+            trouves.add(href.rstrip("/"))
+    return sorted(trouves)
+
+
+# JSON-LD : la fiche que le site publie sur lui-même, déjà structurée. On réutilise
+# `brandkit_parse.parse_jsonld` (mûr : il sait écarter les nœuds d'article et de fil
+# d'Ariane) et on lui ajoute `areaServed`, que personne n'extrayait — c'est pourtant
+# la donnée qui manquait le plus (Gauthier : « Québec » au lieu de 9 secteurs).
+def _villes_de_area_served(html: str) -> list[str]:
+    villes: list[str] = []
+    for noeud in bk_parse._iter_jsonld_objects(html):
+        zone = noeud.get("areaServed")
+        if isinstance(zone, (str, dict)):
+            zone = [zone]
+        if not isinstance(zone, list):
+            continue
+        for z in zone:
+            nom = z.get("name") if isinstance(z, dict) else z
+            if isinstance(nom, str) and nom.strip() and nom not in villes:
+                villes.append(nom.strip())
+    return villes
+
+
+def _signaux_jsonld(html: str, base_url: str) -> dict[str, Any]:
+    brut = bk_parse.parse_jsonld(html, base_url)
+    return {
+        "telephone": brut.get("telephone"),
+        "adresse": brut.get("address"),
+        "horaires": brut.get("opening_hours") or [],
+        "same_as": brut.get("same_as") or [],
+        "villes_desservies": _villes_de_area_served(html),
+    }
+
+
+# Noms de fichiers d'images. Les logos de clients et de certifications ne vivent que
+# là : ils n'ont ni texte alt ni mention dans la page, donc aucune lecture du contenu
+# ne les voit (Petro-Canada, St-Hubert, Trudel chez Gauthier ; MELCCFP chez Pelchat).
+#
+# ⚠️ On n'accepte QUE les fichiers qui se déclarent (`logo-`, `partenaire-`,
+# `certification-`…). Un `costco.jpg` nu est écarté volontairement : un nom de
+# fichier ne prouve aucune relation d'affaires, et un client inventé dans un
+# courriel est précisément ce qu'on s'interdit.
+_FICHIER_MARQUEUR = re.compile(
+    r"(logo|partenaire|partner|client|certif|accredit|membre|rbq|associ)", re.I
+)
+_FICHIER_IMAGE = re.compile(r"/([A-Za-z0-9_\-]+)\.(?:jpe?g|png|webp|svg)", re.I)
+# Bruit ajouté par les CMS : dimensions (`-1024x625`, `-1920w`), empreintes du CDN
+# (40 caractères alphanumériques) et le `-1` des doublons WordPress.
+_FICHIER_BRUIT = (
+    re.compile(r"[-_]\d+x\d+", re.I),
+    re.compile(r"[-_]\d+w\b", re.I),
+    re.compile(r"[-_](?=[a-z0-9]*\d)[a-z0-9]{16,}", re.I),
+    re.compile(r"[-_]\d+$"),
+)
+
+
+def _noms_de_fichiers_marques(html: str) -> list[str]:
+    noms: set[str] = set()
+    for brut in _FICHIER_IMAGE.findall(html or ""):
+        if not _FICHIER_MARQUEUR.search(brut):
+            continue
+        nom = brut
+        for bruit in _FICHIER_BRUIT:
+            nom = bruit.sub("", nom)
+        nom = nom.strip("-_")
+        if nom:
+            noms.add(nom)
+    return sorted(noms)
+
+
 def _rank_internal_pages(base_url: str, html: str, max_links: int) -> list[str]:
     """Sélectionne jusqu'à `max_links` pages internes à scraper, priorisées par
     valeur (contact > équipe/à-propos > services). Déduplique les fragments
     (#horaire), ignore les hôtes externes, et garde l'ordre DOM à tier égal."""
     soup = BeautifulSoup(html, "html.parser")
-    base_no_frag = base_url.split("#", 1)[0]
+    base_no_frag = _cle_url(base_url)
     seen_urls: set[str] = set()
     scored: list[tuple[int, int, str]] = []  # (tier, ordre_dom, url)
     order = 0
     for a in soup.find_all("a", href=True):
         href = urljoin(base_url, a["href"]).split("#", 1)[0]
-        if not href or href == base_no_frag or not _same_host(base_url, href):
+        if not href or _cle_url(href) == base_no_frag or not _same_host(base_url, href):
             continue
         hay = href.lower() + " " + a.get_text(" ", strip=True).lower()
         tier = next((t for t, hints in _PAGE_HINT_TIERS if any(h in hay for h in hints)), None)
-        if tier is None or href in seen_urls:
+        # Slash final normalise : voir `_prioriser_urls`, meme defaut ici.
+        cle = _cle_url(href)
+        if tier is None or cle in seen_urls:
             continue
-        seen_urls.add(href)
+        seen_urls.add(cle)
         scored.append((tier, order, href))
         order += 1
     scored.sort(key=lambda x: (x[0], x[1]))
@@ -720,10 +992,14 @@ async def fetch_site(
     diag = _diag_passe_neuve("unknown")
     out: dict[str, Any] = {
         "url": url, "status": "unknown", "pages": [],
-        "tech_keyword_hits": [], "emails_found": [], DIAGNOSTIC_KEY: diag,
+        "tech_keyword_hits": [], "emails_found": [], "social_links": [],
+        "jsonld": _signaux_jsonld("", url), "logos_fichiers": [],
+        DIAGNOSTIC_KEY: diag,
     }
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "fr-CA,fr;q=0.9,en;q=0.5"}
     emails_by_addr: dict[str, dict[str, str]] = {}
+    social: set[str] = set()
+    logos: set[str] = set()
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
         try:
@@ -751,8 +1027,21 @@ async def fetch_site(
         ):
             em["source_url"] = str(r.url)
             emails_by_addr.setdefault(em["email"], em)
+        social |= set(_extract_social_links(r.text, str(r.url)))
+        # Le JSON-LD de la fiche d'entreprise vit sur la home (même choix que
+        # `fetch_site_rich`) ; les logos, eux, se ramassent sur toutes les pages.
+        out["jsonld"] = _signaux_jsonld(r.text, str(r.url))
+        logos |= set(_noms_de_fichiers_marques(r.text))
 
-        candidates = _rank_internal_pages(str(r.url), r.text, max_pages - 1)
+        # Le sitemap voit les pages que le menu cache. Sans lui, /nous-joindre/
+        # (9 secteurs desservis chez Gauthier) n'était jamais lue. Les liens du
+        # menu restent dans le lot : une page peut manquer au sitemap.
+        du_menu = _rank_internal_pages(str(r.url), r.text, max_pages - 1)
+        du_sitemap = await _urls_du_sitemap(client, str(r.url))
+        if du_sitemap:
+            candidates = _prioriser_urls(str(r.url), du_sitemap + du_menu, max_pages - 1)
+        else:
+            candidates = du_menu
 
         for href in candidates:
             try:
@@ -768,6 +1057,8 @@ async def fetch_site(
                     ):
                         em["source_url"] = str(rp.url)
                         emails_by_addr.setdefault(em["email"], em)
+                    social |= set(_extract_social_links(rp.text, str(rp.url)))
+                    logos |= set(_noms_de_fichiers_marques(rp.text))
                 else:
                     diag["pages_en_echec"].append(
                         {"url": str(rp.url), "statut": f"http_{rp.status_code}"}
@@ -781,6 +1072,8 @@ async def fetch_site(
     haystack = " ".join(p["text"].lower() for p in out["pages"])
     out["tech_keyword_hits"] = [kw.strip() for kw in TECH_KEYWORDS if kw in haystack]
     out["emails_found"] = list(emails_by_addr.values())
+    out["social_links"] = sorted(social)
+    out["logos_fichiers"] = sorted(logos)
     _diag_finalise(diag, emails_by_addr)
     return out
 
@@ -821,6 +1114,25 @@ def _format_site_for_llm(site: dict[str, Any]) -> str:
     parts = [f"website_status: {status}"]
     hits = site.get("tech_keyword_hits") or []
     parts.append(f"tech_keyword_hits: {', '.join(hits) if hits else '(none)'}")
+    # Liste explicite, « (none) » compris : le prompt doit pouvoir conclure
+    # « aucune présence sociale » au lieu de la deviner d'après une icône.
+    social = site.get("social_links") or []
+    parts.append(f"social_links: {', '.join(social) if social else '(none)'}")
+    # Faits que le site publie sur lui-même, déjà structurés — et les noms de
+    # fichiers d'images, seul endroit où vivent les logos de clients et de
+    # certifications (aucun texte alt, aucune mention dans la page).
+    ld = site.get("jsonld") or {}
+    for cle, valeur in (
+        ("jsonld_telephone", ld.get("telephone")),
+        ("jsonld_adresse", ld.get("adresse")),
+        ("jsonld_horaires", ", ".join(ld.get("horaires") or [])),
+        ("jsonld_villes_desservies", ", ".join(ld.get("villes_desservies") or [])),
+    ):
+        if valeur:
+            parts.append(f"{cle}: {valeur}")
+    fichiers = site.get("logos_fichiers") or []
+    if fichiers:
+        parts.append(f"image_filenames: {', '.join(fichiers)}")
     for page in site.get("pages", []):
         parts.append(f"\n--- {page['url']} ---\n{page['text']}")
     return "\n".join(parts)

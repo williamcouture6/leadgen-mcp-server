@@ -85,7 +85,16 @@ async def _validate_env_on_startup() -> None:
 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+    """Vivant, et SUR QUELLE VERSION.
+
+    Sans le `commit`, rien ne distingue un déploiement qui a pris d'un qui a
+    échoué : le service répond `ok` avec l'ancien code comme avec le nouveau, et
+    il fallait aller lire le SHA dans le tableau de bord Railway. Activer un
+    workflow n8n en se fiant à du code qu'on CROIT déployé, c'est ce qu'on évite
+    ici. Railway injecte `RAILWAY_GIT_COMMIT_SHA` tout seul ; en local elle
+    n'existe pas et l'endpoint répond quand même."""
+    sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA") or ""
+    return {"status": "ok", "commit": sha[:7] if sha else "unknown"}
 
 
 class AlertIn(BaseModel):
