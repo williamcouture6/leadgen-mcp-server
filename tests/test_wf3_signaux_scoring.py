@@ -159,22 +159,24 @@ def _prompt() -> str:
     return research._PROMPT_PATH.read_text(encoding="utf-8")
 
 
-def test_le_prompt_demande_un_constat_pas_une_disqualification() -> None:
+def test_le_prompt_interdit_au_modele_de_noter() -> None:
     p = _prompt()
-    # Le malus lui-même est vérifié dans test_malus_outil_en_place.py : ici on
-    # verrouille seulement qu'un outil détecté n'entraîne pas de disqualification.
-    assert "outil_en_place" in p
-    assert "le malus suffit" in p
+    assert "Tu ne donnes AUCUN score" in p
+    # L'ancienne consigne arithmétique ne doit pas revenir par copier-coller.
+    assert "retire exactement 30 points" not in p
+
+
+def test_le_prompt_ferme_la_liste_des_disqualifications() -> None:
+    p = _prompt()
+    assert "la liste est FERMÉE" in p
+    for motif in ("entité publique", "annuaire", "coopérative", "plus de 50 employés"):
+        assert motif in p, motif
+    # Décision William : un service de réponse humain 24/7 reste joignable.
+    assert "ne disqualifie PAS" in p
 
 
 def test_le_prompt_neutralise_la_taille_de_l_equipe() -> None:
     p = _prompt()
-    assert "le score ne bouge pas" in p
+    assert "ne change rien au score" in p
     # L'ancienne règle notait « micro one-person » comme bas potentiel.
     assert "micro one-person" not in p
-
-
-def test_le_prompt_ancre_le_score_sur_les_heures() -> None:
-    p = _prompt()
-    assert "opening_hours" in p
-    assert "outils_detectes" in p

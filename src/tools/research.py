@@ -17,6 +17,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -94,6 +95,15 @@ TECH_KEYWORDS = (
     "agence numérique", "agence numerique", "powered by", "built with",
     "hubspot", "salesforce", "intercom", "drift", "zendesk",
 )
+
+# Parmi les outils ci-dessous, ceux qui offrent une PRISE DE RENDEZ-VOUS en
+# ligne. Un chat ou un outil d'avis ne remplace pas le téléphone ; un Calendly
+# oui. C'est cette distinction qui alimente le signal `rdv_en_ligne`.
+OUTILS_AVEC_RDV = frozenset({
+    "Jobber", "Housecall Pro", "ServiceTitan", "Workiz", "ServiceM8", "FieldEdge",
+    "Calendly", "Acuity Scheduling", "Setmore", "Booksy", "SimplyBook",
+    "Square Appointments", "Réservation en ligne (générique)",
+})
 
 # Empreintes d'outils RÉELLEMENT en place, cherchées dans le HTML BRUT.
 #
@@ -1132,6 +1142,78 @@ async def fetch_site(
 # Formatting helpers (réutilisés du proto)
 # ----------------------------------------------------------------------
 
+def _avis_recents(
+    place: dict[str, Any], jours: int = 30, maintenant: datetime | None = None
+) -> int | None:
+    """Combien des avis rendus par Google datent des `jours` derniers jours.
+
+    ⚠️ Plancher, jamais total : l'API Places (New) rend **au maximum 5 avis**
+    par fiche. « 3 avis en 30 jours » veut donc dire « au moins 3 », et une
+    boîte très active plafonne à 5. C'est suffisant pour distinguer un commerce
+    vivant d'un commerce endormi, pas pour mesurer un volume réel.
+    """
+    avis = place.get("reviews")
+    if not isinstance(avis, list) or not avis:
+        return None
+    limite = (maintenant or datetime.now(timezone.utc)) - timedelta(days=jours)
+    compte = 0
+    for rv in avis:
+        brut = (rv or {}).get("publishTime")
+        if not isinstance(brut, str):
+            continue
+        try:
+            quand = datetime.fromisoformat(brut.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if quand >= limite:
+            compte += 1
+    return compte
+
+
+def _ferme_soir_ou_weekend(place: dict[str, Any]) -> bool | None:
+    """Lu sur `periods`, pas sur `weekdayDescriptions`.
+
+    Les descriptions sont du texte traduit (« Fermé », « Closed », « Ouvert
+    24 h sur 24 ») : les parser, c'est parier sur la langue rendue par Google.
+    `periods` est structuré et muet — un jour, une heure, une minute.
+    """
+    periodes = (place.get("regularOpeningHours") or {}).get("periods")
+    if not isinstance(periodes, list) or not periodes:
+        return None
+    weekend_couvert = False
+    soir_couvert = False
+    for periode in periodes:
+        ouverture = (periode or {}).get("open") or {}
+        fermeture = (periode or {}).get("close")
+        if ouverture.get("day") in (0, 6):  # 0 = dimanche, 6 = samedi
+            weekend_couvert = True
+        if fermeture is None:
+            # Période sans fermeture = ouvert en continu.
+            return False
+        heure = fermeture.get("hour")
+        if isinstance(heure, int) and (heure >= 19 or heure <= 5):
+            soir_couvert = True
+    return not (weekend_couvert and soir_couvert)
+
+
+def signaux_mesures(place: dict[str, Any], site: dict[str, Any]) -> dict[str, Any]:
+    """Les signaux qui se comptent, comptés par le code et non par le modèle.
+
+    Tout ce qui est ici est vérifiable et reproductible. Ce qui reste au modèle
+    (promesse d'urgence, saisonnalité, métiers) demande de lire du texte.
+    `None` = pas d'information, ce qui ne vaut pas « absent » pour le barème.
+    """
+    outils = site.get("outils_detectes") or []
+    site_lu = str(site.get("status", "")).startswith("http_2")
+    return {
+        "avis_total": place.get("userRatingCount"),
+        "avis_30j": _avis_recents(place),
+        "ferme_soir_ou_weekend": _ferme_soir_ou_weekend(place),
+        "outil_en_place": bool(outils) if site_lu else None,
+        "rdv_en_ligne": any(o in OUTILS_AVEC_RDV for o in outils) if site_lu else None,
+    }
+
+
 def _horaires_pour_llm(place: dict[str, Any]) -> str:
     desc = (place.get("regularOpeningHours") or {}).get("weekdayDescriptions") or []
     return " · ".join(desc) if desc else "(inconnu)"
@@ -1299,16 +1381,25 @@ _RESEARCH_TOOL: dict[str, Any] = {
             },
             "disqualifications": {"type": "array", "items": {"type": "string"}},
             "personalization_hooks": {"type": "array", "items": {"type": "string"}},
-            # Le modele rend une base et un constat, jamais un score ajuste :
-            # il ne sait pas soustraire dans un champ unique (mesure du
-            # 2026-09-01 : 27 valeurs distinctes sur 283 scores, dont 72 pour
-            # un quart de la base — il reconnait un archetype, il ne calcule
-            # pas). La soustraction se fait dans db.extract_lead_potential_patch.
+            # Le modele ne rend AUCUN chiffre de score : il observe, le code
+            # pondere (lib/lead_scoring.py). Mesure du 2026-09-01 sur 283
+            # scores: 27 valeurs distinctes, dont 72 pour un quart de la base,
+            # rien au-dessus de 82 -- un classificateur a archetypes deguise en
+            # echelle de 0 a 100. Les signaux comptables (avis, horaires,
+            # outils) sont mesures en Python et ecrasent ceux-ci.
             "lead_potential": {
                 "type": ["object", "null"],
                 "properties": {
-                    "score_base": {"type": ["integer", "null"]},   # 0-100, AVANT ajustement
-                    "outil_en_place": {"type": ["boolean", "null"]},
+                    "signaux": {
+                        "type": ["object", "null"],
+                        "properties": {
+                            "promet_urgence_24_7": {"type": ["boolean", "null"]},
+                            "service_reponse_humain_24_7": {"type": ["boolean", "null"]},
+                            "saisonnier": {"type": ["boolean", "null"]},
+                            "villes_desservies": {"type": ["integer", "null"]},
+                            "metiers_offerts": {"type": ["integer", "null"]},
+                        },
+                    },
                     "reasoning": {"type": ["string", "null"]},     # 1 phrase
                 },
             },
@@ -1472,6 +1563,17 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
     # muter le dict rendu par le LLM.
     research_json = dict(llm_result.research_json or {})
     research_json[DIAGNOSTIC_KEY] = site.get(DIAGNOSTIC_KEY) or _diag_passe_neuve("unknown")
+
+    # Les signaux comptables sont mesurés ici et priment sur ce que le modèle
+    # aurait avancé : un compte d'avis n'est pas matière à interprétation. Une
+    # mesure inconnue (`None`) ne recouvre jamais une observation du modèle.
+    lead_potential = dict(research_json.get("lead_potential") or {})
+    signaux = dict(lead_potential.get("signaux") or {})
+    for cle, valeur in signaux_mesures(place, site).items():
+        if valeur is not None or cle not in signaux:
+            signaux[cle] = valeur
+    lead_potential["signaux"] = signaux
+    research_json["lead_potential"] = lead_potential
 
     return ResearchCompanyOut(
         research_json=research_json,
