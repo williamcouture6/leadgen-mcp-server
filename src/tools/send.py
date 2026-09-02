@@ -42,6 +42,7 @@ from pydantic import BaseModel
 from .. import supabase_client as db
 from ..lib import instantly as instantly_lib
 from ..lib.compliance_checks import check_warmup_window
+from ..lib.relances import CLES_RELANCES
 from ..lib.platform_domains import is_email_on_blocked_domain
 
 DAILY_CAP_DEFAULT = 10
@@ -290,7 +291,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     followups = msg.get("followups") or None
     if (msg.get("track") or "") == "agence-ia":
         manquantes = [
-            cle for cle in ("relance_1", "relance_2")
+            cle for cle in CLES_RELANCES
             if not ((followups or {}).get(cle) or "").strip()
         ]
         if manquantes:

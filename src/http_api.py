@@ -18,6 +18,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from pydantic import BaseModel
 
 from . import supabase_client as sb
+from .lib.relances import CLES_RELANCES
 from .tools import booking as booking_tools
 from .tools import compliance as compliance_tools
 from .tools import db as db_tools
@@ -2102,13 +2103,11 @@ async def _personalize_one(
                         if out.template_used in ("A", "B")
                         else None
                     ),
-                    # Les deux relances (migration 0046). Absentes sur OPT.
+                    # Les relances (migration 0046). Absentes sur OPT.
+                    # La liste fait foi : `lib/relances.RELANCES`.
                     followups=(
-                        {
-                            "relance_1": email.get("relance_1") or "",
-                            "relance_2": email.get("relance_2") or "",
-                        }
-                        if email.get("relance_1") or email.get("relance_2")
+                        {cle: email.get(cle) or "" for cle in CLES_RELANCES}
+                        if any(email.get(cle) for cle in CLES_RELANCES)
                         else None
                     ),
                 )

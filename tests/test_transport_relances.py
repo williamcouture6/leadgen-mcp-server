@@ -17,7 +17,15 @@ import pytest
 from src.lib import instantly as instantly_lib
 from src.tools import send as send_tools
 
-TRIPLET = {"relance_1": "corps de la relance 1", "relance_2": "corps de la relance 2"}
+# 🔧 Renommé « TRIPLET » par habitude : depuis le 2026-09-01 l'envoi porte
+# QUATRE corps — le courriel et trois relances. Le nom est conservé parce
+# qu'il est cité dans plusieurs docstrings ; la liste qui fait foi est
+# `lib/relances.RELANCES`.
+TRIPLET = {
+    "relance_1": "corps de la relance 1",
+    "relance_2": "corps de la relance 2",
+    "relance_3": "corps de la relance 3",
+}
 
 
 # ---------------- Le payload reellement destine a Instantly ----------------
@@ -52,6 +60,7 @@ async def test_le_payload_porte_les_deux_relances(monkeypatch: pytest.MonkeyPatc
     assert variables["email_body"] == "corps"
     assert variables["followup_1_body"] == "corps de la relance 1"
     assert variables["followup_2_body"] == "corps de la relance 2"
+    assert variables["followup_3_body"] == "corps de la relance 3"
 
 
 @pytest.mark.asyncio
@@ -124,9 +133,11 @@ def _pipeline_vert(monkeypatch: pytest.MonkeyPatch):
     [
         (None, "colonne NULL"),
         ({}, "objet vide"),
-        ({"relance_1": "r1"}, "relance_2 absente"),
-        ({"relance_1": "r1", "relance_2": ""}, "relance_2 vide"),
-        ({"relance_1": "   ", "relance_2": "r2"}, "relance_1 blanche"),
+        ({"relance_1": "r1", "relance_2": "r2"}, "relance_3 absente"),
+        ({"relance_1": "r1", "relance_3": "r3"}, "relance_2 absente"),
+        ({"relance_1": "r1", "relance_2": "", "relance_3": "r3"}, "relance_2 vide"),
+        ({"relance_1": "   ", "relance_2": "r2", "relance_3": "r3"}, "relance_1 blanche"),
+        ({"relance_1": "r1", "relance_2": "r2", "relance_3": "  "}, "relance_3 blanche"),
     ],
 )
 async def test_un_triplet_incomplet_ne_part_jamais(

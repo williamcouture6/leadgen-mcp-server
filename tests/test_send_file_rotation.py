@@ -41,7 +41,11 @@ def _msg(**over) -> dict:
         # au push (`skipped_followups_manquants`). Ces tests portent sur la
         # rotation de fichier et le corps verbatim, pas sur cette garde — qui a
         # ses propres tests dans test_transport_relances.py.
-        "followups": {"relance_1": "corps r1", "relance_2": "corps r2"},
+        "followups": {
+            "relance_1": "corps r1",
+            "relance_2": "corps r2",
+            "relance_3": "corps r3",
+        },
     }
     base.update(over)
     return base

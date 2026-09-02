@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ..lib.avis import bloc_faits_verifies
+from ..lib.relances import RELANCES
 from ..lib.compliance_checks import (
     CheckResult,
     mentions_manquantes_dans_la_config,
@@ -76,15 +77,17 @@ def _message_utilisateur_juge(
     # personne, et c'est exactement ce qui a masqué l'échec des relances sur
     # `check_cta_present`.
     bloc_relances = ""
-    for cle, etiquette in (("relance_1", "Relance 1 (jour 3)"), ("relance_2", "Relance 2 (jour 7)")):
+    for cle, _var, etiquette in RELANCES:
         texte = ((followups or {}).get(cle) or "").strip()
         if texte:
             bloc_relances += f"\n**{etiquette}** (en fil, sans objet) :\n{texte}\n"
     if bloc_relances:
         bloc_relances = (
             "\n## Les relances du même envoi — À JUGER AUSSI\n"
-            "Elles partent au même prospect, 3 et 7 jours après. Une violation "
-            "dans une relance est une violation de l'envoi.\n" + bloc_relances + "\n"
+            "Elles partent au même prospect, à quelques jours d'intervalle. Une "
+            "violation dans une relance est une violation de l'envoi.\n"
+            + bloc_relances
+            + "\n"
         )
 
     return (
@@ -269,10 +272,12 @@ async def compliance_check(
     # mots), les relances avec RELANCE (40-120). Les juger tous sous le même
     # gabarit refuserait mécaniquement les relances, qui font 97 mots.
     corps_a_juger: list[tuple[str, str, str | None]] = [("courriel", body, template_used)]
-    for cle, etiquette in (("relance_1", "relance 1"), ("relance_2", "relance 2")):
+    for cle, _var, _etiquette in RELANCES:
         texte = ((followups or {}).get(cle) or "").strip()
         if texte:
-            corps_a_juger.append((etiquette, texte, "RELANCE"))
+            # `cle` et pas le libellé : la note de conformité doit nommer ce
+            # qu'on retrouve en base, pas une périphrase.
+            corps_a_juger.append((cle.replace("_", " "), texte, "RELANCE"))
 
     det_results: list[CheckResult] = []
     for etiquette, texte, gabarit in corps_a_juger:

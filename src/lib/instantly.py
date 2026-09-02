@@ -23,6 +23,8 @@ import os
 from typing import Any
 
 import httpx
+
+from .relances import RELANCES
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -154,18 +156,16 @@ async def add_lead_to_campaign(
         #
         # ⚠️ Ce code ne suffit PAS à les faire partir. La campagne Instantly
         # n'a qu'UNE étape (vérifié avec William le 2026-08-30) : il faut y
-        # ajouter deux étapes dont le gabarit est {{followup_1_body}} et
-        # {{followup_2_body}}. C'est une ligne de la checklist go-live, et
+        # ajouter UNE ÉTAPE PAR RELANCE, dont le gabarit est
+        # {{followup_N_body}}. La liste fait foi : `lib/relances.RELANCES`.
+        # C'est une ligne de la checklist go-live, et
         # sans elle les variables arrivent chez un destinataire qui ne les lit
         # pas.
         "custom_variables": {
             "email_subject": subject,
             "email_body": body_text,
             **(
-                {
-                    "followup_1_body": followups.get("relance_1", ""),
-                    "followup_2_body": followups.get("relance_2", ""),
-                }
+                {var: followups.get(cle, "") for cle, var, _ in RELANCES}
                 if followups
                 else {}
             ),

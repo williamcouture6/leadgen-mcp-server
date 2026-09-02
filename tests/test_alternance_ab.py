@@ -109,7 +109,7 @@ async def test_la_colonne_porte_la_variante_reellement_ecrite(
         return PersonalizeOut(
             email={
                 "template_used": "B", "subject": "s", "body_text": "corps",
-                "relance_1": "r1", "relance_2": "r2",
+                "relance_1": "r1", "relance_2": "r2", "relance_3": "r3",
             },
             template_used="B", contact_used=False, social_proof_count=0,
             available_slots_at_generation=[], duration_ms=1, model="m",
@@ -136,7 +136,9 @@ async def test_la_colonne_porte_la_variante_reellement_ecrite(
     )
 
     assert capture["draft"].template_choice == "B"
-    assert capture["draft"].followups == {"relance_1": "r1", "relance_2": "r2"}
+    assert capture["draft"].followups == {
+        "relance_1": "r1", "relance_2": "r2", "relance_3": "r3",
+    }
     assert capture["agent_run"].input_payload["template_choice"] == "B", (
         "c'est CE champ que la conformité lit pour choisir les bornes"
     )

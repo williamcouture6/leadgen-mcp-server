@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from ..lib.avis import bloc_faits_verifies, nom_commercial
 from ..lib.lexique_metiers import lexique_pour
+from ..lib.relances import CLES_RELANCES
 from ..lib.metiers import resoudre_metiers
 from . import research as research_tools
 
@@ -410,7 +411,7 @@ async def personalize(payload: PersonalizeIn) -> PersonalizeOut:
     # Les relances manquantes se signalent ICI, à la génération, et pas au push
     # trois étapes plus loin.
     if payload.track == "agence-ia":
-        for cle in ("relance_1", "relance_2"):
+        for cle in CLES_RELANCES:
             if not (email_json.get(cle) or "").strip():
                 email_json.setdefault("warnings", []).append(
                     f"{cle} vide ou absente — le triplet sera refusé au push "
