@@ -699,6 +699,10 @@ _URL_MALUS: tuple[tuple[int, str], ...] = (
     # On prospecte des clients, pas des candidats. /emploi/ prenait la place de
     # la page de services chez Lauzon.
     (-120, r"/(emplois?|carrieres?|careers?|postuler|jobs?|recrutement|stage)"),
+    # Contenu d'exemple laisse par le CMS a l'installation. /hello-world/ a pris
+    # le 4e emplacement chez Entretien GFR : il est encore publie sur quantite de
+    # sites de PME et ne dit rien de personne.
+    (-120, r"/(hello-world|sample-page|exemple-de-page|page-exemple|uncategorized|non-classe)"),
 )
 # Un site bilingue double toutes ses pages. Le doublon ne dit rien de neuf et
 # coûte le même prix : sur BL Vitres, 12 des 25 pages lues étaient des `/en/`.

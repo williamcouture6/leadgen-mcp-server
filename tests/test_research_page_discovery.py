@@ -91,6 +91,18 @@ def test_score_ecarte_la_page_de_remerciement_malgre_le_mot_contact() -> None:
     assert research._score_page_url(url) < 0
 
 
+def test_score_ecarte_les_pages_gabarit_du_cms() -> None:
+    # Vu chez Entretien GFR (2026-09-01) : /hello-world/, le billet d'exemple
+    # que WordPress cree a l'installation, a pris le 4e emplacement. Il est
+    # encore publie sur quantite de sites de PME et ne dit rien de personne.
+    for url in (
+        "https://x.ca/hello-world/",
+        "https://x.ca/sample-page/",
+        "https://x.ca/exemple-de-page/",
+    ):
+        assert research._score_page_url(url) < 0, url
+
+
 def test_score_ecarte_les_pages_de_recrutement() -> None:
     # /emploi/ prenait la place de la page de services chez Lauzon. On ne
     # prospecte pas des candidats.
