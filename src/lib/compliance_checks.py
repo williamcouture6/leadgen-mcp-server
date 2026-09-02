@@ -119,12 +119,59 @@ SOCIAL_PROOF_PATTERNS: dict[str, str] = {
     r"\bd[ée]ploy[ée] chez\b": "claim 'déployé chez' (preuve sociale)",
     r"\bnos clients\b": "claim 'nos clients' (preuve sociale)",
     r"\bmes clients\b": "claim 'mes clients' (preuve sociale)",
-    r"\bdeux .{0,30} à\b": "tournure 'deux X à Y' (souvent fausse preuve sociale)",
-    r"\btrois .{0,30} à\b": "tournure 'trois X à Y'",
+    # ⚠️ « deux X à Y » et « trois X à Y » ne vivent PLUS ici : ils exigent la
+    # casse, que `_find_matches` détruit. Voir SOCIAL_PROOF_PATTERNS_CASSE.
     r"\bplusieurs .{0,30} à (Montréal|Laval|Québec|Sherbrooke|Gatineau)": "claim de plusieurs clients dans une ville",
     r"on a mis en place .{0,40} pour": "claim 'on a mis en place X pour [client]'",
     r"j'ai mis en place .{0,40} pour": "claim 'j'ai mis en place X pour [client]'",
     r"\bcomme .{0,30} que j'accompagne\b": "claim 'comme X que j'accompagne'",
+}
+
+
+# 🔴 Motifs qui ont besoin de la CASSE — cherchés hors de `_find_matches`.
+#
+# CE QUE CES DEUX MOTIFS VISENT : « deux cliniques à Montréal », un claim de
+# plusieurs clients dans un lieu. Ce qu'ils attrapaient AVANT le 2026-09-01 :
+# n'importe quel « à » dans les 30 caractères suivants. Sévérité `block`, donc
+# brouillon mort et contact gelé à vie.
+#
+# Mesuré sur le VRAI chemin (`check_fake_social_proof`, pas un `re.search` de
+# laboratoire) — 7 tournures innocentes sur 7 étaient bloquées :
+#   « il pose deux ou trois questions à ton client »  ← la façon naturelle de
+#     décrire la qualification, donc le cœur du gabarit D
+#   « ça change deux choses à ton entreprise » · « deux minutes à répondre »
+#   « t'as deux façons à considérer » · « trois affaires à régler avant l'hiver »
+#   « il te reste deux semaines à attendre » · « deux ou trois clics à faire »
+# Ce n'était pas propre à D : l'OUVREUR GÉNÉRÉ de A et B peut tomber dedans sur
+# n'importe quel lead.
+#
+# LE CORRECTIF : exiger une MAJUSCULE après « à », c'est-à-dire un nom propre.
+#
+# 🔴 ET POURQUOI ILS NE PEUVENT PAS RESTER DANS `SOCIAL_PROOF_PATTERNS`.
+# `_find_matches` fait `body.lower()` ET passe `re.IGNORECASE`. Deux raisons
+# indépendantes pour qu'une classe `[A-ZÀ-Ü]` n'y matche jamais — le motif
+# resserré y serait MORT, et la garde entièrement désarmée, en silence. C'est
+# exactement le défaut que la docstring de `_find_matches` raconte pour
+# l'apostrophe courbe, et il a failli se reproduire le jour même : la première
+# mesure du resserrage utilisait `re.search` sur le texte brut et montrait 5/5
+# et 0/7. Elle ne testait pas le chemin réel. Toute mesure de garde passe
+# désormais par la fonction de check elle-même.
+#
+# CE QUI RESTE OUVERT, ASSUMÉ : un lieu en minuscules (« deux clients à
+# laval ») passe. Le juge couvre la preuve sociale subtile (compliance.md §2),
+# et une garde déterministe vaut mieux étroite et juste que large et fausse —
+# celle qui refuse 7 phrases honnêtes pour 5 vraies se fait contourner par la
+# rédaction, pas respecter.
+SOCIAL_PROOF_PATTERNS_CASSE: dict[str, str] = {
+    # `(?i:...)` sur le SEUL mot-nombre : « Deux cliniques à Montréal » ouvre
+    # une phrase, donc la majuscule y est normale et ne dit rien. La casse ne
+    # porte de l'information qu'APRÈS « à », où elle distingue un nom propre
+    # d'un mot ordinaire. Un `re.IGNORECASE` global rendrait `[A-ZÀ-Ü]`
+    # équivalent à `[a-zà-ü]` et détruirait la garde — c'est exactement le
+    # piège de `_find_matches`. Ce cas vient d'un test PRÉEXISTANT qui a cassé
+    # au premier jet.
+    r"\b(?i:deux) .{0,30} à [A-ZÀ-Ü]": "tournure 'deux X à [NomPropre]' (souvent fausse preuve sociale)",
+    r"\b(?i:trois) .{0,30} à [A-ZÀ-Ü]": "tournure 'trois X à [NomPropre]'",
 }
 
 
@@ -159,6 +206,26 @@ def _find_matches(body: str, patterns: dict[str, str]) -> list[tuple[str, str]]:
     low = body.lower().replace("’", "'").replace("ʼ", "'")
     for pattern, label in patterns.items():
         for m in re.finditer(pattern, low, flags=re.IGNORECASE):
+            hits.append((m.group(0), label))
+    return hits
+
+
+def _find_matches_casse(body: str, patterns: dict[str, str]) -> list[tuple[str, str]]:
+    """Comme `_find_matches`, mais la CASSE est conservée.
+
+    Même normalisation d'apostrophe — le piège du U+2019 vaut ici aussi — et
+    surtout PAS de `.lower()` ni de `re.IGNORECASE`, sinon une classe
+    `[A-ZÀ-Ü]` matcherait tout et la garde deviendrait plus large qu'avant au
+    lieu de plus étroite.
+
+    Sert à `SOCIAL_PROOF_PATTERNS_CASSE`, dont les motifs distinguent
+    « deux entreprises à Laval » (preuve sociale) de « deux questions à ton
+    client » (description du service) sur la seule majuscule.
+    """
+    hits: list[tuple[str, str]] = []
+    texte = body.replace("’", "'").replace("ʼ", "'")
+    for pattern, label in patterns.items():
+        for m in re.finditer(pattern, texte):
             hits.append((m.group(0), label))
     return hits
 
@@ -220,6 +287,7 @@ def check_subject_fake_social_proof(subject: str, social_proof_count: int) -> Ch
         msg = "sujet vide" if not subject else "social_proof non vide, check ignoré"
         return CheckResult("subject_fake_social_proof", True, "block", msg, [])
     hits = _find_matches(subject, SOCIAL_PROOF_PATTERNS)
+    hits += _find_matches_casse(subject, SOCIAL_PROOF_PATTERNS_CASSE)
     return CheckResult(
         name="subject_fake_social_proof",
         passed=not hits,
@@ -250,6 +318,7 @@ def check_fake_social_proof(email_body: str, social_proof_count: int) -> CheckRe
         return CheckResult("fake_social_proof", True, "block", "social_proof non vide, check ignoré", [])
     body = _body_without_signature(email_body)
     hits = _find_matches(body, SOCIAL_PROOF_PATTERNS)
+    hits += _find_matches_casse(body, SOCIAL_PROOF_PATTERNS_CASSE)
     return CheckResult(
         name="fake_social_proof",
         passed=not hits,
