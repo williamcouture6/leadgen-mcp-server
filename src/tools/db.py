@@ -834,10 +834,18 @@ async def list_companies_to_discover(
 def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     """Extrait les colonnes flat `lead_potential_*` du research_json.
 
-    Le Research Agent note le potentiel du lead dans
-    `research_json["lead_potential"] = {score: 0-100, reasoning: str}`. On copie
-    ces valeurs en colonnes dédiées de `companies` pour pouvoir trier/filtrer en
-    SQL sans fouiller le JSON.
+    Le Research Agent rend `research_json["lead_potential"] = {score_base: 0-100,
+    outil_en_place: bool, reasoning: str}` — une base et un constat, jamais un
+    score déjà ajusté. C'est ICI que le malus s'applique, pas dans le prompt :
+    un LLM ne tient pas de registre entre plusieurs ajustements, il produit un
+    seul nombre d'un coup et reconstruit la soustraction après coup. Mesuré le
+    2026-09-01 sur les 283 scores de prod : 27 valeurs distinctes seulement,
+    dont 72 pour un quart de la base — le modèle reconnaît un archétype, il ne
+    calcule pas. On lui laisse le jugement, on garde l'arithmétique.
+
+    `score_base` et `outil_en_place` restent dans `research_json` : re-régler le
+    malus plus tard est alors un UPDATE SQL sur les lignes déjà recherchées,
+    sans un seul appel LLM à repayer.
 
     Retourne un dict à fusionner dans le patch UPDATE. Vide si le score est
     absent ou invalide (on ne touche alors pas les colonnes — elles restent à
@@ -848,17 +856,32 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     lp = research_json.get("lead_potential")
     if not isinstance(lp, dict):
         return {}
-    score = lp.get("score")
+    # `score` = ancienne forme (recherches d'avant le 2026-09-01), deja ajustee
+    # par le modele. `score_base` = forme actuelle, avant malus. On lit les deux
+    # pour que le backfill des vieilles lignes continue de marcher.
+    base = lp.get("score_base", lp.get("score"))
     # bool est une sous-classe d'int — on l'exclut explicitement.
-    if not isinstance(score, int) or isinstance(score, bool):
+    if not isinstance(base, int) or isinstance(base, bool):
         return {}
-    if not (0 <= score <= 100):
+    if not (0 <= base <= 100):
         return {}
+    score = base
+    if lp.get("outil_en_place") is True:
+        # Plancher a 0 : un score negatif serait rejete par la borne ci-dessus
+        # au prochain passage, et la colonne resterait sur sa vieille valeur.
+        score = max(0, base - MALUS_OUTIL_EN_PLACE)
     patch: dict[str, Any] = {"lead_potential_score": score}
     reason = lp.get("reasoning")
     if isinstance(reason, str):
         patch["lead_potential_reason"] = reason[:500]
     return patch
+
+
+# Points retirés quand la PME a déjà un outil de prise de RDV / de réponse.
+# Décision William 2026-09-01 : un outil réduit la douleur, il ne l'annule pas —
+# donc un malus fixe, jamais une disqualification. Changer ce nombre ne demande
+# PAS de rescoring : `score_base` est conservé dans research_json.
+MALUS_OUTIL_EN_PLACE = 30
 
 
 async def _statut_apres_recherche(

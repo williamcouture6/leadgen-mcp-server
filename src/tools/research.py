@@ -1299,10 +1299,16 @@ _RESEARCH_TOOL: dict[str, Any] = {
             },
             "disqualifications": {"type": "array", "items": {"type": "string"}},
             "personalization_hooks": {"type": "array", "items": {"type": "string"}},
+            # Le modele rend une base et un constat, jamais un score ajuste :
+            # il ne sait pas soustraire dans un champ unique (mesure du
+            # 2026-09-01 : 27 valeurs distinctes sur 283 scores, dont 72 pour
+            # un quart de la base — il reconnait un archetype, il ne calcule
+            # pas). La soustraction se fait dans db.extract_lead_potential_patch.
             "lead_potential": {
                 "type": ["object", "null"],
                 "properties": {
-                    "score": {"type": ["integer", "null"]},      # 0-100
+                    "score_base": {"type": ["integer", "null"]},   # 0-100, AVANT ajustement
+                    "outil_en_place": {"type": ["boolean", "null"]},
                     "reasoning": {"type": ["string", "null"]},     # 1 phrase
                 },
             },

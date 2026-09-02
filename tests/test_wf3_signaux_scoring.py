@@ -159,10 +159,12 @@ def _prompt() -> str:
     return research._PROMPT_PATH.read_text(encoding="utf-8")
 
 
-def test_le_prompt_impose_le_moins_30_et_pas_la_disqualification() -> None:
+def test_le_prompt_demande_un_constat_pas_une_disqualification() -> None:
     p = _prompt()
-    assert "retire exactement 30 points" in p
-    assert "Ce n'est PAS un effondrement" in p
+    # Le malus lui-même est vérifié dans test_malus_outil_en_place.py : ici on
+    # verrouille seulement qu'un outil détecté n'entraîne pas de disqualification.
+    assert "outil_en_place" in p
+    assert "le malus suffit" in p
 
 
 def test_le_prompt_neutralise_la_taille_de_l_equipe() -> None:
