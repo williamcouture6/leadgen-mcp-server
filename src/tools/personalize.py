@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from ..lib.avis import bloc_faits_verifies, nom_commercial
 from ..lib.lexique_metiers import lexique_pour
-from ..lib.relances import CLES_RELANCES
+from ..lib.relances import CLES_RELANCES, CORPS_RELANCES
 from ..lib.metiers import resoudre_metiers
 from . import research as research_tools
 
@@ -408,15 +408,22 @@ async def personalize(payload: PersonalizeIn) -> PersonalizeOut:
                 "la variante envoyée n'est pas traçable"
             )
 
-    # Les relances manquantes se signalent ICI, à la génération, et pas au push
-    # trois étapes plus loin.
+    # 🔴 Les relances sont INJECTÉES, pas générées. Décision du 2026-09-01 :
+    # les trois sont identiques pour les quatre gabarits et n'ont aucun trou.
+    #
+    # L'écrasement est VOLONTAIRE et inconditionnel. Si le modèle a quand même
+    # produit un `relance_1` — parce qu'un prompt n'a pas été mis à jour, parce
+    # qu'il a suivi un exemple — c'est sa version qui est du bruit, pas la
+    # nôtre. Fusionner « seulement si absent » laisserait passer exactement le
+    # texte dérivé qu'on veut rendre impossible.
+    #
+    # Ce qui disparaît avec ce bloc : l'avertissement « relance vide ou absente
+    # (troncature du modèle ?) ». Il n'a plus d'objet — une constante ne se
+    # tronque pas. La garde du push (`skipped_followups_manquants`) reste, elle,
+    # parce qu'elle protège aussi les brouillons écrits AVANT ce changement.
     if payload.track == "agence-ia":
         for cle in CLES_RELANCES:
-            if not (email_json.get(cle) or "").strip():
-                email_json.setdefault("warnings", []).append(
-                    f"{cle} vide ou absente — le triplet sera refusé au push "
-                    f"(troncature du modèle ?)"
-                )
+            email_json[cle] = CORPS_RELANCES[cle]
 
     return PersonalizeOut(
         email=email_json,

@@ -60,3 +60,61 @@ CLES_RELANCES: tuple[str, ...] = tuple(cle for cle, _, _ in RELANCES)
 
 # Le nombre de corps qu'un envoi complet transporte : le courriel + ses relances.
 NB_CORPS_PAR_ENVOI: int = 1 + len(RELANCES)
+
+
+# 🔴 LES CORPS SONT DES CONSTANTES, PAS DE LA GÉNÉRATION. Décision du
+# 2026-09-01 : « les 3 relances seront les mêmes pour tous les templates ».
+#
+# Ils n'ont AUCUN trou — ni métier, ni ville, ni note Google, ni ouvreur généré.
+# Trois textes identiques pour les 255 leads et pour les quatre gabarits. Faire
+# réécrire par un modèle un texte qui ne varie pas, c'est payer des jetons pour
+# fabriquer du risque :
+#
+#   - la DÉRIVE. C'est ce qui a rendu `check_statistiques_conformes` nécessaire :
+#     un 21 qui devient 210 est un mensonge que le prospect vérifie. Un corps
+#     constant ne dérive pas.
+#   - la TRONCATURE. `skipped_followups_manquants` existe parce qu'un modèle
+#     peut s'arrêter au milieu. Une constante ne se tronque pas.
+#   - ~280 mots générés par lead, pour un résultat qu'on connaît d'avance.
+#
+# Les gardes restent en place et ne deviennent pas inutiles : elles surveillent
+# désormais LA CONSTANTE. Une modification maladroite de ce fichier se fait
+# attraper par `check_statistiques_conformes` et par
+# `test_aucune_ancre_ne_doit_etre_morte`.
+#
+# ⚠️ CE QUI CHANGE POUR QUI ÉDITE CES TEXTES : ils partent tels quels, à tout
+# le monde. Il n'y a plus de modèle entre ce fichier et la boîte du prospect.
+CORPS_RELANCES: dict[str, str] = {
+    "relance_1": """Bonjour,
+
+Je te réécris juste pour remettre mon courriel sur le dessus, des fois que tu l'aies manqué.
+
+Pour te rappeler, je voudrais regarder avec toi pour te créer un système de réponse automatique aux appels, textos, formulaires et même les courriels. Ça répond, les qualifie et ensuite ça t'envoie un résumé pour que tu les rappelles en sachant déjà de quoi ils ont besoin et que tu leur proposes une soumission direct.
+
+Pour le site, l'offre tient toujours.
+
+J'espère pouvoir t'en parler un peu plus!""",
+    # Les quatre chiffres de ce corps sont gardés par
+    # `check_statistiques_conformes`. Ce qu'ils valent réellement — le 78 % n'a
+    # pas de source primaire, le 21 fois mesure la qualification — est écrit
+    # au-dessus de `STATISTIQUES_APPROUVEES`. Décision William, prise en
+    # connaissance de cause le 2026-09-01.
+    "relance_2": """Salut!
+
+J'espère que mon courriel d'avant s'est pas encore perdu à travers les autres.
+
+Je te réécris juste pour te dire que si jamais t'as des questions à propos du système de réponse automatique que je te propose, t'as juste à me les demander, y'a aucun problème.
+
+Je pense vraiment qu'une entreprise comme la tienne pourrait profiter d'un système comme ça.
+
+Juste pour te dire, les entreprises qui ont un système similaire sont capables de retenir en moyenne 21 fois plus de clients si elles répondent en moins de 5 minutes comparé à celles qui répondent en 30 minutes. Sans compter qu'en moyenne 78 % des clients signent avec la première compagnie qui répond.
+
+Bref, si t'as des questions hésite pas""",
+    "relance_3": """Re-bonjour,
+
+Je crois avoir compris que ça ne t'intéresse pas d'avoir le système et un site web au goût du jour. Bref, je voulais juste te dire que si un jour tu venais à vouloir avoir plus de clients et gagner plus de temps, je reste toujours disponible pour te répondre.
+
+Je ne vais plus t'écrire, donc si tu veux en savoir plus contacte-moi sur le même courriel.
+
+Au plaisir de pouvoir te parler!""",
+}

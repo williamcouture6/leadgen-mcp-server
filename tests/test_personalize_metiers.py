@@ -138,7 +138,7 @@ def test_la_piste_OPT_garde_son_bloc_calcom() -> None:
 # ---------------- La sortie a trois corps ----------------
 
 @pytest.mark.asyncio
-async def test_la_sortie_porte_les_trois_corps(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_les_relances_sont_injectees_pas_generees(monkeypatch: pytest.MonkeyPatch) -> None:
     capture: dict[str, Any] = {}
 
     def faux_llm(user_message: str, model: str, max_tokens: int = 2500, track: str = "OPT"):
@@ -162,12 +162,19 @@ async def test_la_sortie_porte_les_trois_corps(monkeypatch: pytest.MonkeyPatch) 
         )
     )
 
-    assert out.email["relance_1"] == "r1"
-    assert out.email["relance_2"] == "r2"
-    assert capture["max_tokens"] >= 4000, (
-        "trois corps au lieu d'un : une troncature silencieuse rendrait une "
-        "relance vide, refusée au push"
-    )
+    # 🔴 Le modèle a produit « r1 » et « r2 ». Ils sont ÉCRASÉS : depuis le
+    # 2026-09-01 les relances sont des constantes, identiques pour les quatre
+    # gabarits. Fusionner « seulement si absent » laisserait passer exactement
+    # le texte dérivé qu'on veut rendre impossible.
+    from src.lib.relances import CLES_RELANCES, CORPS_RELANCES
+
+    assert out.email["relance_1"] == CORPS_RELANCES["relance_1"]
+    assert out.email["relance_1"] != "r1", "la version du modèle a survécu"
+    assert out.email["relance_2"] == CORPS_RELANCES["relance_2"]
+    # La troisième n'a JAMAIS été produite par le modèle et doit quand même
+    # être là — c'est toute la différence entre injecter et compléter.
+    assert out.email["relance_3"] == CORPS_RELANCES["relance_3"]
+    assert set(CLES_RELANCES) <= set(out.email)
 
 
 @pytest.mark.asyncio
@@ -197,10 +204,16 @@ async def test_template_used_vaut_A_ou_B_jamais_AB(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_une_relance_vide_produit_un_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Une troncature du modèle est silencieuse. Sans ce warning, le draft
-    partirait jusqu'au push avant d'être refusé, et personne ne saurait
-    pourquoi."""
+async def test_une_relance_vide_du_modele_est_remplacee(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ce test gardait un WARNING ; il garde maintenant une GARANTIE.
+
+    Avant le 2026-09-01, une troncature du modèle rendait une relance vide et
+    le brouillon était refusé au push, trois étapes plus loin — d'où un
+    avertissement à la génération pour qu'on sache pourquoi.
+
+    L'avertissement n'a plus d'objet : les relances ne sont plus générées. Une
+    constante ne se tronque pas. Ce qui reste à vérifier est plus fort — même
+    quand le modèle rend une chaîne vide, c'est le texte décidé qui part."""
 
     def faux_llm(user_message: str, model: str, max_tokens: int = 2500, track: str = "OPT"):
         return (
@@ -218,4 +231,7 @@ async def test_une_relance_vide_produit_un_warning(monkeypatch: pytest.MonkeyPat
         )
     )
 
-    assert any("relance" in w.lower() for w in out.email.get("warnings", []))
+    from src.lib.relances import CORPS_RELANCES
+
+    assert out.email["relance_2"] == CORPS_RELANCES["relance_2"]
+    assert out.email["relance_2"].strip(), "une relance vide est partie quand même"

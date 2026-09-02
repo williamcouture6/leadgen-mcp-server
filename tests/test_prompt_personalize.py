@@ -48,9 +48,12 @@ PHRASES_FIXES = [
     # Le CTA et la ligne de renvoi.
     "Dis-moi juste si tu veux le voir.",
     "Si c'est pas toi qui gères ça, tu peux-tu me pointer la bonne personne?",
-    # Les fermetures de relances.
-    "Pour le site, l'offre tient toujours. Juste à me dire.",
-    "Tu veux-tu la voir? T'as juste à me dire.",
+    # ⚠️ Les fermetures de relances ne sont PLUS ici. Elles vivaient dans la
+    # section « LES RELANCES » du prompt, retirée le 2026-09-01 : les trois
+    # relances sont désormais des constantes injectées par le code, identiques
+    # pour les quatre gabarits. Elles sont gardées plus bas, contre
+    # `CORPS_RELANCES` — le texte n'a pas disparu, il a déménagé, et le test
+    # avec lui.
 ]
 
 
@@ -132,3 +135,45 @@ def test_le_prompt_dicte_les_deux_formulations_du_deuxieme_temps() -> None:
 def test_le_prompt_a_les_cinq_suppositions() -> None:
     for numero in ("1 · ", "2 · ", "3 · ", "4 · ", "5 · "):
         assert numero in PROMPT, f"supposition {numero!r} absente du catalogue"
+
+
+# ---------------- Les relances : constantes, plus le prompt ----------------
+
+# Les phrases que William a écrites lui-même et qui doivent partir MOT POUR MOT.
+# Elles étaient gardées contre le prompt jusqu'au 2026-09-01 ; elles vivent
+# maintenant dans `lib/relances.CORPS_RELANCES`, ce qui les rend plus faciles à
+# garder, pas moins : il n'y a plus de modèle entre le fichier et le prospect.
+PHRASES_DES_RELANCES = [
+    ("relance_1", "Je te réécris juste pour remettre mon courriel sur le dessus"),
+    ("relance_1", "Pour le site, l'offre tient toujours."),
+    ("relance_1", "J'espère pouvoir t'en parler un peu plus!"),
+    ("relance_2", "J'espère que mon courriel d'avant s'est pas encore perdu à travers les autres."),
+    ("relance_2", "Bref, si t'as des questions hésite pas"),
+    ("relance_3", "Je ne vais plus t'écrire"),
+    ("relance_3", "Au plaisir de pouvoir te parler!"),
+]
+
+
+@pytest.mark.parametrize(("cle", "phrase"), PHRASES_DES_RELANCES)
+def test_la_relance_porte_la_phrase_de_william(cle: str, phrase: str) -> None:
+    from src.lib.relances import CORPS_RELANCES
+
+    assert phrase in CORPS_RELANCES[cle], (
+        f"{cle} ne porte plus « {phrase} » — ce texte est celui de William, "
+        f"il part tel quel à tout le monde"
+    )
+
+
+def test_le_prompt_ne_demande_plus_de_relances() -> None:
+    """Le prompt et le code ne doivent pas se contredire.
+
+    Si le prompt redemandait des relances, le modèle les écrirait, le code les
+    écraserait, et on paierait des jetons pour du texte jeté. Pire : quelqu'un
+    lisant le prompt croirait que les relances sont générées.
+    """
+    from src.tools.personalize import _REACTI_PROMPT_PATH
+
+    prompt = _REACTI_PROMPT_PATH.read_text(encoding="utf-8")
+    assert '"relance_1":' not in prompt, "le schéma de sortie redemande les relances"
+    assert "{OUVREUR_RELANCE" not in prompt, "un gabarit de relance est revenu"
+    assert "tu n'en écris AUCUNE" in prompt.lower() or "n'écris QUE le courriel" in prompt

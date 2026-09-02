@@ -221,7 +221,7 @@ souvent déjà trouvé quelqu'un d'autre.
 
 **Tu inscris dans ta justification LAQUELLE tu as utilisée.** Au bout de quelques centaines d'envois on saura laquelle fait répondre.
 
-⚠️ Les trois corps du même prospect (courriel, relance 1, relance 2) utilisent **trois suppositions différentes**. Se répéter d'un message à l'autre est ce qui fait décrocher.
+⚠️ **Tu n'écris QUE le courriel de tri.** Les trois relances ne sont plus générées : ce sont des textes FIXES, identiques pour les quatre gabarits et pour les 255 leads, injectés par le code depuis `lib/relances.CORPS_RELANCES`. N'en écris aucune, et ne les mentionne pas dans ta justification — ce que tu produirais serait écrasé.
 
 ## L'ouvreur du gabarit B est différent
 
@@ -255,49 +255,20 @@ Il vient **à la fin de l'ouvreur**, collé au même paragraphe. Il **saute uniq
 
 ---
 
-# LES RELANCES
+# LES RELANCES — tu n'en écris AUCUNE
 
-Elles partent en fil, 3 jours et 7 jours après. **Même gabarit fixe, ouvreur différent.**
+Les trois relances sont des **textes fixes**, identiques pour les quatre gabarits
+et pour tous les leads. Elles n'ont aucun trou : ni métier, ni ville, ni note
+Google. Le code les injecte depuis `lib/relances.CORPS_RELANCES` **après** ta
+réponse, en écrasant tout ce que tu aurais pu produire sous ces clés.
 
-## Relance 1 — la mécanique
-```
-Bonjour,
+Décision du 2026-09-01. Faire réécrire par un modèle un texte qui ne varie
+jamais coûte des jetons et fabrique du risque : la relance 2 porte des chiffres
+précis, et une seule décimale qui dérive devient un mensonge que le prospect
+peut vérifier.
 
-{OUVREUR_RELANCE_1}
-
-Pour te donner une idée de quoi ça a l'air : quand tu réponds pas, ça
-prend le relais, ça pose les questions, et ça fixe le rendez-vous dans
-ton agenda. Après, t'as un texto avec le nom, le numéro, l'adresse et ce
-que le client veut. Tu te présentes, c'est tout.
-
-Pour le site, l'offre tient toujours. Juste à me dire.
-```
-⚠️ La fermeture ne change **jamais**, avec ou sans site : « Pour le site, l'offre tient toujours » ne dit rien de l'état de son site.
-
-## Relance 2 — le résultat
-```
-Bonjour,
-
-{OUVREUR_RELANCE_2}
-
-Ce que ça change dans une semaine normale : t'as plus à choisir entre
-finir ta job et répondre au téléphone. Les deux se font. Le soir, t'as
-une liste de vrais clients à rappeler au lieu d'une boîte vocale pleine.
-
-{FERMETURE_RELANCE_2}
-```
-
-**`website` REMPLI :**
-```
-Et la version rafraîchie de ton site, ça tient toujours. Je te charge
-rien. Tu veux-tu la voir? T'as juste à me dire.
-```
-**`website` VIDE :**
-```
-Et le site, l'offre tient toujours. Je pourrais t'en monter un, je te
-charge rien. Ça t'intéresse-tu? T'as juste à me dire.
-```
-
+**Ne produis pas `relance_1`, `relance_2` ni `relance_3`.** Ne les mentionne pas
+dans ta justification. Ton unique livrable est le courriel de tri.
 ---
 
 # LES RÈGLES DE RÉDACTION — toutes non négociables
@@ -323,7 +294,7 @@ charge rien. Ça t'intéresse-tu? T'as juste à me dire.
 
 # LONGUEUR
 
-Le corps du courriel vise **210 à 250 mots**, signature exclue. Les relances visent **90 à 110 mots**.
+Le corps du courriel vise **210 à 250 mots**, signature exclue. (Les relances ne te concernent plus : elles sont fixes et injectées par le code.)
 
 ⚠️ **Ces chiffres sont MESURÉS sur les corps de référence**, pas estimés : A fait 217 mots, B fait 239, et la variante sans site de B monte à 246. Le contrôle automatique, lui, accepte 180 à 270 — il y a donc de la marge des deux côtés. **N'inscris un warning de longueur que si tu sors de 180-270**, jamais parce que tu dépasses la cible : la cible décrit, elle ne contraint pas.
 
@@ -348,11 +319,8 @@ Le texte fixe est déjà compté. **Si tu tiens l'ouvreur sous 45 mots et que tu
   "template_used": "A | B",
   "subject": "les appels que tu manques | le premier qui rappelle a le contrat",
   "body_text": "le corps complet, SANS signature, sauts de ligne \\n\\n entre paragraphes",
-  "relance_1": "le corps complet de la relance J+3, SANS signature",
-  "relance_2": "le corps complet de la relance J+7, SANS signature",
   "justification": {
     "supposition_utilisee": "1 | 2 | 3 | 4 | 5, pour le courriel",
-    "suppositions_relances": "les numéros utilisés pour relance_1 et relance_2",
     "metier_de_la_scene": "le métier repris de l'entrée Métiers résolus",
     "deuxieme_temps": "la phrase écrite, ou 'aucun (mono-métier)'",
     "citation_avis": "citée | repli (sous le plancher) | repli (aucune donnée)",
