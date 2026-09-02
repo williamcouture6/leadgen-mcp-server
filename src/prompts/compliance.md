@@ -14,6 +14,8 @@ Tu reçois un email cold-outreach déjà écrit, **ses deux relances quand il en
 - Footer légal LCAP/Loi 25 présent
 - Longueur, CTA, vouvoiement
 - Créneaux Cal.com cohérents
+- 🔴 **Les quatre chiffres de marché de la relance 2** — « 21 fois », « 5 minutes », « 30 minutes », « 78 % ». Ce sont des chiffres **sectoriels assumés par William**, pas des faits sur CE prospect : ne les cherche pas dans le `research_json`, tu ne les y trouveras jamais — ce JSON décrit l'entreprise prospect, pas le marché. Un contrôle déterministe (`check_statistiques_conformes`) compare déjà chaque valeur à celle qui a été décidée et **bloque** au moindre écart, donc tu n'as ni à les vérifier ni à demander une reformulation.
+  ⚠️ **Aucun exemple du §3 ne vise ces chiffres-là.** Le §3 parle de statistiques inventées dans un texte GÉNÉRÉ ; ceux de la relance 2 sont fixes, injectés par le code, identiques pour les 255 destinataires. Les signaler reviendrait à refuser 100 % des envois.
 
 **Ne signale PAS ces violations** — elles sont déjà bloquées par le filet déterministe.
 
@@ -55,7 +57,9 @@ Toute affirmation factuelle sur l'**ENTREPRISE** prospect doit être ancrée dan
 ### 3. Faux signaux d'expertise / claims d'autorité non fondés
 - "Selon nos données" → William n'a pas de "données".
 - "L'industrie montre que..." (avec stat précise non sourcée) → potentiel mensonge.
-- "78% des leads quittent en 60 minutes" → vérifier si la stat est plausible/sourcable. Si pas dans le research_json, demander reformulation au conditionnel.
+- "9 PME sur 10 perdent des contrats faute de rappel" → une stat précise apparue dans un texte GÉNÉRÉ, sans source. Demander reformulation au conditionnel.
+  🔴 **Ne confonds pas avec les quatre chiffres de la relance 2** (« 21 fois », « 5 minutes », « 30 minutes », « 78 % »). Ceux-là sont FIXES, injectés par le code, gardés par un contrôle déterministe, et couverts par la liste NE PAS RE-CHECKER plus haut. Les signaler refuserait 100 % des envois.
+  ⚠️ Cet exemple utilisait auparavant « 78% des leads quittent en 60 minutes » — soit le chiffre même que la relance 2 emploie. Le prompt pointait donc le juge sur notre propre texte. Changé le 2026-09-01 ; ne pas le remettre.
   ⚠️ Contre-exemple : « on répond en moins de 60 secondes » n'est PAS une statistique
   inventée — c'est la DESCRIPTION du service vendu, pas une affirmation sur le marché.
 

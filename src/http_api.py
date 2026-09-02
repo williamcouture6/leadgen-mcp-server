@@ -2933,9 +2933,23 @@ async def _alerter_wf5(
     """
     from .lib import slack as slack_lib
 
+    # 🔧 `error` ajouté le 2026-09-01. Il manquait, et c'est le verdict du
+    # LOT ENTIER quand une variable d'environnement exigée est absente : la
+    # garde de couche 0 refuse de juger avant de regarder le moindre corps.
+    #
+    # Sans lui, le pire cas était muet. 20 brouillons en `error`, aucun envoi,
+    # et le ping annonçait « 0 draft(s) non envoyable(s) » — un silence qui se
+    # lit comme un succès. C'est le mode d'échec que ce ping existe pour
+    # empêcher, reproduit sur le seul verdict qui frappe tout le monde en même
+    # temps.
+    #
+    # ⚠️ `error` n'écrit RIEN en base : `compliance_check_passed` reste NULL et
+    # le lot revient intact le lendemain. Aucun contact n'est gelé — d'où
+    # l'importance d'alerter, parce que la situation se répare toute seule dès
+    # la variable posée, mais seulement si quelqu'un l'apprend.
     fautifs = [
         i for i in items
-        if i.verdict in ("needs_revision", "blocked", "non_juge", _VERDICT_ORPHELIN)
+        if i.verdict in ("needs_revision", "blocked", "non_juge", "error", _VERDICT_ORPHELIN)
     ]
     lignes = [
         f"• `{i.message_id}` — {i.verdict} [{i.regle or '?'}]"
