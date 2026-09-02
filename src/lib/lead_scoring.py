@@ -24,6 +24,12 @@ from typing import Any
 # Un signal inconnu (`None`) ne vaut JAMAIS un signal absent : il ne rapporte
 # ni ne retire rien. Sans ça, une fiche Google sans horaires ferait chuter une
 # boîte qui ferme peut-être le soir.
+# Le score d'un lead dont les avis disent qu'on n'arrive pas à le joindre. Ce
+# n'est pas un poids : c'est un écrasement, il court-circuite l'addition.
+SCORE_INJOIGNABLE = 100
+# La plainte doit être attestée par la note de l'avis, sinon le constat tombe.
+NOTE_MAX_PLAINTE = 3
+
 POIDS: dict[str, int] = {
     "base": 25,
     # Exposition hors-heures — l'ancre du barème.
@@ -69,6 +75,23 @@ def calculer_score(
         return 0, ["disqualifie -> 0"]
     if not isinstance(signaux, dict):
         return 0, ["aucun signal"]
+
+    # Décision William 2026-09-01 : un client qui écrit publiquement qu'il
+    # n'arrive pas à joindre l'entreprise décrit EXACTEMENT le problème que
+    # l'offre règle. Ce lead passe en tête, quoi que dise le reste du barème.
+    # Seule la disqualification (ci-dessus) le devance.
+    if signaux.get("avis_disent_injoignable") is True:
+        note_min = _entier(signaux.get("avis_note_min"))
+        if note_min is not None and note_min <= NOTE_MAX_PLAINTE:
+            return SCORE_INJOIGNABLE, [
+                f"avis_disent_injoignable (note {note_min}) -> {SCORE_INJOIGNABLE}"
+            ]
+        # Garde-fou déterministe. Mesuré le 2026-09-01 sur les 405 fiches
+        # recherchées : l'appariement de mots-clés seul marque 60 boîtes, dont
+        # 35 pour des avis 5 ★ qui VANTENT la rapidité de réponse — « Rappel
+        # tôt samedi am », « a répondu rapidement à mon appel ». Sans note
+        # d'avis assez basse pour attester d'une plainte, on ignore le constat
+        # plutôt que de propulser un satisfait en tête de file.
 
     score = POIDS["base"]
     trace = [f"base +{POIDS['base']}"]

@@ -96,11 +96,28 @@ Tu n'écris pas l'email. Tu extrais des **faits vérifiables et des signaux** �
 
 | champ | ce que tu réponds |
 |---|---|
+| `avis_disent_injoignable` | `true` **seulement** si un avis se PLAINT de ne pas réussir à joindre l'entreprise ou de ne jamais avoir eu de retour d'appel |
 | `promet_urgence_24_7` | `true` si le site promet une disponibilité en tout temps, un service d'urgence, une réponse 24 h |
 | `service_reponse_humain_24_7` | `true` si un service de réponse **humain** est déjà en place (secrétariat externe, centrale d'appels, répondant en tout temps annoncé nommément) |
 | `saisonnier` | `true` si l'activité a une saison marquée (déneigement, paysagement, ouverture/fermeture de piscines, climatisation) |
 | `villes_desservies` | nombre de villes ou secteurs desservis annoncés |
 | `metiers_offerts` | nombre de métiers distincts offerts (plomberie + chauffage + drain = 3) |
+
+🔴 **`avis_disent_injoignable` — attention au sens, pas aux mots.** Ce constat propulse le lead en **tête de la file de prospection**, devant tous les autres : un client qui écrit publiquement qu'il n'arrive pas à joindre l'entreprise décrit mot pour mot le problème que l'offre règle. Il n'y a donc aucune place pour l'à-peu-près.
+
+Mets `true` uniquement pour une **plainte** :
+
+> « Il ne répond pas au téléphone non plus, donc impossible de le rejoindre. »
+> « J'ai appelé à 3 reprises et laissé des messages sans réponse. »
+> « J'ai demandé un retour d'appel, je n'ai jamais reçu de réponse. »
+> « Service à la clientèle difficile à joindre : délais de réponse de plusieurs jours. »
+
+Mets `false` quand l'avis parle de la même chose **en bien** — c'est le piège, et il est fréquent :
+
+> « Demande envoyée un vendredi soir 22h30 / **Rappel** tôt samedi am. » → `false`
+> « Amine a **répondu** rapidement à mon appel. » → `false`
+
+Un travail mal fait, un retard de chantier, un prix contesté ne sont PAS ce signal : il ne s'agit que de **joindre l'entreprise**. Dans le doute, `false` — le code écarte de toute façon le constat si aucun avis du lot n'a une note assez basse pour attester d'une plainte.
 
 **Ce que le code mesure lui-même** — n'y touche pas, tes valeurs seraient écrasées : le nombre total d'avis, les avis des 30 derniers jours, la fermeture le soir et la fin de semaine (lue sur les horaires Google), la présence d'un outil, la présence d'une prise de rendez-vous en ligne.
 

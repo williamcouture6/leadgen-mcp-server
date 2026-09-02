@@ -1170,6 +1170,24 @@ def _avis_recents(
     return compte
 
 
+def _note_la_plus_basse(place: dict[str, Any]) -> int | None:
+    """La note la plus basse parmi les avis rendus par Google.
+
+    Sert de garde-fou au constat `avis_disent_injoignable` : une plainte
+    d'injoignabilité s'accompagne d'une mauvaise note. Sans avis assez sévère
+    dans le lot, le constat est écarté (voir lib/lead_scoring.py).
+    """
+    avis = place.get("reviews")
+    if not isinstance(avis, list) or not avis:
+        return None
+    notes = [
+        (rv or {}).get("rating") for rv in avis
+        if isinstance((rv or {}).get("rating"), int)
+        and not isinstance((rv or {}).get("rating"), bool)
+    ]
+    return min(notes) if notes else None
+
+
 def _ferme_soir_ou_weekend(place: dict[str, Any]) -> bool | None:
     """Lu sur `periods`, pas sur `weekdayDescriptions`.
 
@@ -1208,6 +1226,7 @@ def signaux_mesures(place: dict[str, Any], site: dict[str, Any]) -> dict[str, An
     return {
         "avis_total": place.get("userRatingCount"),
         "avis_30j": _avis_recents(place),
+        "avis_note_min": _note_la_plus_basse(place),
         "ferme_soir_ou_weekend": _ferme_soir_ou_weekend(place),
         "outil_en_place": bool(outils) if site_lu else None,
         "rdv_en_ligne": any(o in OUTILS_AVEC_RDV for o in outils) if site_lu else None,
@@ -1393,6 +1412,7 @@ _RESEARCH_TOOL: dict[str, Any] = {
                     "signaux": {
                         "type": ["object", "null"],
                         "properties": {
+                            "avis_disent_injoignable": {"type": ["boolean", "null"]},
                             "promet_urgence_24_7": {"type": ["boolean", "null"]},
                             "service_reponse_humain_24_7": {"type": ["boolean", "null"]},
                             "saisonnier": {"type": ["boolean", "null"]},
