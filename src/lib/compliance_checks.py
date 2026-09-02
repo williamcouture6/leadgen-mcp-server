@@ -635,7 +635,26 @@ def check_length(
 _EXPLICIT_INVITE_RE = re.compile(
     r"dis[\s-]moi|juste[\s-][àa][\s-]me[\s-]dire|fais[\s-]moi[\s-]signe|"
     r"me[\s-]le[\s-]dire|fais[\s-]moi[\s-]savoir|un appel rapide|"
-    r"\b(15|20|25|30)\s*minutes?\b"
+    r"h[ée]site[\s-]pas|"
+    # 🔧 La durée doit être PROPOSÉE, pas seulement mentionnée. Corrigé le
+    # 2026-09-02 sur trouvaille du conseil.
+    #
+    # `\b(15|20|25|30)\s*minutes?\b` seul verdissait la relance 2 sur
+    # « comparé à celles qui répondent en 30 minutes » — une STATISTIQUE, pas
+    # une invitation. Le check était donc vert pour la mauvaise raison : le
+    # jour où cette phrase est reformulée, un test sans aucun rapport avec le
+    # CTA tombe, et personne ne comprend pourquoi.
+    #
+    # Le préfixe exige maintenant une formule qui OFFRE la durée. « en 30
+    # minutes » et « qui attend 30 minutes » ne matchent plus ; « on se parle
+    # 20 minutes? » et « ça prend 15 minutes » matchent toujours.
+    r"(?:pour|de|d'|prend|prendre|prendrait|dure|durerait|se parler?|jaser)"
+    r"\s+(?:environ\s+|à peu près\s+)?(?:15|20|25|30)\s*minutes?\b|"
+    # Ou une durée qui POSE une question — « 15 minutes ? » est la forme
+    # historique du CTA de la piste OPT, et c'en est bien une.
+    # La statistique de la relance 2 finit sur un point : « répondent en 30
+    # minutes. Sans compter que… ». Le « ? » suffit donc à trancher.
+    r"(?:15|20|25|30)\s*minutes?\s*\?"
 )
 
 

@@ -433,6 +433,43 @@ async def _horodater_tentative(message_id: str) -> None:
         pass
 
 
+async def _alerter_campagne_absente(track: str) -> bool:
+    """Crie quand WF-6 refuse de pousser faute de campagne configurée.
+
+    Distinct de `_alerter_file_bloquee` À DESSEIN : ici la file peut être
+    pleine de brouillons APPROUVÉS, et chercher des `is.null` rendrait un
+    diagnostic faux. Deux silences différents méritent deux messages
+    différents — une alerte qui se trompe de cause coûte plus qu'une alerte
+    absente, parce qu'on la suit.
+
+    Rend `True` si une alerte est partie. Ne lève jamais.
+    """
+    from ..lib import slack as slack_lib
+
+    corps = "\n".join([
+        f"🚨 WF-6 — refus de pousser : aucune campagne Instantly configurée "
+        f"pour le track {track}.",
+        "Le cron a rendu `processed=0, errors=0` : sans cette alerte, ça se lit "
+        "comme « rien à envoyer ».",
+        f"À vérifier sur Railway : `INSTANTLY_CAMPAIGN_ID_{track.upper().replace('-', '_')}` "
+        "(ou la variable équivalente du track).",
+        "⚠️ Une espace de trop dans la valeur suffit : elle est nettoyée puis "
+        "traitée comme absente.",
+        "Aucun brouillon n'a été touché — tout repart dès la variable posée.",
+    ])
+    try:
+        envoyee = await slack_lib.notify(
+            text=corps, context="wf6_campagne_absente", category="alerts",
+        )
+    except Exception:  # noqa: BLE001 — un filet ne casse pas ce qu'il surveille
+        envoyee = False
+    if not envoyee:
+        logging.getLogger("wf6").error(
+            "alerte campagne absente #alertes NON partie — track=%s", track,
+        )
+    return envoyee
+
+
 async def _alerter_file_bloquee(track: str) -> bool:
     """Crie sur #alertes quand WF-6 repart les mains vides SANS que la file
     le soit.
@@ -505,6 +542,21 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
     # Garde : un track non-OPT DOIT avoir sa campagne dédiée, sinon on refuse —
     # ne JAMAIS pousser des drafts REACTI vers la campagne OPT par défaut.
     if track.upper() != "OPT" and not campaign:
+        # 🔴 CE REFUS ETAIT MUET, et c'est le même silence que la file bloquée,
+        # atteint par la porte d'à côté. Ajouté le 2026-09-02 (conseil).
+        #
+        # Si `INSTANTLY_CAMPAIGN_ID_REACTI` manque sur Railway — ou porte une
+        # espace de trop, que `_campaign_for_track` transforme en `None` — le
+        # cron quotidien rend `processed=0, pushed=0, errors=0`. Le nœud IF de
+        # n8n part sur « Log OK ». Aucun brouillon n'est touché, donc rien ne
+        # se répare et rien ne se signale : la campagne est simplement à
+        # l'arrêt, tous les jours, en silence.
+        #
+        # ⚠️ On n'appelle SURTOUT PAS `_alerter_file_bloquee` ici : elle
+        # cherche des brouillons `is.null` (jamais jugés) et n'en trouverait
+        # aucun — la file peut être pleine de brouillons APPROUVÉS. Le
+        # diagnostic serait faux et l'alerte muette.
+        await _alerter_campagne_absente(track)
         return RunWf6Out(
             processed=0, pushed=0, skipped_cap=0, skipped_warmup=0,
             skipped_suppressed=0, skipped_other=0, errors=0,
