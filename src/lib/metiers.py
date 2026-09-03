@@ -81,6 +81,47 @@ RACINES: dict[str, tuple[str, ...]] = {
 # mois — et une entreprise de déneigement pur recevrait un courriel en juillet.
 # ⚠️ N'ajouter une entrée ici qu'avec un libellé réel à l'appui : chaque
 # exception rogne le garde-fou nº2 (« on inclut dans le doute »).
+# 🔴 Libellés qui contiennent la racine d'un métier SANS être ce métier.
+#
+# Trouvés le 2026-09-02, au premier passage réel du pipeline, par le juge LLM —
+# pas par un test. Il a refusé le gabarit A de « Côté Ruelle - Paysagiste » en
+# disant que « tonte » et « excavation » n'étaient ancrés nulle part. Vérifié :
+# il avait raison sur la tonte.
+#
+#   « Plantations (arbres, arbustes, GAZON EN ROULEAU) »  → racine `gazon`
+#     Poser de la tourbe n'est pas tondre. Écrire « tu fais de la tonte aussi »
+#     à un paysagiste qui pose du gazon en plaques, il le voit tout de suite.
+#     8 entreprises concernées sur 403.
+#
+#   « Installation de CLÔTURES DE PISCINE »              → racine `piscine`
+#     Poser une clôture n'est pas entretenir une piscine. 5 entreprises.
+#
+# ⚠️ `terrassement` → excavation est CONSERVÉ malgré le signalement du juge :
+# 37 entreprises le portent, et « tu fais du terrassement aussi » dit à un
+# paysagiste qui fait du nivellement est défendable — il fait vraiment ça. La
+# frontière retenue est : on retire ce qui est FAUX, pas ce qui est large.
+#
+# Une exclusion s'applique AU LIBELLÉ : si un libellé la contient, il ne compte
+# pas pour ce métier-là. Il peut toujours compter pour un autre — « gazon en
+# rouleau » reste du paysagement.
+EXCLUSIONS: dict[str, tuple[str, ...]] = {
+    "tonte": (
+        "gazon en rouleau",
+        "gazon en plaque",
+        "gazon en plaques",
+        "pose de gazon",
+        "gazon synthetique",
+        "gazon artificiel",
+    ),
+    "piscine": (
+        "cloture de piscine",
+        "clotures de piscine",
+        "abri de piscine",
+        "abris de piscine",
+        "enrochement de piscine",
+    ),
+}
+
 ECRASE: dict[str, tuple[str, ...]] = {
     "déneigement": ("toiture",),
     # Ceinture ET bretelles avec la racine resserree ci-dessus : si un libelle
@@ -259,6 +300,13 @@ def resoudre_metiers(
             for metier, motifs in _RACINES_RE.items()
             if any(m.search(plat) for m in motifs)
         }
+        # Les exclusions AVANT `ECRASE` : un libellé faussement apparié ne doit
+        # pas non plus servir à écraser un métier légitime. « Installation de
+        # clôtures de piscine » ne doit ni ajouter `piscine`, ni faire
+        # disparaître `excavation` par la règle piscine→excavation.
+        for metier, phrases in EXCLUSIONS.items():
+            if metier in apparies and any(p in plat for p in phrases):
+                apparies.discard(metier)
         for gagnant, perdants in ECRASE.items():
             if gagnant in apparies:
                 apparies -= set(perdants)
