@@ -9,12 +9,13 @@ Phase 1 (sourcing) :
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from .. import supabase_client as db
+from ..lib.metiers import SAISONS, resoudre_metiers
 from ..lib.owner_match import summarize_company_decideur
 from ..lib.pricing import estimated_cost_usd
 
@@ -598,6 +599,74 @@ def _contact_priority_score(contact: dict[str, Any]) -> int:
     return 9
 
 
+def fenetre_saisonniere_ouverte(
+    company: dict[str, Any], *, track: str, aujourdhui: date | None = None
+) -> bool:
+    """L'entreprise est-elle joignable CE MOIS-CI ?
+
+    🔴 LA RÈGLE, ET ELLE VIENT DE LOIN. Spec du 2026-08-27 §3, décision William
+    du 2026-08-29 : « La fenêtre d'un métier s'ouvre 3 mois avant le début de sa
+    saison et se ferme 2 mois après », et — mot pour mot — « une entreprise
+    mono-métier hors saison **n'est pas contactée** : elle attend son ouverture,
+    et sera contactée à la bonne période ».
+
+    La règle était implémentée dans `lib/metiers.fenetre_mois` depuis AC1b, mais
+    elle ne servait qu'à choisir DE QUEL MÉTIER le courriel parle. Le morceau
+    qui décide À QUI on écrit avait été différé en AC1c, avec l'avertissement
+    écrit dans le plan AC1b : « rien n'empêche mécaniquement d'écrire à un
+    tondeur en octobre ». Il est posé ici le 2026-09-02, sans attendre le reste
+    d'AC1c (la vue, les colonnes dérivées, les index) : c'est le seul morceau
+    dont le premier envoi a besoin.
+
+    Mesuré le jour où il est posé, sur 403 fiches : **154 joignables en
+    septembre**, contre 363 sans le filtre. Les 209 écartés sont surtout des
+    paysagistes dont la saison s'est terminée cet été et dont la prochaine
+    fenêtre ouvre le 15 janvier.
+
+    🔴 DÉFAUT INVERSÉ, VOLONTAIRE : une entreprise dont AUCUN métier n'est
+    reconnu reste joignable toute l'année. La spec le dit explicitement (les
+    « 2 manquantes » de sa §3). Se taire faute de savoir reviendrait à ne
+    jamais écrire à une entreprise que la table de métiers ne sait pas classer,
+    et le silence serait invisible — c'est le garde-fou nº2, on inclut dans le
+    doute.
+
+    ⚠️ Ne s'applique QU'À la piste `agence-ia`. OPT est gelée et ses métiers
+    (dentiste, physio) n'ont pas de saison ; y appliquer la fenêtre écarterait
+    tout le monde en silence.
+    """
+    if (track or "").strip() != "agence-ia":
+        return True
+
+    services = ((company.get("research_json") or {}).get("services_offered")) or []
+    resolus = resoudre_metiers(
+        services, aujourdhui or date.today(), industry=company.get("industry")
+    )
+    if not resolus.metiers:
+        return True  # défaut inversé : on inclut dans le doute
+
+    # 🔴 UN MÉTIER 12 MOIS SUR 12 N'ENCLENCHE PAS LA SÉQUENCE — règle William du
+    # 2026-09-02, et c'est la MÊME que celle du choix de la scène.
+    #
+    # Sa formulation : « si les entreprises ont un métier secondaire qui est
+    # 12 mois sur 12, il ne peut pas enclencher la séquence de contact. Il peut
+    # seulement être référencé plus loin dans le courriel. »
+    #
+    # Ce que ça corrigeait, mesuré : 43 leads passaient le filtre sur `pavage`
+    # ou `excavation` alors que leur vraie saison — paysagement, lavage de
+    # vitres — était fermée jusqu'en janvier. Le courriel leur disait « la
+    # saison approche » quatre mois trop tôt. Vérifié : ce sont 28 paysagistes
+    # et 12 laveurs de vitres, donc la cible exacte, pas du bruit à écarter.
+    #
+    # ⚠️ Ces métiers ne sont PAS retirés de la fiche : ils restent dans
+    # `resolus.metiers` et se font nommer au 2ᵉ temps du courriel (« tu fais
+    # aussi du pavage »). Ils ne peuvent simplement pas OUVRIR.
+    #
+    # Une entreprise dont TOUS les métiers sont sans saison passe par le repli
+    # `industry` de `resoudre_metiers` — sinon elle ne serait jamais contactée.
+    # Mesuré : 3 fiches dans ce cas, toutes des paysagistes mal reconnus.
+    return any(m in SAISONS for m in resolus.fenetre_ouverte)
+
+
 async def list_contacts_to_personalize(
     limit: int = 20,
     *,
@@ -633,7 +702,13 @@ async def list_contacts_to_personalize(
             "track": f"eq.{track}",  # filtre track au niveau DB (sinon les contacts d'un
             # track minoritaire sont noyés par l'over-fetch oldest-first)
             "order": "created_at.asc",
-            "limit": str(limit * 5),  # over-fetch, on dédup ensuite par company
+            # 🔧 Sur-récolte portée de 5x à 12x le 2026-09-02, avec le filtre
+            # saisonnier. Il écarte 209 fiches sur 403 en septembre : à 5x, un
+            # lot de 20 lisait 100 contacts, en gardait ~38 après la saison,
+            # puis perdait encore sur le dédup par entreprise. La famine
+            # aurait été SILENCIEUSE — `_alerter_famine_wf4` ne se déclenche
+            # que sur 0 draft, pas sur « moins que demandé ».
+            "limit": str(limit * 12),
         },
     )
     if not contacts:
@@ -695,6 +770,8 @@ async def list_contacts_to_personalize(
         if require_research and not company.get("research_json"):
             continue
         if not site_ou_fiche_exploitable(company):
+            continue
+        if not fenetre_saisonniere_ouverte(company, track=track):
             continue
         eligible.setdefault(c["company_id"], []).append(c)
 

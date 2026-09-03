@@ -278,13 +278,47 @@ class MetiersResolus:
     """Les métiers dont la fenêtre est ouverte ce mois-ci. Sert au diagnostic."""
 
 
+def metier_depuis_industry(industry: str | None) -> str | None:
+    """Le métier que nomme le secteur de sourcing, ou None.
+
+    🔴 LE REPLI QUE LA SPEC PRÉVOYAIT ET QUI MANQUAIT. La spec du 2026-08-27
+    décrit `metier_source` comme « services_offered · industry (repli) ·
+    inconnu ». Le repli n'avait jamais été écrit : le champ `source` ne
+    connaissait que `services_offered` et `inconnu`.
+
+    Ce que ça coûtait : « Niwa Paysagiste », sourcée sur le mot-clé
+    `paysagiste`, dont la fiche ne contient aucun libellé où la racine
+    `paysag` apparaît. Sa seule reconnaissance était « pavage » — un métier
+    sans saison. Avec la règle « un métier 12 mois sur 12 n'enclenche pas la
+    séquence », elle ne serait JAMAIS contactée, alors qu'on sait qu'elle est
+    paysagiste : c'est le mot-clé qui l'a fait entrer dans la liste.
+
+    Le secteur est une donnée de sourcing, pas une déduction : il vient du
+    mot-clé Google Places qui a trouvé l'entreprise. On lui applique les mêmes
+    racines qu'aux services.
+    """
+    if not industry or not isinstance(industry, str):
+        return None
+    plat = _sans_accents(industry)
+    for metier, motifs in _RACINES_RE.items():
+        if any(m.search(plat) for m in motifs):
+            return metier
+    return None
+
+
 def resoudre_metiers(
-    services_offered: list[str] | None, aujourdhui: date
+    services_offered: list[str] | None,
+    aujourdhui: date,
+    industry: str | None = None,
 ) -> MetiersResolus:
     """Apparie les libellés, choisit la scène, ordonne le reste.
 
     Déterministe et rejouable : deux appels avec les mêmes entrées rendent le
     même résultat, ce qu'un classement par LLM ne garantit pas.
+
+    `industry` est un REPLI, jamais une source principale : il n'est consulté
+    que si les services ne donnent aucun métier À SAISON. Voir
+    `metier_depuis_industry`.
     """
     libelles = [s for s in (services_offered or []) if isinstance(s, str) and s.strip()]
 
@@ -347,6 +381,38 @@ def resoudre_metiers(
         sorted(compte, key=lambda m: (-compte[m], ordre_apparition[m]))
     )
     dominant = metiers[0]
+    source = "services_offered"
+
+    # 🔴 LE REPLI SUR `industry` EXISTE MAIS N'EST PAS BRANCHÉ — décision
+    # William du 2026-09-02. NE PAS LE REBRANCHER SANS LUI DEMANDER.
+    #
+    # ⚠️ La spec du 2026-08-27 le prévoit pourtant : elle décrit `metier_source`
+    # comme « services_offered · industry (repli) · inconnu ». Il a été écrit le
+    # 2026-09-02, mesuré, puis débranché le jour même. Sans cette note, la
+    # prochaine session le rebranchera en croyant réparer un oubli.
+    #
+    # CE QU'IL FAISAIT : « Niwa Paysagiste », sourcée sur le mot-clé
+    # `paysagiste`, n'a aucun libellé où la racine `paysag` apparaît — sa seule
+    # reconnaissance est « pavage ». Le repli lui rendait `paysagement` depuis
+    # son secteur, et elle devenait joignable en janvier.
+    #
+    # POURQUOI WILLIAM L'A REFUSÉ : « les compagnies comme Niwa Paysagiste qui
+    # n'ont de reconnu qu'un métier sans réel lien, et qui est 12 mois sur 12,
+    # on doit faire en sorte qu'elles ne soient pas contactées. »
+    #
+    # Le raisonnement tient : si la seule chose qu'on reconnaît d'un paysagiste
+    # est « pavage », notre donnée sur lui est MAUVAISE. Lui écrire sur la foi
+    # du mot-clé de sourcing, c'est deviner son métier — et le courriel entier
+    # repose sur le fait qu'on parle de ce qu'il fait vraiment.
+    #
+    # ⚠️ Ce n'est PAS le même cas que « aucun métier reconnu », qui reste
+    # joignable toute l'année (défaut inversé, garde-fou nº2). Là on n'a rien
+    # et on le sait ; ici on a quelque chose et c'est faux. Une reconnaissance
+    # fausse est pire qu'une absence de reconnaissance, parce qu'elle a l'air
+    # d'une information.
+    #
+    # LA VRAIE CORRECTION pour ces fiches est en amont : que WF-3 extraie mieux
+    # leurs services. 3 fiches sont dans ce cas au 2026-09-02.
 
     mois = aujourdhui.month
     ouverts = tuple(m for m in metiers if mois in fenetre_mois(m))
@@ -358,10 +424,37 @@ def resoudre_metiers(
     # joignable en décembre UNIQUEMENT grâce au déneigement, et la règle sans
     # clause lui parlait de lavage de vitres, parce que la prochaine saison de
     # vitres (1er avril) arrive avant la prochaine saison de neige (15 novembre).
+    # 🔴 SEUL UN MÉTIER À SAISON DÉCLARÉE PEUT FOURNIR LA SCÈNE — 2026-09-02.
+    #
+    # Un métier absent de `SAISONS` a une fenêtre ouverte TOUS LES MOIS (garde-fou
+    # nº2, on inclut dans le doute). Il gagnait donc la scène chaque fois que le
+    # métier dominant était hors saison — et il la gagnait avec zéro jour avant
+    # « sa prochaine saison », puisqu'il n'en a pas.
+    #
+    # Trouvé par le juge au deuxième passage réel : il a refusé le courriel
+    # d'« Amaranthe Jardins - Paysagiste » parce que « l'angle d'ouverture sur le
+    # pavage est décalé par rapport au profil réel (paysagiste écoresponsable de
+    # jardins de ville) ». En septembre le paysagement est hors fenêtre, et le
+    # pavage — qui n'a pas de saison — prenait l'ouverture.
+    #
+    # Mesuré sur les 403 fiches : **90, soit 22 %**, avaient pour scène un métier
+    # sans saison, et souvent contre leur métier dominant — on écrivait à
+    # « Candide Villeneuve Paysagiste » au sujet de l'EXCAVATION.
+    #
+    # La règle qui manquait : la scène est un CROCHET SAISONNIER (« la saison
+    # approche », « pour le reste de l'année »). Un métier sans saison n'en
+    # fournit aucun ; il n'est pas « toujours de saison », il est simplement
+    # hors du raisonnement. Il reste dans `autres` et se fait nommer au 2ᵉ temps.
+    #
+    # Quand aucun métier saisonnier n'est ouvert, `scene` reste None et
+    # l'appelant retombe sur le dominant en signalant « hors fenêtre » — le
+    # chemin qui existait déjà, et le bon : on parle de son vrai métier.
+    ouverts_saisonniers = tuple(m for m in ouverts if m in SAISONS)
+
     scene = None
-    if ouverts:
+    if ouverts_saisonniers:
         scene = min(
-            ouverts,
+            ouverts_saisonniers,
             key=lambda m: (_jours_avant_prochaine_saison(m, aujourdhui), metiers.index(m)),
         )
 
@@ -380,6 +473,6 @@ def resoudre_metiers(
         joignable=bool(ouverts),
         deuxieme_temps_obligatoire=len(metiers) > 1,
         scene_est_minoritaire=bool(scene) and part_scene <= SEUIL_METIER_MINORITAIRE,
-        source="services_offered",
+        source=source,
         fenetre_ouverte=ouverts,
     )
