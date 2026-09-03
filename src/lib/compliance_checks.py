@@ -433,7 +433,29 @@ def mentions_manquantes_dans_la_config(
     if not desabo:
         manquants.append("UNSUBSCRIBE_URL: env var manquante")
     elif desabo.lower() not in texte and "stop" not in texte:
-        manquants.append("INSTANTLY_CAMPAIGN_FOOTER ne porte pas le lien de désabonnement")
+        # 🔧 Le message DIT ce qu'il cherchait et ce qu'il a vu — 2026-09-02.
+        #
+        # L'ancienne version se contentait de « ne porte pas le lien de
+        # désabonnement ». Vrai, mais inexploitable : deux causes très
+        # différentes produisent ce message au mot près, et rien ne permet de
+        # les distinguer depuis l'extérieur.
+        #   · Railway n'a gardé que la PREMIÈRE LIGNE d'une valeur multi-lignes
+        #     (le nom légal passe, le lien a disparu avec le reste) ;
+        #   · UNSUBSCRIBE_URL porte une barre oblique finale, donc n'est plus
+        #     une sous-chaîne du pied de page.
+        # Observé pour de vrai le 2026-09-02 : la garde a bloqué le premier
+        # passage réel du pipeline, et il a fallu tester les deux hypothèses en
+        # local pour deviner laquelle.
+        #
+        # Ni l'URL ni le pied de page ne sont des secrets — c'est de la
+        # signature publique, lue par 363 prospects.
+        apercu = texte[:80] + ("…" if len(texte) > 80 else "")
+        manquants.append(
+            f"INSTANTLY_CAMPAIGN_FOOTER ne porte pas le lien de désabonnement. "
+            f"Cherché : {desabo!r} (valeur de UNSUBSCRIBE_URL, comparée telle "
+            f"quelle — une barre oblique finale suffit à la faire échouer). "
+            f"Pied de page vu, {len(texte)} caractères : {apercu!r}"
+        )
 
     return manquants
 
