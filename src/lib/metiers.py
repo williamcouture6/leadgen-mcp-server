@@ -150,6 +150,25 @@ SAISONS: dict[str, tuple[int, int]] = {
     "tonte": (5, 1),              # ⚠️ aucune source
     "lavage de vitres": (4, 1),   # 2 opérateurs QC vérifiés mot pour mot
     "extermination": (4, 1),      # ⚠️ source faible (données de Montréal sur les punaises)
+    # 🔧 Ajoutée le 2026-09-02, décision William. C'était le seul des cinq
+    # métiers sans date qui en méritait vraiment une : « je crois que piscine
+    # n'est pas 12 mois sur 12 ».
+    #
+    # La raison est TECHNIQUE et pas météo, ce qui la rend datable : dès que
+    # l'eau atteint 12 °C, les algues prolifèrent. Ouvrir tard, c'est ouvrir
+    # une piscine verte. Les guides québécois (CAA-Québec, MétéoMédia,
+    # pisciniers de la Rive-Nord) recommandent d'ouvrir AVANT le 1er mai,
+    # parfois dès la mi-avril selon la région. Le 1er mai est la borne que les
+    # sources nomment explicitement ; l'écart de deux semaines avec la mi-avril
+    # ne déplace que les bordures de février et de juillet, et ne change ni qui
+    # est joignable en janvier, ni en septembre.
+    #
+    # ⚠️ CE QUE CETTE LIGNE CHANGE, et ce n'est pas cosmétique : `piscine`
+    # devient un métier capable d'OUVRIR un courriel. Sans saison, elle tombait
+    # sous la règle « un métier 12 mois sur 12 n'enclenche pas la séquence », et
+    # les fiches qui ne l'ont qu'en secondaire n'étaient joignables que par un
+    # autre de leurs métiers.
+    "piscine": (5, 1),            # avant que l'eau atteigne 12 °C — les algues partent
 }
 
 # La fenêtre s'ouvre 3 mois avant le début de la saison et se ferme 2 mois après.

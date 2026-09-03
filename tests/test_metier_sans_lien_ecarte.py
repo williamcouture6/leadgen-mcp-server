@@ -126,17 +126,38 @@ def test_le_repli_sur_industry_reste_debranche() -> None:
 def test_la_regle_porte_sur_SAISONS_pas_sur_une_liste_figee() -> None:
     """Le jour où un métier reçoit une date, il devient capable d'ouvrir.
 
-    C'est ce qui doit arriver à la piscine. Si la règle était écrite avec une
-    liste de métiers interdits en dur, ajouter une saison ne suffirait pas — il
-    faudrait penser à retirer le métier de la liste, et personne ne le ferait.
+    C'est ce qui est arrivé à la piscine le 2026-09-02 : `SAISONS["piscine"] =
+    (5, 1)`, sa fenêtre devient février → juillet, et un piscinier pur devient
+    joignable pendant cette fenêtre — sans qu'une seule autre ligne de code
+    change. Si la règle avait été écrite avec une liste de métiers interdits en
+    dur, il aurait fallu penser à l'en retirer, et personne ne l'aurait fait.
+
+    🔧 Ce test a ÉCHOUÉ le jour où la date a été posée, et il avait raison : il
+    affirmait « dans SAISONS ⇒ joignable en janvier ». C'est faux — janvier est
+    HORS de la fenêtre février-juillet. La bonne formulation ne teste pas un
+    mois arbitraire, elle teste la fenêtre elle-même.
     """
     piscinier = {
         "name": "Piscines Untel",
         "industry": "entretien de piscine",
         "research_json": {"services_offered": ["Ouverture et fermeture de piscine"]},
     }
-    joignable = fenetre_saisonniere_ouverte(piscinier, track="agence-ia", aujourdhui=JANVIER)
-    assert joignable is ("piscine" in SAISONS), (
-        "la joignabilité d'un piscinier doit suivre la présence de `piscine` "
-        "dans SAISONS, sans autre changement de code"
-    )
+    assert "piscine" in SAISONS, "la piscine a perdu sa date"
+
+    avril = datetime.date(2027, 4, 10)      # dans la fenêtre
+    septembre = datetime.date(2026, 9, 10)  # hors fenêtre
+    assert fenetre_saisonniere_ouverte(piscinier, track="agence-ia", aujourdhui=avril)
+    assert not fenetre_saisonniere_ouverte(piscinier, track="agence-ia", aujourdhui=septembre)
+
+
+def test_la_fenetre_de_la_piscine_encadre_l_ouverture() -> None:
+    """Février à juillet — 3 mois avant le 1er mai, 2 après.
+
+    La date vient d'un fait technique, pas de la météo : l'eau qui atteint
+    12 °C laisse partir les algues, donc on ouvre AVANT. C'est ce qui la rend
+    documentable, comme le 15 novembre du déneigement.
+    """
+    from src.lib.metiers import fenetre_mois
+
+    assert SAISONS["piscine"] == (5, 1)
+    assert fenetre_mois("piscine") == frozenset({2, 3, 4, 5, 6, 7})
