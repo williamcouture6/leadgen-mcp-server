@@ -2327,7 +2327,8 @@ async def _alerter_famine_wf4(
             f"contact(s) à approcher (track {track}).",
             "Un lot vide sur une file qui ne l'est PAS est une panne, pas une "
             "fin de liste.",
-            f"Piste connue : la sélection sur-lit les {limite * 5} plus vieux "
+            f"Piste connue : la sélection sur-lit les "
+            f"{limite * db_tools.FACTEUR_SURRECOLTE} plus vieux "
             "contacts, et si tous ont déjà un draft le lot revient vide alors "
             "que la file est pleine (famine WF-4, correctif à part).",
         ]

@@ -144,6 +144,28 @@ _CATALOGS: dict[str, dict[str, list[str]]] = {
 
 COOLDOWN_DAYS = 30
 
+# 🔴 Combien de contacts la sélection WF-4 LIT pour en garder `limit`.
+#
+# Exporté parce qu'il est cité ailleurs : `_alerter_famine_wf4` explique la
+# famine en nommant ce chiffre. Il valait 5 dans le code et 5 dans le message ;
+# le code est passé à 12 le 2026-09-02 avec le filtre saisonnier, le message
+# est resté à 5 — l'alerte diagnostiquait donc avec un chiffre faux, et c'est
+# le conseil qui l'a vu. Une constante partagée les empêche de diverger.
+#
+# Porté de 5 à 12 avec le filtre saisonnier, qui écarte plus de la moitié des
+# fiches en septembre. À 5, un lot de 20 lisait 100 contacts, en gardait ~45
+# après la saison, puis perdait encore au dédoublonnage par entreprise.
+#
+# ⚠️ DIMENSIONNÉ SUR `limit=20`. Les deux crons n8n postent `limit: 10`, donc
+# la fenêtre réelle vaut 120 contacts, pas 240. Le conseil du 2026-09-02 a
+# mesuré qu'à 120, 39 des 125 déneigeurs joignables en septembre ont plus de
+# 120 contacts hors saison DEVANT eux dans l'ordre `created_at.asc` : ils ne
+# sont lus aucune fois d'août à décembre. Monter le facteur ne fait que
+# déplacer le seuil — le correctif réel est de faire TOURNER la file
+# (horodater les contacts lus et écartés, trier « jamais tenté d'abord »).
+# Question posée à William le 2026-09-02, en attente de sa réponse.
+FACTEUR_SURRECOLTE = 12
+
 
 def _all_targets(track: str = "OPT") -> list[tuple[str, str, str]]:
     """Liste complète (city, sector, icp_segment) du catalogue du `track`, par priorité."""
@@ -661,9 +683,19 @@ def fenetre_saisonniere_ouverte(
     # `resolus.metiers` et se font nommer au 2ᵉ temps du courriel (« tu fais
     # aussi du pavage »). Ils ne peuvent simplement pas OUVRIR.
     #
-    # Une entreprise dont TOUS les métiers sont sans saison passe par le repli
-    # `industry` de `resoudre_metiers` — sinon elle ne serait jamais contactée.
-    # Mesuré : 3 fiches dans ce cas, toutes des paysagistes mal reconnus.
+    # 🔴 Une entreprise dont TOUS les métiers sont sans saison est ÉCARTÉE, et
+    # elle ne sera JAMAIS contactée tant que sa fiche ne dit pas mieux.
+    #
+    # ⚠️ Un repli sur `industry` existe (`metiers.metier_depuis_industry`) et
+    # la rendrait joignable en lui rendant son métier depuis son mot-clé de
+    # sourcing. Il est DÉBRANCHÉ, décision William du 2026-09-02 : si la seule
+    # chose qu'on reconnaît d'un paysagiste est « pavage », la donnée est
+    # mauvaise, et on ne devine pas. La correction est en amont, dans WF-3.
+    #
+    # ⚠️ Ce commentaire affirmait l'inverse jusqu'au conseil du 2026-09-02 — il
+    # disait que le repli s'appliquait. Une session future l'aurait lu devant
+    # une fiche écartée, aurait conclu à un bogue, et aurait « réparé » en
+    # rebranchant le repli, c'est-à-dire en annulant la décision.
     return any(m in SAISONS for m in resolus.fenetre_ouverte)
 
 
@@ -702,13 +734,9 @@ async def list_contacts_to_personalize(
             "track": f"eq.{track}",  # filtre track au niveau DB (sinon les contacts d'un
             # track minoritaire sont noyés par l'over-fetch oldest-first)
             "order": "created_at.asc",
-            # 🔧 Sur-récolte portée de 5x à 12x le 2026-09-02, avec le filtre
-            # saisonnier. Il écarte 209 fiches sur 403 en septembre : à 5x, un
-            # lot de 20 lisait 100 contacts, en gardait ~38 après la saison,
-            # puis perdait encore sur le dédup par entreprise. La famine
-            # aurait été SILENCIEUSE — `_alerter_famine_wf4` ne se déclenche
-            # que sur 0 draft, pas sur « moins que demandé ».
-            "limit": str(limit * 12),
+            # Voir `FACTEUR_SURRECOLTE` : le chiffre et son raisonnement y
+            # vivent, pour ne pas diverger du message de l'alerte de famine.
+            "limit": str(limit * FACTEUR_SURRECOLTE),
         },
     )
     if not contacts:

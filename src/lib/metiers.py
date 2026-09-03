@@ -119,6 +119,31 @@ EXCLUSIONS: dict[str, tuple[str, ...]] = {
         "abri de piscine",
         "abris de piscine",
         "enrochement de piscine",
+        # 🔧 Ajoutées le 2026-09-02 par le conseil de revue. Elles visent le
+        # CONTOUR, pas la piscine.
+        #
+        # Le cas réel : « Le Gars Des Vitres » (industry `lavage de vitres`) a
+        # six libellés de lavage plus « Lavage à pression (patios, entrées,
+        # façades, CONTOURS DE PISCINE) ». Il résolvait `piscine`, et en avril
+        # la piscine GAGNAIT la scène — sa saison du 1er mai est plus proche
+        # que la prochaine saison de vitres, celle du 1er avril venant de
+        # passer. Un laveur de vitres recevait donc un courriel sur la saison
+        # des piscines, en pleine saison de vitres. En juillet, pire : il
+        # n'était joignable QUE grâce au faux positif.
+        #
+        # ⚠️ CE DÉFAUT EST INVISIBLE EN SEPTEMBRE, où seul le déneigement est
+        # ouvert. Il ne se serait montré qu'au printemps, sur un lot réel. Le
+        # conseil l'a trouvé en rejouant la résolution à d'autres dates que
+        # celle du jour — c'est la leçon à retenir : une règle saisonnière ne
+        # se teste pas au mois courant.
+        #
+        # « tour de piscine » est un sous-motif de « contour » ET de
+        # « pourtour » : ces cinq entrées couvrent toute la famille.
+        "tour de piscine",
+        "tours de piscine",
+        "deck de piscine",
+        "decks de piscine",
+        "amenagement avec piscine",
     ),
 }
 
@@ -335,9 +360,11 @@ def resoudre_metiers(
     Déterministe et rejouable : deux appels avec les mêmes entrées rendent le
     même résultat, ce qu'un classement par LLM ne garantit pas.
 
-    `industry` est un REPLI, jamais une source principale : il n'est consulté
-    que si les services ne donnent aucun métier À SAISON. Voir
-    `metier_depuis_industry`.
+    ⚠️ `industry` est ACCEPTÉ MAIS IGNORÉ. Le repli existe
+    (`metier_depuis_industry`) et n'est appelé par personne — décision William
+    du 2026-09-02. Le paramètre reste dans la signature pour que le
+    débranchement soit vérifiable par un test plutôt que constaté par une
+    absence. Voir le bloc de commentaires avant le calcul des fenêtres.
     """
     libelles = [s for s in (services_offered or []) if isinstance(s, str) and s.strip()]
 
