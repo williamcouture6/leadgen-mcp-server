@@ -23,17 +23,22 @@ reçoives mot pour mot ce que reçoit un contracteur.
 transiter par une conversation. Récupère-la depuis Railway, pose-la dans ton
 environnement le temps du test, et lance le script toi-même.
 
-🔴 LE DANGER QU'IL VÉRIFIE AVANT TOUT, ET QUI EST LA VRAIE RAISON DE CE FICHIER.
+CE QU'IL VÉRIFIE AVANT D'ÉCRIRE.
 
-Un lead ne part que si la campagne est LANCÉE. Or 29 leads ont été poussés vers
-cette campagne le 1er juin 2026 et n'ont jamais reçu de courriel — la campagne
-était éteinte. Si tu la lances pour te tester, **ils partent aussi**, avec
-l'ANCIENNE copie d'avant le pivot du 20 août, sans les relances, et sur des
-contacts que la base croit `failed`.
+Un lead ne part que si la campagne est LANCÉE, donc tout lead déjà présent
+partirait en même temps que le tien. Le script les COMPTE, les NOMME, et refuse
+d'écrire s'il en trouve d'autres que toi (`--je-sais-ce-que-je-fais` passe
+outre).
 
-Le script COMPTE donc les leads déjà présents et REFUSE d'écrire s'il en trouve
-d'autres que toi. Tu peux passer outre avec `--je-sais-ce-que-je-fais`, mais il
-te dira combien tu risques de réveiller.
+✅ Au 2026-09-02, William a retiré du workspace Instantly les leads poussés en
+juin : la campagne n'en porte plus. Le compte devrait donc être à zéro. La
+vérification reste parce qu'elle MESURE au lieu de supposer — c'est ce qui
+permet d'arrêter de répéter l'avertissement.
+
+⚠️ À ne pas confondre avec la BASE : `messages` garde 76 lignes `failed` de
+juin, et leurs contacts ne seront jamais re-rédigés (la fenêtre WF-4 saute tout
+contact qui porte déjà un message). La liste atteignable est donc de 287 sur
+363. C'est un fait sur la base, pas un risque côté Instantly.
 """
 from __future__ import annotations
 
@@ -115,7 +120,8 @@ def main() -> int:
         print(f"⚠️ {len(etapes)} étapes seulement. Les relances sans étape n'arrivent "
               "nulle part : tu ne recevrais pas le fil complet.")
 
-    # 🔴 La garde qui justifie ce script.
+    # On MESURE au lieu de supposer. C'est ce qui permet d'arrêter de répéter
+    # l'avertissement d'une conversation à l'autre : le chiffre est lu, pas cru.
     st, leads = api("POST", "/leads/list", {"campaign": CAMPAGNE, "limit": 100})
     liste = leads.get("items", leads.get("data", [])) if isinstance(leads, dict) else []
     autres = [l for l in liste if (l.get("email") or "").lower() != mon_adresse.lower()]
@@ -123,12 +129,12 @@ def main() -> int:
     print(f"leads déjà dans la campagne : {len(liste)}  · autres que toi : {len(autres)}")
     if autres:
         print("   ⚠️ CES LEADS PARTENT AUSSI si tu lances la campagne pour te tester.")
-        print("   Ils portent l'ANCIENNE copie (d'avant le pivot du 2026-08-20), sans")
-        print("   relances. Exemples :")
         for l in autres[:5]:
             print(f"      · {l.get('email')}")
         if len(autres) > 5:
             print(f"      … et {len(autres) - 5} autres")
+    else:
+        print("   ✅ campagne vide — rien d'autre que toi ne partira.")
 
     if not mon_adresse:
         print()
