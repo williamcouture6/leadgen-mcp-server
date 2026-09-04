@@ -1,5 +1,20 @@
 """Tool `db` — accès Supabase pour le pipeline.
 
+🔴 CONVENTION D'ÉCRITURE — décision William du 2026-09-04.
+
+**Tout chiffre mesuré écrit dans un commentaire porte SA DATE.** « 8 entreprises
+concernées » se lit comme l'état du jour et devient faux sans bruit ; « 8 au
+2026-09-02 » se lit comme ce qu'il est — une mesure passée qui a justifié une
+décision, et qui reste vraie pour toujours.
+
+Le déclencheur : trois jeux de chiffres se contredisaient déjà dans ce fichier,
+et l'ajout d'une seule date de saison a fait passer « 3 fiches » à 2 en une
+heure. La règle qui suit :
+
+  · un chiffre qui JUSTIFIE une décision → on le garde, daté ;
+  · un chiffre qui décrit l'ÉTAT COURANT → il n'a rien à faire ici. Il va dans
+    le résumé quotidien, qui le recalcule.
+
 Phase 1 (sourcing) :
 - next_sourcing_target : trouve le prochain (city, sector) à scraper (cooldown 30j)
 - start_sourcing_run : crée une trace de pass (status=running)
@@ -640,7 +655,8 @@ def fenetre_saisonniere_ouverte(
     d'AC1c (la vue, les colonnes dérivées, les index) : c'est le seul morceau
     dont le premier envoi a besoin.
 
-    Mesuré le jour où il est posé, sur 403 fiches : **154 joignables en
+    Mesuré le 2026-09-02, jour où il est posé, sur les 403 fiches d'alors :
+    **154 joignables en
     septembre**, contre 363 sans le filtre. Les 209 écartés sont surtout des
     paysagistes dont la saison s'est terminée cet été et dont la prochaine
     fenêtre ouvre le 15 janvier.
@@ -673,7 +689,8 @@ def fenetre_saisonniere_ouverte(
     # 12 mois sur 12, il ne peut pas enclencher la séquence de contact. Il peut
     # seulement être référencé plus loin dans le courriel. »
     #
-    # Ce que ça corrigeait, mesuré : 43 leads passaient le filtre sur `pavage`
+    # Ce que ça corrigeait, mesuré le 2026-09-02 : 43 leads passaient le
+    # filtre sur `pavage`
     # ou `excavation` alors que leur vraie saison — paysagement, lavage de
     # vitres — était fermée jusqu'en janvier. Le courriel leur disait « la
     # saison approche » quatre mois trop tôt. Vérifié : ce sont 28 paysagistes
@@ -837,7 +854,8 @@ MIN_AVIS_SANS_SITE = 3
 def site_ou_fiche_exploitable(company: dict[str, Any]) -> bool:
     """Une entreprise sans site est-elle démarchable ?
 
-    Les 97 entreprises sans `website` reçoivent la variante « je pourrais te
+    Les entreprises sans `website` (97 au 2026-08-30) reçoivent la variante
+    « je pourrais te
     créer un site ». Encore faut-il qu'on ait de quoi écrire : la garde exige
     une fiche Google exploitable (`google_place_id` renseigné et au moins
     quelques avis).
@@ -913,7 +931,8 @@ async def list_companies_to_research(
     # Deux portes vers le backlog : jamais researchée, OU researchée sans contact
     # il y a plus de 90 jours (un site peut publier une adresse entre-temps).
     # 90 jours : repasser tout le parc à chaque cron coûterait cher pour peu de
-    # rendement, ne jamais repasser figerait 145 entreprises pour toujours.
+    # rendement, ne jamais repasser figerait 145 entreprises pour toujours
+    # (mesuré le 2026-08-17).
     #
     # ⚠️ `research_json is null` vit DANS la porte 'sourced', jamais en filtre de
     # premier niveau : toute company 'researched_no_contact' a par construction un
@@ -934,7 +953,8 @@ async def list_companies_to_research(
         # (P4.10 / migration 0028, `last_send_attempt_at.asc.nullsfirst`), et pour la
         # même raison : en `created_at.asc` pur, les 145 'researched_no_contact' —
         # créées AVANT la plupart des 'sourced' — front-runneraient à chaque passe
-        # 225 entreprises jamais recherchées. Une file qui sert les échecs connus
+        # 225 entreprises jamais recherchées au 2026-08-17. Une file qui sert les
+        # échecs connus
         # avant les pistes neuves priorise le mauvais travail. `last_enriched_at`
         # joue ici le rôle de `last_send_attempt_at` : NULL = jamais recherchée.
         "order": "last_enriched_at.asc.nullsfirst,created_at.asc",
@@ -1056,7 +1076,8 @@ async def update_company_research(
     `status` passe à 'enriched' s'il y a au moins un contact, sinon à
     'researched_no_contact' (0001_initial_schema.sql définit 'enriched' = « contacts
     trouvés » ; le poser inconditionnellement faisait annoncer des contacts inexistants
-    à 145 entreprises). `last_enriched_at` est horodaté dans les deux cas : il porte la
+    à 145 entreprises au 2026-08-17). `last_enriched_at` est horodaté dans les deux
+    cas : il porte la
     ré-éligibilité à 90 jours de `list_companies_to_research`.
 
     Le filtre `status not.in.(disqualified,suppressed)` protège les boîtes terminales :

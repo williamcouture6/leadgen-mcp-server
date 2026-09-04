@@ -46,7 +46,8 @@ from datetime import date
 # « préfixe d'un mot », pas « n'importe où dans la chaîne ».
 RACINES: dict[str, tuple[str, ...]] = {
     "déneigement": ("deneig", "neige", "souffleuse", "deglac"),
-    # « plates-bandes » (23 fiches) et « murs de soutenement » (19) etaient des
+    # « plates-bandes » (23 fiches au 2026-08-30) et « murs de soutenement »
+    # (19, meme mesure) etaient des
     # trous mesures par la spec §3 et jamais bouches. « plate-bande » au
     # SINGULIER apparait dans 0 fiche : c'etait du code mort.
     # Murs de soutenement -> paysagement (decision William, 2026-08-30) :
@@ -57,7 +58,7 @@ RACINES: dict[str, tuple[str, ...]] = {
         "platebande", "haie", "soutenement",
     ),
     "tonte": ("tonte", "pelouse", "gazon", "tondre"),
-    # « pression » (34 fiches) -> lavage de vitres (decision William,
+    # « pression » (34 fiches au 2026-08-30) -> lavage de vitres (decision William,
     # 2026-08-30) : meme client, meme saison d'avril, meme equipement.
     "lavage de vitres": ("vitre", "fenetre", "pression"),
     "extermination": ("extermin", "parasitaire", "vermine", "punaise", "fourmi", "rongeur"),
@@ -66,7 +67,8 @@ RACINES: dict[str, tuple[str, ...]] = {
     "pavage": ("pavage", "asphalte", "pave uni", "paveuni"),
     # ⚠️ « creus » (et non « creusage ») appariait « piscine CREUSEE », le
     # terme standard au Quebec pour une piscine enterree. Mesure en base :
-    # 20 des 22 libelles contenant « creus » sont des piscines, 2 seulement
+    # 20 des 22 libelles contenant « creus » etaient des piscines au 2026-08-30,
+    # 2 seulement
     # de la vraie excavation. Meme famille de collision que
     # « amenagement »/« menage ». La racine est donc resserree sur le NOM DE
     # L'ACTE, pas sur l'adjectif.
@@ -91,13 +93,15 @@ RACINES: dict[str, tuple[str, ...]] = {
 #   « Plantations (arbres, arbustes, GAZON EN ROULEAU) »  → racine `gazon`
 #     Poser de la tourbe n'est pas tondre. Écrire « tu fais de la tonte aussi »
 #     à un paysagiste qui pose du gazon en plaques, il le voit tout de suite.
-#     8 entreprises concernées sur 403.
+#     8 entreprises sur 403, mesuré le 2026-09-02.
 #
 #   « Installation de CLÔTURES DE PISCINE »              → racine `piscine`
-#     Poser une clôture n'est pas entretenir une piscine. 5 entreprises.
+#     Poser une clôture n'est pas entretenir une piscine. 5 entreprises,
+#     mesuré le 2026-09-02.
 #
 # ⚠️ `terrassement` → excavation est CONSERVÉ malgré le signalement du juge :
-# 37 entreprises le portent, et « tu fais du terrassement aussi » dit à un
+# 37 entreprises le portaient au 2026-09-02, et « tu fais du terrassement
+# aussi » dit à un
 # paysagiste qui fait du nivellement est défendable — il fait vraiment ça. La
 # frontière retenue est : on retire ce qui est FAUX, pas ce qui est large.
 #
@@ -146,6 +150,58 @@ EXCLUSIONS: dict[str, tuple[str, ...]] = {
         "amenagement avec piscine",
     ),
 }
+
+# 🔴 Un métier qui EXIGE un signal pour avoir le droit d'OUVRIR un courriel.
+#
+# Décision William du 2026-09-04 : le métier `piscine`, c'est « surtout le
+# nettoyage / entretien de piscine ». Pas l'installation, pas la construction,
+# pas l'aménagement autour.
+#
+# ⚠️ CE N'EST PAS UNE EXCLUSION. Le métier reste RECONNU — il se fait nommer au
+# 2ᵉ temps (« tu fais aussi de la piscine »), et la garde `ECRASE["piscine"]`
+# qui empêche « piscine creusée » de devenir de l'excavation continue de
+# fonctionner. Ce que l'exigence retire, c'est seulement le droit d'ouvrir : la
+# scène, et la joignabilité qui en découle.
+#
+# Ça reprend une décision plus ancienne que le dictionnaire ignorait : le
+# catalogue de sourcing (migration 0026, 2026-08-05) avait retiré « installation
+# de piscine » et « piscines et spas » au motif que « l'offre vise l'ENTRETIEN
+# récurrent, pas l'installation one-shot ni le détaillant ». Le catalogue le
+# savait, la table des métiers ne le savait pas.
+#
+# MESURÉ AVANT LA RÈGLE le 2026-09-04, sur les 50 libellés qui mentionnaient
+# une piscine :
+#    6 parlent d'entretien — dont 3 chez le seul vrai piscinier de la liste
+#   11 d'installation, de construction ou de vente
+#   19 d'aménagement autour (contour, deck, pavé-uni, terrassement)
+#   14 d'autre chose (« Piscines » seul, rénovation, changement de toile)
+# Les exclusions posées plus haut n'attrapaient que la famille « contour ». Une
+# liste d'exclusions ne serait jamais complète — il en manquait encore quatre
+# familles, et il en apparaîtra d'autres à chaque nouvelle fiche.
+#
+# POURQUOI UNE EXIGENCE PLUTÔT QU'UNE LISTE QUI S'ALLONGE : on inverse la charge
+# de la preuve. Le mot « piscine » ne prouve rien à lui seul ; c'est le verbe
+# qui dit le métier. Un libellé qui parle d'entretien est retenu, tous les
+# autres sont ignorés — sans avoir à les énumérer.
+#
+# ⚠️ Ça ROGNE le garde-fou nº2 (« on inclut dans le doute »), et c'est assumé
+# ici parce que le doute penchait du mauvais côté : 44 libellés sur 50 étaient,
+# à cette date,
+# des faux positifs. La règle générale reste l'inclusion ; `piscine` est
+# l'exception, justifiée par la mesure.
+EXIGE: dict[str, tuple[str, ...]] = {
+    "piscine": (
+        "entretien",
+        "nettoyage",
+        "ouverture",
+        "fermeture",
+        "traitement",
+        "analyse",
+        "hebdomadaire",
+        "saisonnier",
+    ),
+}
+
 
 ECRASE: dict[str, tuple[str, ...]] = {
     "déneigement": ("toiture",),
@@ -373,6 +429,8 @@ def resoudre_metiers(
     # nº2 — on inclut dans le doute.
     compte: dict[str, int] = {}
     ordre_apparition: dict[str, int] = {}
+    # Les métiers de `EXIGE` dont au moins un libellé porte le signal.
+    exigence_satisfaite: set[str] = set()
     for rang, libelle in enumerate(libelles):
         plat = _sans_accents(libelle)
         apparies = {
@@ -387,6 +445,11 @@ def resoudre_metiers(
         for metier, phrases in EXCLUSIONS.items():
             if metier in apparies and any(p in plat for p in phrases):
                 apparies.discard(metier)
+        # Puis les EXIGENCES. 🔴 Elles n'écartent PAS le métier : elles notent
+        # si le signal a été vu au moins une fois. Voir `EXIGE`.
+        for metier, signaux in EXIGE.items():
+            if metier in apparies and any(sig in plat for sig in signaux):
+                exigence_satisfaite.add(metier)
         for gagnant, perdants in ECRASE.items():
             if gagnant in apparies:
                 apparies -= set(perdants)
@@ -461,7 +524,23 @@ def resoudre_metiers(
     # leurs services. 3 fiches sont dans ce cas au 2026-09-02.
 
     mois = aujourdhui.month
-    ouverts = tuple(m for m in metiers if mois in fenetre_mois(m))
+    # 🔴 L'EXIGENCE JOUE ICI, et nulle part ailleurs : un métier qui en a une
+    # et dont le signal n'a jamais été vu ne peut pas OUVRIR un courriel — donc
+    # ni fournir la scène, ni rendre l'entreprise joignable. Il reste dans
+    # `metiers` et se fait nommer au 2ᵉ temps.
+    #
+    # ⚠️ PREMIÈRE TENTATIVE, LE 2026-09-04 : l'exigence retirait le métier de
+    # la reconnaissance. Ça cassait `test_piscine_creusee_nest_PAS_de_lexcavation`,
+    # et pour une bonne raison — la garde qui empêche « piscine creusée » de
+    # devenir de l'excavation passe par `ECRASE["piscine"]`, qui a besoin que
+    # `piscine` soit RECONNUE. Retirer la reconnaissance retirait la garde avec.
+    # Le test préexistant a attrapé le mauvais placement ; la règle est la même,
+    # elle s'applique juste au bon endroit.
+    ouverts = tuple(
+        m for m in metiers
+        if mois in fenetre_mois(m)
+        and (m not in EXIGE or m in exigence_satisfaite)
+    )
 
     # La scène : parmi les métiers OUVERTS, celui dont la saison arrive le plus
     # tôt. 🔴 La clause « dont la fenêtre est ouverte » est ce qui fait tenir la
@@ -483,7 +562,8 @@ def resoudre_metiers(
     # jardins de ville) ». En septembre le paysagement est hors fenêtre, et le
     # pavage — qui n'a pas de saison — prenait l'ouverture.
     #
-    # Mesuré sur les 403 fiches : **90, soit 22 %**, avaient pour scène un métier
+    # Mesuré le 2026-09-02 sur les 403 fiches d'alors : **90, soit 22 %**,
+# avaient pour scène un métier
     # sans saison, et souvent contre leur métier dominant — on écrivait à
     # « Candide Villeneuve Paysagiste » au sujet de l'EXCAVATION.
     #
