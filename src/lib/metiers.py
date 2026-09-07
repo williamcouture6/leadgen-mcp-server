@@ -253,8 +253,90 @@ SAISONS: dict[str, tuple[int, int]] = {
 }
 
 # La fenêtre s'ouvre 3 mois avant le début de la saison et se ferme 2 mois après.
-MOIS_AVANT = 3
-MOIS_APRES = 2
+# 🔴 LA FENÊTRE EST PROPRE À CHAQUE MÉTIER — décision William du 2026-09-04.
+#
+# Elle était globale : 3 mois avant, 2 mois après. William a remis en question
+# le « 2 mois après » en lisant les mesures : « contacter du déneigement
+# jusqu'au 15 janvier, c'est tard non ? » Il avait raison, et deux fois.
+#
+# 1. LES DEUX MOIS D'APRÈS RENDAIENT L'ACCROCHE FAUSSE. Les gabarits C et D
+#    ouvrent sur « La saison approche ». Pendant les mois qui SUIVENT le début
+#    de la saison, elle n'approche pas — elle est commencée. Mesuré sur les six
+#    métiers : la phrase était fausse deux mois par métier, dont décembre et
+#    janvier pour le déneigement. Or janvier est le mois où 252 leads sur 260
+#    sont joignables : le plus gros de la campagne aurait porté une phrase
+#    fausse.
+#
+# 2. UN DÉNEIGEUR A SIGNÉ SES CONTRATS EN OCTOBRE. Le rejoindre en janvier,
+#    c'est arriver quand tout est décidé. William s'en souvenait d'ailleurs
+#    comme d'une règle à « 1 mois après » — son souvenir était meilleur que la
+#    spec du 2026-08-27, qui disait 2.
+#
+# ⚠️ CE QUI SUIT DÉCRIVAIT LE PREMIER RÉGLAGE, PAS CELUI QUI EST EN VIGUEUR.
+# Il est gardé parce qu'il raconte pourquoi la règle unique est morte ; les
+# valeurs vivantes sont dans `FENETRE_PAR_METIER`, plus bas, et elles seules
+# font foi. Le premier réglage disait « 4 mois avant les métiers de printemps,
+# 3 avant le déneigement, 1 mois après PARTOUT » — le « 1 mois après partout »
+# a été abandonné le jour même, parce qu'il tuait juillet.
+MOIS_AVANT_DEFAUT = 3
+MOIS_APRES_DEFAUT = 2
+
+# (mois avant, mois après) par métier. Un métier absent prend les défauts.
+#
+# 🔧 Deuxième réglage, le 2026-09-04 : la première version (4 avant / 1 après
+# partout sauf déneigement) a produit DEUX effets de bord qu'une paire de tests
+# écrits une semaine plus tôt a attrapés. Les valeurs ci-dessous les referment,
+# et les deux tests redeviennent la garde qu'ils étaient.
+#
+#   · JUILLET DEVENAIT UN MOIS MORT — 3 leads joignables. En fermant tout à
+#     1 mois après, la tonte et la piscine se fermaient en juin, et le
+#     déneigement n'ouvre qu'en août. `test_les_douze_mois_ont_quelqu_un` le
+#     disait dans son propre commentaire : « si ce test casse, une période de
+#     l'année devient morte ». Les 2 mois après rendus à la tonte et à la
+#     piscine rouvrent juillet.
+#
+#   · EN DÉCEMBRE, 83 DÉNEIGEURS SUR 153 PARLAIENT DE PAYSAGEMENT. Ouvrir le
+#     paysagement 4 mois avant le 15 avril le faisait démarrer le 15 décembre ;
+#     sa saison devenait alors plus PROCHE que la prochaine neige, à onze mois.
+#     On aurait parlé d'aménagement paysager à un déneigeur en pleine tempête.
+#     À 3 mois avant, la fenêtre s'ouvre le 15 janvier et décembre reste au
+#     déneigement.
+#
+# Le déneigement garde 1 mois après : sa saison démarre le 15 novembre et ses
+# contrats se signent en septembre-octobre. Le rejoindre en janvier, c'est
+# arriver quand tout est décidé — la remarque de William qui a lancé tout ce
+# réglage.
+# 🔴 CES SIX PAIRES SONT UNE DÉCISION DE WILLIAM, PAS UN RÉGLAGE TECHNIQUE.
+# Décidées le 2026-09-04, mot pour mot : « on commence à écrire 4 mois avant le
+# commencement du service et on arrête 1 mois après pour paysagement, tonte,
+# lavage de vitres, extermination et piscine ; pour déneigement, 3 mois avant et
+# 1 mois après », puis, dans le message suivant : « pour paysagement, tonte,
+# lavage de vitres, extermination et piscine on fait 2 mois après à la place de
+# 1 ; pour lavage de vitres, paysagement et extermination on commence 3 mois
+# avant à la place de 4 ». Ne pas les changer sans le lui demander.
+FENETRE_PAR_METIER: dict[str, tuple[int, int]] = {
+    "déneigement": (3, 1),
+    "paysagement": (3, 2),
+    "lavage de vitres": (3, 2),
+    "extermination": (3, 2),
+    # 4 mois avant : ce sont eux qui couvrent juillet, et leur saison démarre
+    # au 1er mai — un mois plus tard que le paysagement.
+    "tonte": (4, 2),
+    "piscine": (4, 2),
+}
+
+
+def _fenetre_du_metier(metier: str) -> tuple[int, int]:
+    """(mois avant, mois après) pour ce métier."""
+    return FENETRE_PAR_METIER.get(metier, (MOIS_AVANT_DEFAUT, MOIS_APRES_DEFAUT))
+
+
+# ⚠️ Conservées pour les lecteurs qui les cherchent : ce sont les valeurs PAR
+# DÉFAUT, plus la règle globale qu'elles étaient. Ne pas les utiliser dans un
+# calcul — passer par `_fenetre_du_metier`, sinon le déneigement se retrouve
+# avec la fenêtre des métiers de printemps.
+MOIS_AVANT = MOIS_AVANT_DEFAUT
+MOIS_APRES = MOIS_APRES_DEFAUT
 
 # Deux métiers sont « de la même saison » si leurs débuts de saison sont à moins
 # de 3 mois l'un de l'autre. Le seuil sépare proprement les cas réels : tonte
@@ -292,8 +374,9 @@ def fenetre_mois(metier: str) -> frozenset[int]:
     # Mois du jour d'ouverture, mois du jour de fermeture, et tout ce qu'il y a
     # entre les deux. Les bornes au demi-mois n'ont pas d'effet ici : le mois de
     # la borne est inclus dès qu'elle le touche.
-    ouverture = ((mois_debut - MOIS_AVANT - 1) % 12) + 1
-    longueur = MOIS_AVANT + MOIS_APRES + 1
+    avant, apres = _fenetre_du_metier(metier)
+    ouverture = ((mois_debut - avant - 1) % 12) + 1
+    longueur = avant + apres + 1
     return frozenset(((ouverture - 1 + i) % 12) + 1 for i in range(longueur))
 
 
@@ -312,6 +395,122 @@ def _jours_avant_prochaine_saison(metier: str, aujourdhui: date) -> int:
     if prochain < aujourdhui:
         prochain = date(aujourdhui.year + 1, mois, jour)
     return (prochain - aujourdhui).days
+
+
+def debut_de_saison(metier: str, aujourdhui: date) -> bool:
+    """Écrit-on à ce métier « c'est le début de la saison » ?
+
+    ⚠️ **CE N'EST PAS « la saison est-elle commencée »**, et le nom a été changé
+    pour ça le 2026-09-04. La question générale répondrait « oui » à un
+    déneigeur le 10 janvier — évidemment, il neige. Mais janvier est HORS de sa
+    fenêtre : on ne lui écrit pas, donc la question ne se pose jamais. La
+    fonction répond à la seule question qui a un consommateur : la phrase à
+    mettre dans l'ouvreur AUJOURD'HUI.
+
+    Vrai exactement pendant la marge `apres` de la fenêtre — les mois où
+    l'entreprise est encore joignable alors que sa saison roule déjà.
+
+    🔴 Ce n'est pas le contraire de `fenetre_mois`. La fenêtre reste ouverte
+    quelques mois APRÈS le début de la saison — c'est la marge décidée par
+    William pour ceux qui s'y prennent tard. Pendant ces mois-là, l'entreprise
+    est joignable ET sa saison roule déjà.
+
+    Ça compte parce que les gabarits C et D ouvrent sur « La saison approche ».
+    Mesuré le 2026-09-04 sur la file réelle de 325 contacts : dans les mois
+    concernés, la phrase aurait été fausse pour la **quasi-totalité du lot** —
+    275 contacts sur les 278 joignables en mai et en juin, 138 sur 141 en
+    décembre, 94 sur 97 en juillet. Un paysagiste qui tond depuis six semaines
+    lit « la saison approche » et sait, à la première ligne, que personne ne
+    l'a lu.
+
+    ⚠️ Ne pas réécrire ça en « 892 courriels par année » : c'était la première
+    formulation, et elle est FAUSSE. Elle additionnait douze photos mensuelles
+    de la même file, alors qu'un contact n'est écrit qu'une fois. Le fait
+    solide est la PROPORTION du lot d'un mois donné, pas un cumul annuel.
+
+    ⚠️ Aucun réglage de fenêtre ne répare ça : « 1 mois après » signifie, par
+    construction, un mois où la saison est commencée. C'est pour ça que la
+    correction vit dans la COPIE — deuxième formulation de l'ouvreur — et pas
+    dans les bornes.
+
+    Un métier sans saison documentée retourne False : on ne sait pas, donc on
+    n'affirme rien.
+    """
+    return moment_de_la_saison(metier, aujourdhui) == MOMENT_DEBUT
+
+
+# Les trois moments qu'un ouvreur peut avoir à décrire. 🔴 UN SEUL ÉTAT À LA
+# FOIS, jamais deux drapeaux booléens : deux drapeaux finissent toujours par se
+# contredire (« pas encore commencée » ET « bien entamée »), et c'est le genre
+# d'incohérence qui ne se voit qu'en production, un mois précis de l'année.
+MOMENT_A_VENIR = "a_venir"
+MOMENT_DEBUT = "debut"
+MOMENT_EN_COURS = "en_cours"
+
+# Combien de JOURS après le début la saison compte encore comme « son début ».
+#
+# Décision William du 2026-09-07 : « la 3e formule, on peut commencer à
+# l'envoyer 1 mois après le début de la saison ». Il a choisi d'ajouter une
+# TROISIÈME formulation plutôt que de laisser filer ou de raccourcir la fenêtre
+# — raccourcir aurait retué juillet, qui serait retombé à 3 leads joignables.
+# Ce qu'elle corrige : un tondeur écrit le 31 juillet tond depuis **91 jours**,
+# trois mois d'une saison qui en fait six, et lisait « c'est le début ».
+#
+# 🔴 EN JOURS, PAS EN MOIS, ET LA DIFFÉRENCE N'EST PAS COSMÉTIQUE. La fenêtre
+# raisonne en mois calendaires — c'est la bonne granularité pour décider QUI est
+# joignable, avec un arrondi volontairement généreux. Mais un déneigeur écrit le
+# 10 décembre compterait « 1 mois » (novembre → décembre) alors qu'il n'a que
+# **25 jours** de neige derrière lui : la phrase « c'est le début de la saison »
+# est encore parfaitement vraie chez lui. Compter en mois l'aurait basculé un
+# mois trop tôt sur les 138 déneigeurs de décembre — le plus gros lot de l'hiver.
+#
+# La règle en une phrase : la FENÊTRE se compte en mois, la PHRASE en jours.
+JOURS_ENCORE_LE_DEBUT = 30
+
+
+def moment_de_la_saison(metier: str, aujourdhui: date) -> str | None:
+    """Où en est la saison de ce métier, pour choisir la phrase de l'ouvreur.
+
+    Rend `MOMENT_A_VENIR`, `MOMENT_DEBUT`, `MOMENT_EN_COURS` — ou **None**
+    quand il n'y a aucune phrase à choisir : métier sans saison documentée, ou
+    mois hors de sa fenêtre (on ne lui écrit pas, la question ne se pose pas).
+
+    🔴 LA FENÊTRE A DEUX MOITIÉS, et c'est ce qui rend le calcul non trivial.
+    Elle s'ouvre `avant` mois AVANT le début et se ferme `apres` mois APRÈS. Un
+    déneigeur lu le 10 septembre est dans sa fenêtre alors que la neige du
+    15 novembre n'est pas tombée ; le même lu le 10 décembre y est aussi, la
+    neige ayant commencé. On situe donc le jour par rapport au **dernier début
+    passé**, puis on regarde s'il est dans la moitié d'avant ou celle d'après.
+
+    ⚠️ Une version précédente comparait à un nombre de JOURS fixe (200) et
+    disait « saison commencée » en mai pour le déneigement, en retrouvant la
+    neige de l'automne précédent. La borne juste est la fenêtre elle-même.
+    """
+    saison = SAISONS.get(metier)
+    if saison is None:
+        return None
+    if aujourdhui.month not in fenetre_mois(metier):
+        return None
+
+    mois, jour = saison
+    precedent = date(aujourdhui.year, mois, jour)
+    if precedent > aujourdhui:
+        # Le début de CETTE année est encore devant : le dernier début passé
+        # est celui de l'an dernier. Indispensable pour les saisons à cheval
+        # sur le jour de l'An, comme le déneigement du 15 novembre.
+        precedent = date(aujourdhui.year - 1, mois, jour)
+
+    mois_ecoules = (
+        (aujourdhui.year - precedent.year) * 12 + (aujourdhui.month - precedent.month)
+    )
+    _, apres = _fenetre_du_metier(metier)
+    if mois_ecoules > apres:
+        # Trop loin du dernier début pour être dans la moitié d'APRÈS : on est
+        # donc dans la moitié d'AVANT, celle qui précède le prochain début.
+        return MOMENT_A_VENIR
+    if (aujourdhui - precedent).days <= JOURS_ENCORE_LE_DEBUT:
+        return MOMENT_DEBUT
+    return MOMENT_EN_COURS
 
 
 def _meme_saison(metier_a: str, metier_b: str) -> bool:
@@ -376,6 +575,21 @@ class MetiersResolus:
 
     fenetre_ouverte: tuple[str, ...]
     """Les métiers dont la fenêtre est ouverte ce mois-ci. Sert au diagnostic."""
+
+    scene_moment_saison: str | None
+    """Où en est la saison de la SCÈNE — un des trois `MOMENT_*`, ou None.
+
+    C'est lui qui choisit l'ouvreur de C et D, et il y en a **trois** :
+      · `MOMENT_A_VENIR`  → « La saison approche »
+      · `MOMENT_DEBUT`    → « C'est le début de la saison »
+      · `MOMENT_EN_COURS` → la formulation de pleine saison
+
+    **None** = aucune date à affirmer : pas de scène, scène sans saison
+    documentée, ou mois hors fenêtre. Dans le doute on n'affirme rien.
+
+    🔴 C'est UN état, pas deux booléens. Deux drapeaux (« commencée »,
+    « bien entamée ») finiraient par se contredire un mois précis de l'année,
+    et l'incohérence ne se verrait qu'en production."""
 
 
 def metier_depuis_industry(industry: str | None) -> str | None:
@@ -482,6 +696,7 @@ def resoudre_metiers(
             metiers=(), dominant=None, scene=None, autres=(), meme_saison=True,
             joignable=True, deuxieme_temps_obligatoire=False,
             scene_est_minoritaire=False, source="inconnu", fenetre_ouverte=(),
+            scene_moment_saison=None,
         )
 
     # Décroissant par nombre de libellés ; à égalité, l'ordre d'apparition dans
@@ -601,4 +816,5 @@ def resoudre_metiers(
         scene_est_minoritaire=bool(scene) and part_scene <= SEUIL_METIER_MINORITAIRE,
         source=source,
         fenetre_ouverte=ouverts,
+        scene_moment_saison=moment_de_la_saison(scene, aujourdhui) if scene else None,
     )

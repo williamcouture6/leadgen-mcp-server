@@ -22,6 +22,7 @@ import os
 import re
 import time
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from pydantic import BaseModel
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ..lib.avis import bloc_faits_verifies
+from ..lib.metiers import resoudre_metiers
 from ..lib.relances import RELANCES
 from ..lib.compliance_checks import (
     CheckResult,
@@ -279,6 +281,17 @@ async def compliance_check(
             # qu'on retrouve en base, pas une périphrase.
             corps_a_juger.append((cle.replace("_", " "), texte, "RELANCE"))
 
+    # La saison de la scène est-elle déjà commencée AU MOMENT DE L'ENVOI ?
+    # C'est le même fait que celui qui a choisi l'ouvreur à la génération, donc
+    # on le recalcule ici plutôt que de le transporter : un brouillon écrit en
+    # avril et jugé en mai doit être jugé sur MAI. Le décalage est réel — la
+    # file attend parfois plusieurs jours entre WF-4 et WF-5.
+    _r = resoudre_metiers(
+        ((research_json or {}).get("services_offered")) or [],
+        date.today(),
+    )
+    moment_saison = _r.scene_moment_saison
+
     det_results: list[CheckResult] = []
     for etiquette, texte, gabarit in corps_a_juger:
         for r in run_all(
@@ -294,6 +307,10 @@ async def compliance_check(
             track=track,
             google_rating=google_rating,
             google_reviews_count=google_reviews_count,
+            # Ne vaut que pour le courriel de tri : les relances n'ouvrent pas
+            # sur la saison, et leur faire porter le reproche compterait trois
+            # fois le même écart.
+            moment_saison=moment_saison if etiquette == "courriel" else None,
         ):
             # L'étiquette voyage avec le résultat : « cta_present » tout court
             # ne dit pas LEQUEL des trois corps est en faute, et c'est la

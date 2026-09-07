@@ -723,7 +723,9 @@ def test_run_all_retourne_tous_les_checks() -> None:
     (tâche AC1a, garde-fou sur le paragraphe généré), puis 15 depuis
     `check_avis_conformes` (AC1b, garde-fou sur le chiffre d'avis).
     MAJ 2026-09-01 : 18 depuis `check_statistiques_conformes` (AC1b, garde-fou
-    sur les chiffres de marché de la relance 2)."""
+    sur les chiffres de marché de la relance 2).
+    MAJ 2026-09-04 : 19 depuis `check_saison_au_bon_temps` (AC1b·2, garde-fou
+    sur « la saison approche » écrit à une saison déjà commencée)."""
     results = cc.run_all(
         email_body="Bonjour,\nVotre clinique m'intéresse. 15 minutes ?\n\n—\nWilliam",
         social_proof_count=0,
@@ -731,13 +733,13 @@ def test_run_all_retourne_tous_les_checks() -> None:
         template="A",
         email_subject="Question rapide",
     )
-    # 18 checks : warmup + avis_conformes + statistiques_conformes
-    # + site_au_conditionnel + 6 body + 3 subject + length + cta_present
-    # + cta_slots_real + registre + tics_de_langage
-    assert len(results) == 18, f"attendu 18 checks, eu {len(results)}"
+    # 19 checks : warmup + avis_conformes + statistiques_conformes
+    # + saison_au_bon_temps + site_au_conditionnel + 6 body + 3 subject
+    # + length + cta_present + cta_slots_real + registre + tics_de_langage
+    assert len(results) == 19, f"attendu 19 checks, eu {len(results)}"
     names = [r.name for r in results]
     # Sanity: pas de doublon
-    assert len(set(names)) == 18
+    assert len(set(names)) == 19
 
 
 # 🔧 Renommé le 2026-09-01. S'appelait `test_run_all_retourne_17_checks` : un
@@ -748,6 +750,7 @@ CHECKS_ATTENDUS = {
     "warmup_window",
     "avis_conformes",
     "statistiques_conformes",
+    "saison_au_bon_temps",
     "site_au_conditionnel",
     "mise_en_scene",
     "banned_words",

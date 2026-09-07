@@ -26,7 +26,12 @@ from ..lib.avis import bloc_faits_verifies, nom_commercial
 from ..lib.lexique_metiers import lexique_pour
 from ..lib.gabarits import est_un_gabarit
 from ..lib.relances import CLES_RELANCES, CORPS_RELANCES
-from ..lib.metiers import resoudre_metiers
+from ..lib.metiers import (
+    MOMENT_A_VENIR,
+    MOMENT_DEBUT,
+    MOMENT_EN_COURS,
+    resoudre_metiers,
+)
 from . import research as research_tools
 
 # ----------------------------------------------------------------------
@@ -108,6 +113,37 @@ def bloc_metiers_resolus(
         ]
     else:
         lignes.append(f"- **Métier de la scène** (l'ouvreur) : {scene}")
+        # 🔴 L'OUVREUR DE C ET D AFFIRME UNE DATE, et une date peut être fausse.
+        # « La saison approche » lue par un paysagiste qui tond depuis six
+        # semaines dit, dès la première ligne, que personne ne l'a lu. Mesuré le
+        # 2026-09-04 sur les 325 contacts de la file : dans les mois concernés,
+        # la phrase aurait été fausse pour la quasi-totalité du lot — 275 sur
+        # 278 en mai, 138 sur 141 en décembre.
+        #
+        # ⚠️ TROIS ÉTATS, PAS DEUX. La deuxième version (« c'est le début de la
+        # saison ») partait jusqu'à 91 jours après le vrai début : un tondeur
+        # écrit le 31 juillet tond depuis trois mois. William a tranché le
+        # 2026-09-07 — une troisième formulation, qui démarre 1 mois après le
+        # début. `moment_de_la_saison` est la seule source de cet état.
+        if r.scene_moment_saison == MOMENT_DEBUT:
+            lignes.append(
+                "  🔴 **Sa saison VIENT DE COMMENCER** (moins d'un mois). "
+                "Emploie la 2ᵉ version de l'ouvreur de C et D — « C'est le "
+                "début de la saison » — et surtout PAS « La saison approche », "
+                "qui serait faux."
+            )
+        elif r.scene_moment_saison == MOMENT_EN_COURS:
+            lignes.append(
+                "  🔴 **Sa saison EST BIEN ENTAMÉE** (plus d'un mois). Emploie "
+                "la 3ᵉ version de l'ouvreur de C et D, celle de pleine saison. "
+                "Ni « La saison approche », ni « C'est le début de la saison » "
+                "— les deux seraient faux."
+            )
+        elif r.scene_moment_saison == MOMENT_A_VENIR:
+            lignes.append(
+                "  ✅ Sa saison n'est pas encore commencée : l'ouvreur normal "
+                "de C et D, « La saison approche », est exact."
+            )
         if hors_saison:
             lignes.append(
                 "  ⚠️ **Aucune de ses fenêtres saisonnières n'est ouverte ce mois-ci.** "
@@ -145,7 +181,11 @@ def bloc_metiers_resolus(
     if lex_scene.ou_il_est != lex_dominant.ou_il_est:
         lignes.append(
             "  ⚠️ Le lieu et les questions viennent de DEUX métiers différents, "
-            "et c'est voulu : l'ouvreur parle de sa saison qui s'en vient, le "
+            # « qui s'en vient » a été retiré le 2026-09-04 : en mai, cette
+            # note tombait juste sous la ligne « sa saison est DÉJÀ COMMENCÉE »
+            # et la contredisait. Deux consignes qui se contredisent, c'est la
+            # plus faible des deux qui gagne parfois.
+            "et c'est voulu : l'ouvreur parle de sa saison à lui, le "
             "bloc service parle de son métier de tous les jours."
         )
     if lex_dominant.est_repli:

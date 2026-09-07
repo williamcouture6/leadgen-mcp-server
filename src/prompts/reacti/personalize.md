@@ -139,6 +139,7 @@ Ne les « améliore » pas, ne les raccourcis pas, ne change pas une virgule.
 
 ## Les quatre premiers paragraphes — communs à C et à D
 
+**Version normale** — la saison de la scène n'est PAS encore commencée :
 ```
 Bonjour,
 
@@ -148,6 +149,72 @@ quelque chose qui pourrait t'intéresser.
 
 {ANCRE_CD}
 ```
+
+**Version « saison qui vient de commencer »** — l'entrée Métiers résolus dit
+« Sa saison VIENT DE COMMENCER ». Une seule proposition change ; le reste est
+identique au mot près :
+```
+Bonjour,
+
+J'ai vu que tu fais du {METIER} dans la région de {VILLE}. C'est le début
+de la saison, pis je me disais que je pourrais te contacter pour te parler
+de quelque chose qui pourrait t'intéresser.
+
+{ANCRE_CD}
+```
+
+**Version « saison bien entamée »** — l'entrée Métiers résolus dit « Sa saison
+EST BIEN ENTAMÉE ». Même règle : une seule proposition change.
+```
+Bonjour,
+
+J'ai vu que tu fais du {METIER} dans la région de {VILLE}. Je sais que t'es
+dans le gros de la saison, pis je me disais que je pourrais te contacter
+pour te parler de quelque chose qui pourrait t'intéresser.
+
+{ANCRE_CD}
+```
+
+🔴 **Cette troisième version est ADOPTÉE — décision William du 2026-09-07**,
+qui l'a lue à côté des deux autres et a répondu « on prend ta version ». Elle ne
+se retouche donc pas plus que les deux premières.
+
+Ce qu'elle fait, et pourquoi elle n'est pas qu'une rustine de véracité : un
+contracteur en pleine saison est précisément celui qui manque des appels. Lui
+dire qu'on sait qu'il est débordé amène l'offre sans avoir à la pousser — la
+contrainte de dire vrai a produit une meilleure accroche que la phrase neutre
+qu'elle remplace. Elle sert **275 courriels en juin et 94 en juillet**, soit le
+lot du printemps au complet.
+
+🔴 **« La saison approche » est une AFFIRMATION DE DATE, et elle est vérifiable
+par le lecteur.** Un paysagiste qui tond depuis six semaines la lit et sait, à
+la première ligne, que personne ne l'a lu. Mesuré le 2026-09-04 sur la file
+réelle de 325 contacts : dans les mois concernés, la phrase serait tombée à
+contretemps pour **presque tout le lot** — 275 contacts sur 278 en mai et en
+juin, 138 sur 141 en décembre, 94 sur 97 en juillet.
+
+⚠️ Ne cherche pas à corriger ça en écartant les entreprises dont la saison
+roule : la fenêtre reste ouverte quelques mois APRÈS le début, et c'est voulu
+(la marge pour ceux qui décident tard). C'est la PHRASE qui s'adapte, jamais la
+sélection.
+
+**Pourquoi TROIS versions et pas deux.** Il y a d'abord eu deux ouvreurs, et un
+conseil adversarial a mesuré ce qu'ils laissaient passer : « c'est le début de
+la saison » pouvait partir jusqu'à **91 jours** après le vrai début. Un tondeur
+écrit le 31 juillet tond depuis trois mois d'une saison qui en fait six — la
+phrase était devenue fausse à la queue de la fenêtre.
+
+William a tranché le 2026-09-07 : **la troisième version démarre 1 mois après le
+début de la saison.** Il a écarté les deux autres issues — laisser filer, ou
+raccourcir la fenêtre (ce dernier choix aurait retué juillet, qui serait retombé
+de 97 à 3 leads joignables).
+
+🔴 **Le découpage se compte en JOURS, pas en mois calendaires**, et ce n'est pas
+un détail : un déneigeur écrit le 10 décembre n'a que **25 jours** de neige
+derrière lui, alors que le calendrier dirait « un mois » (novembre → décembre).
+Compté en mois, il aurait basculé un mois trop tôt sur la troisième version —
+et décembre, c'est 138 des 141 joignables de l'hiver. La fenêtre se compte en
+mois, la phrase en jours.
 
 ## `{ANCRE_CD}` — deux versions, selon les Faits vérifiés
 

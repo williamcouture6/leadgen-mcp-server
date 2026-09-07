@@ -15,6 +15,8 @@ Lit les env vars suivantes :
 """
 from __future__ import annotations
 
+from .metiers import MOMENT_A_VENIR, MOMENT_DEBUT, MOMENT_EN_COURS
+
 import os
 import re
 from dataclasses import dataclass
@@ -879,6 +881,139 @@ def check_mise_en_scene(email_body: str) -> CheckResult:
     )
 
 
+# Les tournures de l'ouvreur de C et D qui affirment que la saison N'EST PAS
+# encore là. Volontairement courtes : c'est le verbe qui date la phrase.
+#
+# 🔴 CHAQUE ESPACE EST UN `\s+`, JAMAIS UNE ESPACE LITTÉRALE. Le corps généré est
+# formaté en colonnes, donc un retour de ligne tombe entre deux mots quelconques
+# — et c'est précisément ce qui arrive à cette phrase-là dans le gabarit :
+#
+#     J'ai vu que tu fais du déneigement dans la région de Laval. La saison
+#     approche, pis je me disais...
+#
+# Écrit avec une espace, le motif ne matchait RIEN sur un vrai courriel. Le
+# check aurait passé au vert tous les mois en ne regardant jamais rien. C'est un
+# test qui l'a trouvé, pas une relecture.
+# 🔴 UNE ENTRÉE PAR MOMENT DE SAISON, et la faute se DÉDUIT.
+#
+# Le gabarit porte trois ouvreurs (saison à venir / qui vient de commencer /
+# bien entamée) et c'est le modèle qui choisit. Un contrôle écrit à la main,
+# sens par sens, en oublie forcément un : la première version ne savait refuser
+# qu'une des deux erreurs d'alors, et un conseil adversarial a reproduit
+# l'autre — « c'est le début de la saison » écrit à un tondeur le 1er janvier,
+# dont la saison est à 120 jours, passait sans un mot.
+#
+# Ici, ce qui est INTERDIT à un moment donné est l'union des tournures des
+# DEUX AUTRES moments. Ajouter un quatrième état ne peut plus créer de trou :
+# la symétrie est calculée, pas recopiée.
+#
+# ⚠️ CHAQUE ESPACE EST UN MOTIF D'ESPACES, JAMAIS UNE ESPACE LITTÉRALE. Le corps
+# généré est formaté en colonnes, donc un retour de ligne tombe entre deux mots
+# quelconques — et c'est précisément ce qui arrive à ces phrases-là dans le
+# gabarit :
+#
+#     J'ai vu que tu fais du déneigement dans la région de Laval. La saison
+#     approche, pis je me disais...
+#
+# Écrit avec une espace, le motif ne matchait RIEN sur un vrai courriel et le
+# check passait au vert en ne regardant jamais rien. Trouvé par un test.
+TOURNURES_PAR_MOMENT: dict[str, dict[str, str]] = {
+    MOMENT_A_VENIR: {
+        r"la\s+saison\s+(?:qui\s+)?approche": "« la saison approche »",
+        r"la\s+saison\s+s'en\s+vient": "« la saison s'en vient »",
+        r"la\s+saison\s+(?:qui\s+)?arrive": "« la saison arrive »",
+        r"avant\s+(?:que\s+)?(?:la|ta)?\s*saison\s+(?:commence|part|démarre)":
+            "« avant que la saison commence »",
+    },
+    MOMENT_DEBUT: {
+        r"c'est\s+le\s+d[ée]but\s+de\s+la\s+saison": "« c'est le début de la saison »",
+        r"le\s+d[ée]but\s+de\s+(?:la|ta)\s+saison": "« le début de la saison »",
+        r"la\s+saison\s+(?:vient\s+de\s+commencer|commence\s+à\s+peine)":
+            "« la saison vient de commencer »",
+    },
+    MOMENT_EN_COURS: {
+        r"(?:t'es|tu\s+es)\s+en\s+(?:plein|pleine)\s+(?:dedans|saison)":
+            "« t'es en pleine saison »",
+        r"dans\s+le\s+gros\s+de\s+(?:la|ta)\s+saison": "« dans le gros de la saison »",
+        r"en\s+pleine\s+saison": "« en pleine saison »",
+        r"la\s+saison\s+est\s+(?:déjà\s+)?commenc[ée]e": "« la saison est commencée »",
+    },
+}
+
+# Ce que chaque moment INTERDIT : tout ce qui décrit les deux autres.
+TOURNURES_INTERDITES: dict[str, dict[str, str]] = {
+    moment: {
+        motif: libelle
+        for autre, tournures in TOURNURES_PAR_MOMENT.items()
+        if autre != moment
+        for motif, libelle in tournures.items()
+    }
+    for moment in TOURNURES_PAR_MOMENT
+}
+
+_FAUTE_PAR_MOMENT: dict[str, str] = {
+    MOMENT_A_VENIR: "disent commencée une saison À VENIR",
+    MOMENT_DEBUT: "situent mal une saison QUI VIENT DE COMMENCER",
+    MOMENT_EN_COURS: "font passer pour neuve une saison BIEN ENTAMÉE",
+}
+_RIEN_PAR_MOMENT: dict[str, str] = {
+    MOMENT_A_VENIR: "saison à venir, et l'ouvreur ne prétend pas l'inverse",
+    MOMENT_DEBUT: "saison qui vient de commencer, et l'ouvreur le dit bien",
+    MOMENT_EN_COURS: "saison bien entamée, et l'ouvreur ne la dit pas neuve",
+}
+
+
+def check_saison_au_bon_temps(
+    email_body: str, *, moment_saison: str | None = None
+) -> CheckResult:
+    """L'ouvreur de C et D situe-t-il la saison au bon moment ?
+
+    🔴 **Sévérité `info`, par la règle William du 2026-08-31** : seul ce que le
+    prospect peut vérifier ET qui l'induit en erreur sur un FAIT a le droit de
+    tuer un brouillon ; une maladresse de forme se compte au résumé du soir et
+    le courriel part. Bloquer ici brûlerait à vie les 138 déneigeurs joignables
+    en décembre — le brouillon refusé quitte le lot pour toujours.
+
+    Le gabarit porte TROIS ouvreurs, donc trois façons de se tromper. Ce qui est
+    refusé à un moment donné est l'union des tournures des deux autres, calculée
+    dans `TOURNURES_INTERDITES` : impossible d'oublier un sens.
+
+    Mesuré le 2026-09-04 sur la file réelle de 325 contacts : dans les mois
+    concernés, « la saison approche » aurait été fausse pour presque tout le
+    lot — 275 sur 278 en mai, 138 sur 141 en décembre.
+
+    ⚠️ `moment_saison=None` veut dire « aucune date à affirmer » — pas de scène,
+    scène sans saison documentée, ou mois hors fenêtre. Le check passe alors
+    sans rien dire : il ne reproche jamais une phrase qu'il ne peut pas dater.
+    """
+    if moment_saison not in TOURNURES_INTERDITES:
+        return CheckResult(
+            name="saison_au_bon_temps",
+            passed=True,
+            severity="info",
+            message="moment de la saison inconnu : rien à vérifier",
+            matches=[],
+        )
+    hits = _find_matches(
+        _body_without_signature(email_body), TOURNURES_INTERDITES[moment_saison]
+    )
+    return CheckResult(
+        name="saison_au_bon_temps",
+        passed=not hits,
+        severity="info",
+        # ⚠️ Le message suit le moment testé. Une version antérieure était figée
+        # sur un seul sens et pouvait dire l'inverse du corps qu'elle venait de
+        # lire — une note de conformité qui ment sur ce qu'elle a vu est pire
+        # qu'une note absente.
+        message=(
+            f"{len(hits)} tournure(s) {_FAUTE_PAR_MOMENT[moment_saison]}"
+            if hits
+            else _RIEN_PAR_MOMENT[moment_saison]
+        ),
+        matches=[f"'{snip}' → {label}" for snip, label in hits],
+    )
+
+
 def check_site_au_conditionnel(email_body: str) -> CheckResult:
     """Le site proposé reste-t-il AU CONDITIONNEL ?
 
@@ -1196,11 +1331,13 @@ def run_all(
     track: str | None = None,
     google_rating: float | None = None,
     google_reviews_count: int | None = None,
+    moment_saison: str | None = None,
 ) -> list[CheckResult]:
     return [
         check_warmup_window(),
         check_avis_conformes(email_body, google_rating, google_reviews_count, track),
         check_statistiques_conformes(email_body),
+        check_saison_au_bon_temps(email_body, moment_saison=moment_saison),
         check_site_au_conditionnel(email_body),
         check_mise_en_scene(email_body),
         check_banned_words(email_body),

@@ -151,13 +151,19 @@ def test_la_regle_porte_sur_SAISONS_pas_sur_une_liste_figee() -> None:
 
 
 def test_la_fenetre_de_la_piscine_encadre_l_ouverture() -> None:
-    """Février à juillet — 3 mois avant le 1er mai, 2 après.
+    """Janvier à juillet — 4 mois avant le 1er mai, 2 après.
 
-    La date vient d'un fait technique, pas de la météo : l'eau qui atteint
-    12 °C laisse partir les algues, donc on ouvre AVANT. C'est ce qui la rend
-    documentable, comme le 15 novembre du déneigement.
+    La date d'ouverture vient d'un fait technique, pas de la météo : l'eau qui
+    atteint 12 °C laisse partir les algues, donc on ouvre AVANT. C'est ce qui la
+    rend documentable, comme le 15 novembre du déneigement.
+
+    🔧 La fenêtre est passée de février→juillet à janvier→juillet le 2026-09-04
+    (décision William, 4 mois avant au lieu de 3). Le mois qui compte est le
+    dernier : **la piscine et la tonte sont les deux seules à couvrir juillet**.
+    Les ramener à 1 mois après avait rendu juillet mort — 3 leads joignables sur
+    260 — et `test_les_douze_mois_ont_quelqu_un` l'avait attrapé.
     """
     from src.lib.metiers import fenetre_mois
 
     assert SAISONS["piscine"] == (5, 1)
-    assert fenetre_mois("piscine") == frozenset({2, 3, 4, 5, 6, 7})
+    assert fenetre_mois("piscine") == frozenset({1, 2, 3, 4, 5, 6, 7})

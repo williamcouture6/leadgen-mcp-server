@@ -35,22 +35,73 @@ AMG_NEIGE = ["déneigement"]
 
 
 # ---------------- 1. Les fenêtres, telles que la spec les fixe ----------------
-# Arrondi généreux : un mois compte dès que la fenêtre le touche. La spec donne
-# les cinq ensembles explicitement — ce test les pinne pour qu'un changement de
-# la règle des 3/2 mois ne les déplace pas en silence.
+# Arrondi généreux : un mois compte dès que la fenêtre le touche.
+#
+# 🔧 RÉÉCRIT LE 2026-09-04. La spec du 27 août donnait UNE règle pour tout le
+# monde — 3 mois avant, 2 après — et ce test pinnait les cinq ensembles qu'elle
+# produisait. William a remplacé la règle unique par une fenêtre PAR MÉTIER
+# (`FENETRE_PAR_METIER`), donc trois des cinq ensembles ont bougé :
+#
+#   · déneigement  août→janv devient août→**déc**  (2 mois après → 1)
+#   · tonte        févr→juil devient **janv**→juil (3 mois avant → 4)
+#   · piscine      idem, et elle manquait ici alors qu'elle a une saison
+#
+# Les trois autres ne bougent pas : ils étaient déjà à 3 avant / 2 après.
+#
+# ⚠️ Ces ensembles sont maintenant DÉRIVÉS de deux nombres par métier, alors le
+# test suivant pinne aussi les nombres eux-mêmes. Sans ça, une paire changée en
+# silence ailleurs (par exemple 2 avant / 3 après pour la tonte) redonnerait un
+# ensemble différent, et l'assertion échouerait sans dire d'où vient l'écart.
 
 @pytest.mark.parametrize(
     "metier,attendu",
     [
-        ("déneigement", {8, 9, 10, 11, 12, 1}),
+        ("déneigement", {8, 9, 10, 11, 12}),
         ("paysagement", {1, 2, 3, 4, 5, 6}),
         ("lavage de vitres", {1, 2, 3, 4, 5, 6}),
         ("extermination", {1, 2, 3, 4, 5, 6}),
-        ("tonte", {2, 3, 4, 5, 6, 7}),
+        ("tonte", {1, 2, 3, 4, 5, 6, 7}),
+        ("piscine", {1, 2, 3, 4, 5, 6, 7}),
     ],
 )
 def test_les_fenetres_sont_celles_de_la_spec(metier: str, attendu: set[int]) -> None:
     assert set(fenetre_mois(metier)) == attendu
+
+
+@pytest.mark.parametrize(
+    "metier,avant,apres",
+    [
+        ("déneigement", 3, 1),
+        ("paysagement", 3, 2),
+        ("lavage de vitres", 3, 2),
+        ("extermination", 3, 2),
+        ("tonte", 4, 2),
+        ("piscine", 4, 2),
+    ],
+)
+def test_chaque_metier_a_la_fenetre_decidee(metier: str, avant: int, apres: int) -> None:
+    """Les (mois avant, mois après) décidés par William le 2026-09-04.
+
+    Ce test ne calcule rien — il récite la décision. Il existe parce que les
+    ensembles de mois ci-dessus sont dérivés : deux réglages différents peuvent
+    donner le même ensemble sur certains métiers, et l'écart ne se verrait
+    qu'aux frontières. Ici, un chiffre changé se voit tout de suite.
+    """
+    from src.lib.metiers import _fenetre_du_metier
+
+    assert _fenetre_du_metier(metier) == (avant, apres)
+
+
+def test_aucun_metier_saisonnier_n_est_oublie_par_la_table() -> None:
+    """Contrôle négatif : les deux tests ci-dessus ne valent que s'ils couvrent
+    TOUS les métiers saisonniers. Une saison ajoutée sans fenêtre décidée
+    prendrait le défaut en silence — ce test l'interdit."""
+    from src.lib.metiers import FENETRE_PAR_METIER, SAISONS
+
+    assert set(SAISONS) == set(FENETRE_PAR_METIER), (
+        "un métier a une saison mais pas de fenêtre décidée (ou l'inverse) : "
+        f"{set(SAISONS) ^ set(FENETRE_PAR_METIER)}"
+    )
 
 
 def test_les_douze_mois_ont_quelqu_un() -> None:
