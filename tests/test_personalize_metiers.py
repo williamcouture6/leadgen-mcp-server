@@ -59,15 +59,42 @@ def test_le_message_porte_les_autres_metiers() -> None:
 
 
 def test_le_message_dicte_la_FORMULATION_du_deuxieme_temps() -> None:
-    """Le modèle ne doit pas avoir à décider entre « Pour le reste de l'année »
-    et « Tu fais aussi » : la première affirme un contraste temporel qui devient
-    un mensonge si on se trompe."""
-    msg_hiver_ete = _message(SERVICES_MIXTE, aujourdhui=OCTOBRE)
-    assert "Pour le reste de l'année" in msg_hiver_ete
+    """Le modèle ne doit pas avoir à décider entre les deux formes : la première
+    affirme un contraste temporel qui devient un mensonge si on se trompe.
 
-    msg_meme_saison = _message(["tonte de pelouse", "aménagement paysager"], aujourdhui=FEVRIER)
-    assert "Tu fais" in msg_meme_saison
-    assert "Pour le reste de l'année" not in msg_meme_saison
+    🔧 Formulation changée le 2026-09-07 (décision William) : « tu fais X »
+    devient « j'ai aussi vu que tu fais X ». Elle contient « j'ai vu que », que
+    la règle nº4 du gabarit dit d'éviter — c'est assumé, le premier paragraphe
+    fixe de C et D commence déjà par « J'ai vu que tu fais du {METIER} ».
+
+    ⚠️ Les assertions portent sur la phrase ENTIÈRE, pas sur un fragment. La
+    version précédente cherchait « Tu fais », qui apparaît dans les deux formes
+    et ne prouvait donc pas laquelle avait été choisie.
+    """
+    msg_hiver_ete = _message(SERVICES_MIXTE, aujourdhui=OCTOBRE)
+    assert "Pour le reste de l'année, j'ai aussi vu que tu fais" in msg_hiver_ete
+
+    msg_meme_saison = _message(
+        ["tonte de pelouse", "aménagement paysager"], aujourdhui=FEVRIER
+    )
+    assert "J'ai aussi vu que tu fais" in msg_meme_saison
+    assert "Pour le reste de l'année" not in msg_meme_saison, (
+        "les métiers partagent l'été : annoncer un contraste temporel serait faux"
+    )
+
+
+def test_les_deux_formes_du_deuxieme_temps_sont_distinctes() -> None:
+    """Contrôle négatif du test ci-dessus. Si les deux formes devenaient
+    identiques — par exemple en supprimant le préfixe temporel — le test
+    précédent resterait vert alors que le contraste de saison aurait disparu."""
+    hiver_ete = _message(SERVICES_MIXTE, aujourdhui=OCTOBRE)
+    meme_saison = _message(
+        ["tonte de pelouse", "aménagement paysager"], aujourdhui=FEVRIER
+    )
+    ligne = "**2ᵉ temps OBLIGATOIRE**"
+    a = next(x for x in hiver_ete.split(chr(10)) if ligne in x)
+    b = next(x for x in meme_saison.split(chr(10)) if ligne in x)
+    assert a != b
 
 
 def test_le_message_porte_le_lexique_du_metier_DOMINANT() -> None:

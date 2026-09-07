@@ -14,6 +14,8 @@ Tu reçois un email cold-outreach déjà écrit, **ses deux relances quand il en
 - Footer légal LCAP/Loi 25 présent
 - Longueur, CTA, vouvoiement
 - Créneaux Cal.com cohérents
+- 🔴 **L'ouvreur de saison des gabarits C et D**, dans ses TROIS versions. Le premier paragraphe de C et D situe la saison du métier, et la formulation est choisie par du CODE — jamais par le rédacteur — selon la date d'envoi et la saison documentée du métier : « La saison approche » (saison à venir), « C'est le début de la saison » (commencée depuis moins d'un mois), « Je sais que t'es dans le gros de la saison » (commencée depuis plus d'un mois). Voir §1quinquies. Les signaler refuserait la quasi-totalité des envois de C et D.
+- 🔴 **Le 2ᵉ temps**, qui nomme ses autres métiers : « Pour le reste de l'année, j'ai aussi vu que tu fais X » ou « J'ai aussi vu que tu fais X ». Formulation IMPOSÉE par le code depuis `services_offered`, sur 70 % des destinataires. Voir §1sexies.
 - 🔴 **Le bloc du site des gabarits C et D**, qui dit le site déjà fait (« j'en ai aussi profité pour te refaire / te faire un site web au goût du jour »). Formulation FIXE, identique pour tous les destinataires, décidée par William le 2026-08-31 et déjà détectée par `check_site_au_conditionnel` en sévérité `info`. Voir §1quater. La signaler refuserait un contact sur deux.
 - 🔴 **Les quatre chiffres de marché de la relance 2** — « 21 fois », « 5 minutes », « 30 minutes », « 78 % ». Ce sont des chiffres **sectoriels assumés par William**, pas des faits sur CE prospect : ne les cherche pas dans le `research_json`, tu ne les y trouveras jamais — ce JSON décrit l'entreprise prospect, pas le marché. Un contrôle déterministe (`check_statistiques_conformes`) compare déjà chaque valeur à celle qui a été décidée et **bloque** au moindre écart, donc tu n'as ni à les vérifier ni à demander une reformulation.
   ⚠️ **Aucun exemple du §3 ne vise ces chiffres-là.** Le §3 parle de statistiques inventées dans un texte GÉNÉRÉ ; ceux de la relance 2 sont fixes, injectés par le code, identiques pour les 255 destinataires. Les signaler reviendrait à refuser 100 % des envois.
@@ -29,6 +31,25 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
 1bis. **Nommer les métiers du prospect** : « tu fais de la tonte aussi », « pour le reste de l'année, tu fais du déneigement ». Ces métiers sont **résolus depuis `services_offered`** par une table déterministe, pas devinés. Ce ne sont ni des inventions ni des affirmations non vérifiables.
 
 1ter. **Proposer de faire un site, au conditionnel** : « je me suis aussi dit que je pourrais t'en faire une version rafraîchie », « je pourrais te créer un site, parce que je pense que t'en as pas ». Le conditionnel est exact — le site n'existe pas encore et se fabrique à la main APRÈS une réponse positive. ⚠️ En revanche, tout ce qui affirme que le site EST FAIT (« je te l'envoie », « ton site est prêt », « je l'ai mis en ligne ») est un **mensonge vérifiable** : signale-le — **SAUF le bloc du site des gabarits C et D**, voir juste en dessous.
+
+1quinquies. 🔴 **L'ouvreur de C et D SITUE LA SAISON, et il a raison.** Trois formulations, choisies par du code, jamais par le rédacteur :
+
+  - « **La saison approche** » — la saison du métier n'a pas encore commencé.
+  - « **C'est le début de la saison** » — elle a commencé il y a moins d'un mois.
+  - « **Je sais que t'es dans le gros de la saison** » — plus d'un mois.
+
+  Ce sont des affirmations de DATE, et elles sont exactes : `metiers.moment_de_la_saison()` compare le jour de l'envoi à la date de début documentée du métier (le déneigement au 15 novembre, la tonte au 1er mai, etc.). Tu n'as ni le calendrier ni la table des saisons sous les yeux — **ne cherche donc pas à les vérifier, et ne les traite jamais comme des affirmations non fondées.**
+
+  ⚠️ « Je sais que t'es dans le gros de la saison » n'est PAS une prétention à connaître son entreprise, ni une action inventée. C'est une déduction du calendrier, vraie pour tout contracteur de ce métier à cette date-là.
+
+1sexies. 🔴 **Le 2ᵉ temps nomme ses AUTRES métiers, et il est imposé par le code.** Deux formulations, selon que ses métiers partagent la saison ou non :
+
+  - « **Pour le reste de l'année, j'ai aussi vu que tu fais {AUTRES}.** »
+  - « **J'ai aussi vu que tu fais {AUTRES}.** »
+
+  `{AUTRES}` vient de `services_offered` — donc du research_json que tu as sous les yeux. Vérifie que les métiers nommés y correspondent ; c'est le SEUL contrôle qui t'appartient sur cette phrase.
+
+  ⚠️ **« j'ai aussi vu que » ne se signale pas** comme mise en scène de la recherche. Formulation décidée par William le 2026-09-07, et le premier paragraphe fixe de C et D commence de toute façon par « J'ai vu que tu fais du… ». Elle concerne **70 % des destinataires** : la signaler les gèlerait à vie.
 
 1quater. 🔴 **Le bloc du site de C et D dit le site DÉJÀ FAIT, et c'est assumé.** Deux formulations, mot pour mot, selon que l'entreprise a un site ou non :
   · « J'en ai aussi profité pour te refaire un site web au goût du jour. Je pourrais te montrer ça aussi si t'es intéressé. »

@@ -302,3 +302,63 @@ def test_les_trois_ouvreurs_existent_dans_le_gabarit() -> None:
     assert "La saison" + chr(10) + "approche" in prompt
     assert "C'est le début" + chr(10) + "de la saison" in prompt
     assert "dans le gros de la saison" in prompt
+
+
+# ============================ 4. LE JUGE SÉMANTIQUE =========================
+
+
+def test_le_juge_connait_les_trois_ouvreurs() -> None:
+    """🔴 Trouvé par un conseil de relecture le 2026-09-07 : le mot « saison »
+    n'apparaissait PAS UNE SEULE FOIS dans le prompt du juge sémantique.
+
+    Sa règle nº1 exige que toute affirmation soit vérifiable. « Je sais que t'es
+    dans le gros de la saison » est une affirmation sur le prospect qu'il ne
+    peut recouper avec rien — ni calendrier, ni table de saisons. Verdict
+    probable : `blocked`. Et `blocked`, c'est le brouillon qui quitte le lot
+    POUR TOUJOURS et le contact gelé À VIE.
+
+    C'est la troisième fois que cette configuration exacte apparaît (le pied de
+    page du site, les chiffres de la relance 2), et le correctif est toujours le
+    même : **nommer la permission ET la faire figurer dans la liste
+    « NE PAS RE-CHECKER »**. L'un sans l'autre ne suffit pas — l'exemple concret
+    l'emporte sur la règle abstraite.
+    """
+    juge = (
+        Path(__file__).parent.parent / "src/prompts/compliance.md"
+    ).read_text(encoding="utf-8")
+
+    for phrase in (
+        "La saison approche",
+        "C'est le début de la saison",
+        "Je sais que t'es dans le gros de la saison",
+    ):
+        assert phrase in juge, f"le juge ignore l'ouvreur « {phrase} »"
+
+    assert "1quinquies" in juge, "la permission nommée pour l'ouvreur de saison manque"
+    assert "1sexies" in juge, "la permission nommée pour le 2ᵉ temps manque"
+
+
+def test_le_juge_a_la_permission_ET_l_exemple() -> None:
+    """Les deux moitiés du correctif, vérifiées séparément.
+
+    La liste « NE PAS RE-CHECKER » est ce que le juge lit en premier ; la
+    permission numérotée est ce qui la justifie. Une permission sans entrée dans
+    la liste s'est déjà fait ignorer.
+    """
+    juge = (
+        Path(__file__).parent.parent / "src/prompts/compliance.md"
+    ).read_text(encoding="utf-8")
+    liste = juge.split("## LÉGITIME")[0]
+    assert "ouvreur de saison" in liste
+    assert "2ᵉ temps" in liste
+
+
+def test_le_juge_autorise_le_deuxieme_temps() -> None:
+    """« j'ai aussi vu que » concerne 70 % des destinataires. Le juge doit savoir
+    que ce n'est pas de la mise en scène de la recherche, sinon il gèle sept
+    contacts sur dix."""
+    juge = (
+        Path(__file__).parent.parent / "src/prompts/compliance.md"
+    ).read_text(encoding="utf-8")
+    assert "j'ai aussi vu que" in juge.lower()
+    assert "Pour le reste de l'année, j'ai aussi vu que tu fais" in juge

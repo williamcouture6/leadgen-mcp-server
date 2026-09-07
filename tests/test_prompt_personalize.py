@@ -154,10 +154,43 @@ def test_le_prompt_interdit_darrondir_la_note() -> None:
 
 def test_le_prompt_dicte_les_deux_formulations_du_deuxieme_temps() -> None:
     """« Pour le reste de l'année » est FAUX quand les autres métiers sont dans
-    la même saison. Les deux formes doivent être données, avec leur condition."""
-    assert "Pour le reste de l'année" in PROMPT
-    assert "aussi. »" in PROMPT or "aussi.»" in PROMPT
+    la même saison. Les deux formes doivent être données, avec leur condition.
+
+    🔧 Formulation changée le 2026-09-07 (décision William) — le gabarit et le
+    code doivent dire la MÊME chose, sinon le rédacteur arbitre entre deux
+    consignes et c'est le prompt qui gagne."""
+    assert "Pour le reste de l'année, j'ai aussi vu que tu fais {AUTRES}." in PROMPT
+    assert "J'ai aussi vu que tu fais {AUTRES}." in PROMPT
     assert "meme_saison" in PROMPT
+
+
+def test_les_gabarits_C_et_D_ont_une_place_pour_le_deuxieme_temps() -> None:
+    """🔴 Trouvé par un conseil de relecture le 2026-09-07, en gravité bloquante.
+
+    Le code impose « 2ᵉ temps OBLIGATOIRE » à toute entreprise multi-métier —
+    **99 des 141 contacts joignables, soit 70 %** — mais les paragraphes fixes
+    de C et D n'avaient aucun trou où l'écrire. Le rédacteur l'aurait jeté (et
+    un paysagiste de neuf mois aurait reçu un courriel qui ne parle que de sa
+    neige) ou inséré au jugé, en cassant un gabarit qui se recopie au mot près.
+
+    Les TROIS versions de l'ouvreur doivent porter le trou : il n'y a aucune
+    raison qu'une seule l'ait, et une version oubliée ne se verrait qu'au mois
+    où elle sert.
+    """
+    assert PROMPT.count("{DEUXIEME_TEMPS}") >= 3, (
+        f"seulement {PROMPT.count('{DEUXIEME_TEMPS}')} occurrence(s) : les trois "
+        "ouvreurs de C et D doivent chacun porter la place du 2ᵉ temps"
+    )
+
+
+def test_le_prompt_ne_pretend_plus_qu_un_controle_bloque_j_ai_vu_que() -> None:
+    """Le gabarit affirmait qu'un contrôle déterministe **bloque** « j'ai vu
+    que ». Doublement faux : `check_mise_en_scene` est en `info` depuis le
+    2026-08-31, et le premier paragraphe fixe de C et D commence littéralement
+    par « J'ai vu que tu fais du {METIER} ». Un rédacteur qui prenait la
+    consigne au mot était poussé à réécrire un gabarit intouchable."""
+    assert "J'ai vu que tu fais du {METIER}" in PROMPT
+    assert "et un contrôle déterministe **bloque** désormais le brouillon" not in PROMPT
 
 
 def test_le_prompt_a_les_cinq_suppositions() -> None:

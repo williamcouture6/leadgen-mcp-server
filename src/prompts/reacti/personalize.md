@@ -125,7 +125,9 @@ t'aime pas. C'est parce que t'as pas pu répondre à temps.
 
 🔴 **Lis ça avant les deux gabarits.** C et D ne se rédigent pas comme A et B.
 Ils n'ont **pas d'ouvreur généré** : leur premier paragraphe est fixe et ne
-porte que deux trous, `{METIER}` et `{VILLE}`, tous deux fournis. Tout ce que
+porte que trois trous, `{METIER}`, `{VILLE}` et `{DEUXIEME_TEMPS}`, tous
+fournis — `{DEUXIEME_TEMPS}` se remplace par **rien du tout** (et l'espace qui
+le précède disparaît) quand l'entreprise est mono-métier. Tout ce que
 tu décides ici, c'est :
 
 1. quelle version de `{ANCRE_CD}` servir — la table des **Faits vérifiés** te
@@ -145,7 +147,7 @@ Bonjour,
 
 J'ai vu que tu fais du {METIER} dans la région de {VILLE}. La saison
 approche, pis je me disais que je pourrais te contacter pour te parler de
-quelque chose qui pourrait t'intéresser.
+quelque chose qui pourrait t'intéresser. {DEUXIEME_TEMPS}
 
 {ANCRE_CD}
 ```
@@ -158,7 +160,7 @@ Bonjour,
 
 J'ai vu que tu fais du {METIER} dans la région de {VILLE}. C'est le début
 de la saison, pis je me disais que je pourrais te contacter pour te parler
-de quelque chose qui pourrait t'intéresser.
+de quelque chose qui pourrait t'intéresser. {DEUXIEME_TEMPS}
 
 {ANCRE_CD}
 ```
@@ -170,7 +172,7 @@ Bonjour,
 
 J'ai vu que tu fais du {METIER} dans la région de {VILLE}. Je sais que t'es
 dans le gros de la saison, pis je me disais que je pourrais te contacter
-pour te parler de quelque chose qui pourrait t'intéresser.
+pour te parler de quelque chose qui pourrait t'intéresser. {DEUXIEME_TEMPS}
 
 {ANCRE_CD}
 ```
@@ -345,8 +347,22 @@ du reste.
 
 ⚠️ **« je pense que t'en as pas » est une SUPPOSITION, et c'est voulu.** On le
 déduit d'une colonne vide, on n'a rien vérifié. Ne la durcis jamais en
-affirmation (« t'as pas de site »), et n'écris JAMAIS « j'ai vu que » : c'est la
-règle nº4, et un contrôle déterministe **bloque** désormais le brouillon.
+affirmation (« t'as pas de site »).
+
+⚠️ **Correction du 2026-09-07.** Cette consigne disait aussi « n'écris JAMAIS
+*j'ai vu que* : un contrôle déterministe **bloque** désormais le brouillon ».
+Les deux moitiés étaient fausses, et un conseil de relecture l'a relevé :
+
+1. `check_mise_en_scene` est en sévérité **`info`** depuis le 2026-08-31 —
+   décision de William : seul ce que le prospect peut vérifier tue un
+   brouillon. Il ANNOTE, il ne bloque pas.
+2. Surtout, le premier paragraphe fixe de C et D commence littéralement par
+   « J'ai vu que tu fais du {METIER} », et le 2ᵉ temps porte « j'ai aussi vu
+   que ». Un rédacteur qui prenait la consigne au mot était poussé à réécrire
+   un gabarit qui se recopie sans changer une virgule.
+
+La règle nº4 vaut pour l'ouvreur que **tu écris**, en A et B. Les paragraphes
+fixes de C et D l'assument.
 
 🔴 **Le site est TOUJOURS au conditionnel : « je pourrais ».** Il n'existe pas encore. Il se fabrique à la main **après** le oui. Écrire « je te l'envoie » ou « ton site est prêt » est un mensonge que le prospect découvrira, et ça vaut plus cher que la vente.
 
@@ -356,7 +372,7 @@ règle nº4, et un contrôle déterministe **bloque** désormais le brouillon.
 
 # L'OUVREUR — le seul vrai paragraphe que tu écris (gabarits A et B seulement)
 
-⚠️ **Cette section ne concerne QUE A et B.** C et D n'ont pas d'ouvreur généré : leur premier paragraphe est fixe et ne porte que `{METIER}` et `{VILLE}`. Si tu rends C ou D, saute jusqu'à la section du 2ᵉ temps.
+⚠️ **Cette section ne concerne QUE A et B.** C et D n'ont pas d'ouvreur généré : leur premier paragraphe est fixe et ne porte que `{METIER}`, `{VILLE}` et — pour une entreprise multi-métier — le `{DEUXIEME_TEMPS}`. Si tu rends C ou D, saute jusqu'à la section du 2ᵉ temps.
 
 **Sa forme : supposition en tête → fait de métier au milieu → chute qui n'accuse personne.**
 
@@ -445,10 +461,26 @@ heures le soir, pis le gars a déjà donné son contrat à un autre.
 
 Il vient **à la fin de l'ouvreur**, collé au même paragraphe. Il **saute uniquement si l'entreprise est mono-métier** (`autres` est vide).
 
+🔴 **EN C ET D AUSSI**, et il faut le dire parce que leur premier paragraphe est
+fixe : le 2ᵉ temps s'ajoute **à la fin de ce paragraphe**, à la place du trou
+`{DEUXIEME_TEMPS}`, sans rien changer d'autre. Mesuré le 2026-09-07 : **99 des
+141 contacts joignables sont multi-métier — 70 %**, dont une cinquantaine
+tombent sur C ou D. Sans cette place, la consigne « 2ᵉ temps OBLIGATOIRE »
+arrivait chez un rédacteur qui n'avait nulle part où l'écrire : il l'aurait
+jetée (et un paysagiste de neuf mois aurait reçu un courriel qui ne parle que de
+sa neige — ça se lit comme une liste achetée), ou insérée au jugé en cassant un
+gabarit qui se recopie au mot près.
+
 | `meme_saison` | Formulation |
 |---|---|
-| **faux** — ses autres métiers sont dans une autre saison | « Pour le reste de l'année, tu fais {AUTRES}. » |
-| **vrai** — même saison, ou saison inconnue | « Tu fais {AUTRES} aussi. » |
+| **faux** — ses autres métiers sont dans une autre saison | « Pour le reste de l'année, j'ai aussi vu que tu fais {AUTRES}. » |
+| **vrai** — même saison, ou saison inconnue | « J'ai aussi vu que tu fais {AUTRES}. » |
+
+🔴 **Oui, ces deux formulations contiennent « j'ai vu que ».** C'est voulu —
+formulation de William, 2026-09-07 — et ça ne contredit pas la règle nº4 : le
+premier paragraphe fixe de C et D commence déjà par « J'ai vu que tu fais du
+{METIER} ». La règle nº4 vise l'ouvreur que TU écris, en A et B. Ne « corrige »
+donc jamais ces phrases-là.
 
 🔴 **N'écris JAMAIS « c'est ton métier principal », « ton cœur de métier », « surtout ».** C'est invérifiable, et ça devient faux dès que le classement se trompe. On **énumère sans hiérarchiser** : « tu fais X pis Y » reste vrai quel que soit l'ordre.
 

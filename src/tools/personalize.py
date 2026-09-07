@@ -153,10 +153,23 @@ def bloc_metiers_resolus(
         autres_metiers = [m for m in r.metiers if m != scene]
         if autres_metiers:
             autres = _enumerer_metiers(autres_metiers)
+            # 🔴 « j'ai aussi vu que » — formulation de William, 2026-09-07.
+            #
+            # Elle contient « j'ai vu que », que la règle nº4 du gabarit dit de
+            # ne jamais écrire. Ce n'est PAS un oubli : le premier paragraphe
+            # de C et D commence déjà par « J'ai vu que tu fais du {METIER} ».
+            # La règle nº4 vise l'ouvreur GÉNÉRÉ de A et B, où la mise en scène
+            # de la recherche est un tell de courriel de masse ; les gabarits
+            # fixes l'assument. `check_mise_en_scene` restera donc en `info`
+            # sur ces corps — il annote, il ne tue pas (déclassé le 2026-08-31).
+            #
+            # La variante « même saison » suit la même voix. Sans ça, un lead
+            # sur deux parlerait autrement que l'autre, pour une raison que
+            # seul le code connaît.
             formule = (
-                f"Tu fais {autres} aussi."
+                f"J'ai aussi vu que tu fais {autres}."
                 if r.meme_saison
-                else f"Pour le reste de l'année, tu fais {autres}."
+                else f"Pour le reste de l'année, j'ai aussi vu que tu fais {autres}."
             )
             lignes.append(f"- **Ses autres métiers** : {', '.join(autres_metiers)}")
             lignes.append(
