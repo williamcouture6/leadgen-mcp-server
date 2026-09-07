@@ -296,11 +296,21 @@ MOIS_APRES_DEFAUT = 2
 #     piscine rouvrent juillet.
 #
 #   · EN DÉCEMBRE, 83 DÉNEIGEURS SUR 153 PARLAIENT DE PAYSAGEMENT. Ouvrir le
-#     paysagement 4 mois avant le 15 avril le faisait démarrer le 15 décembre ;
+#     paysagement 4 mois avant le 15 avril le faisait démarrer en décembre ;
 #     sa saison devenait alors plus PROCHE que la prochaine neige, à onze mois.
 #     On aurait parlé d'aménagement paysager à un déneigeur en pleine tempête.
-#     À 3 mois avant, la fenêtre s'ouvre le 15 janvier et décembre reste au
+#     À 3 mois avant, la fenêtre s'ouvre en JANVIER et décembre reste au
 #     déneigement.
+#
+#     ⚠️ CE QUE ÇA NE RÈGLE PAS, et qu'il ne faut pas lire comme réglé : de
+#     JANVIER À MARS, **93 déneigeurs** ont pour scène un métier de printemps
+#     (67 paysagement, 20 lavage de vitres, 6 tonte) alors qu'ils déneigent
+#     encore — mesuré le 2026-09-07. C'est **voulu** : leur saison de
+#     printemps approche vraiment, et janvier est le mois où un contracteur
+#     planifie son année. Mais le 2ᵉ temps leur dira « pour le reste de
+#     l'année, j'ai aussi vu que tu fais du déneigement » en pleine tempête,
+#     ce qui sonne étrange. Arbitrage ouvert, à porter à William — pas un
+#     défaut à corriger en silence.
 #
 # Le déneigement garde 1 mois après : sa saison démarre le 15 novembre et ses
 # contrats se signent en septembre-octobre. Le rejoindre en janvier, c'est
@@ -314,6 +324,20 @@ MOIS_APRES_DEFAUT = 2
 # lavage de vitres, extermination et piscine on fait 2 mois après à la place de
 # 1 ; pour lavage de vitres, paysagement et extermination on commence 3 mois
 # avant à la place de 4 ». Ne pas les changer sans le lui demander.
+# ⚠️ CES NOMBRES SONT DES MOIS, ET L'ARRONDI EST GÉNÉREUX — l'avance réelle
+# dépasse donc « avant × 30 jours » pour les métiers dont la saison démarre en
+# milieu de mois. `fenetre_mois` ouvre au 1er du mois atteint, jamais au jour
+# anniversaire. Mesuré le 2026-09-07 :
+#
+#     déneigement  3 mois avant le 15/11 → ouvre le 1er août    = 106 jours
+#     paysagement  3 mois avant le 15/04 → ouvre le 1er janvier = 104 jours
+#     lavage, exterm.  3 mois avant le 01/04 → 1er janvier      =  90 jours
+#     tonte, piscine   4 mois avant le 01/05 → 1er janvier      = 120 jours
+#
+# Ça compte pour juger la phrase « La saison approche » : son maximum réel est
+# de 106 jours, pas de 90. Un conseil de relecture l'a relevé le 2026-09-07,
+# parce que deux commentaires disaient « la fenêtre s'ouvre le 15 » — ce qui
+# aurait trompé une session future venue arbitrer la longueur de l'ouvreur.
 FENETRE_PAR_METIER: dict[str, tuple[int, int]] = {
     "déneigement": (3, 1),
     "paysagement": (3, 2),
@@ -395,48 +419,6 @@ def _jours_avant_prochaine_saison(metier: str, aujourdhui: date) -> int:
     if prochain < aujourdhui:
         prochain = date(aujourdhui.year + 1, mois, jour)
     return (prochain - aujourdhui).days
-
-
-def debut_de_saison(metier: str, aujourdhui: date) -> bool:
-    """Écrit-on à ce métier « c'est le début de la saison » ?
-
-    ⚠️ **CE N'EST PAS « la saison est-elle commencée »**, et le nom a été changé
-    pour ça le 2026-09-04. La question générale répondrait « oui » à un
-    déneigeur le 10 janvier — évidemment, il neige. Mais janvier est HORS de sa
-    fenêtre : on ne lui écrit pas, donc la question ne se pose jamais. La
-    fonction répond à la seule question qui a un consommateur : la phrase à
-    mettre dans l'ouvreur AUJOURD'HUI.
-
-    Vrai exactement pendant la marge `apres` de la fenêtre — les mois où
-    l'entreprise est encore joignable alors que sa saison roule déjà.
-
-    🔴 Ce n'est pas le contraire de `fenetre_mois`. La fenêtre reste ouverte
-    quelques mois APRÈS le début de la saison — c'est la marge décidée par
-    William pour ceux qui s'y prennent tard. Pendant ces mois-là, l'entreprise
-    est joignable ET sa saison roule déjà.
-
-    Ça compte parce que les gabarits C et D ouvrent sur « La saison approche ».
-    Mesuré le 2026-09-04 sur la file réelle de 325 contacts : dans les mois
-    concernés, la phrase aurait été fausse pour la **quasi-totalité du lot** —
-    275 contacts sur les 278 joignables en mai et en juin, 138 sur 141 en
-    décembre, 94 sur 97 en juillet. Un paysagiste qui tond depuis six semaines
-    lit « la saison approche » et sait, à la première ligne, que personne ne
-    l'a lu.
-
-    ⚠️ Ne pas réécrire ça en « 892 courriels par année » : c'était la première
-    formulation, et elle est FAUSSE. Elle additionnait douze photos mensuelles
-    de la même file, alors qu'un contact n'est écrit qu'une fois. Le fait
-    solide est la PROPORTION du lot d'un mois donné, pas un cumul annuel.
-
-    ⚠️ Aucun réglage de fenêtre ne répare ça : « 1 mois après » signifie, par
-    construction, un mois où la saison est commencée. C'est pour ça que la
-    correction vit dans la COPIE — deuxième formulation de l'ouvreur — et pas
-    dans les bornes.
-
-    Un métier sans saison documentée retourne False : on ne sait pas, donc on
-    n'affirme rien.
-    """
-    return moment_de_la_saison(metier, aujourdhui) == MOMENT_DEBUT
 
 
 # Les trois moments qu'un ouvreur peut avoir à décrire. 🔴 UN SEUL ÉTAT À LA

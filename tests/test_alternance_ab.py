@@ -82,14 +82,49 @@ def test_lalternance_ne_derive_pas_du_contact() -> None:
     courriel ». La file est triée `created_at.asc`, donc toute répartition
     dérivée du contact serait corrélée à son ancienneté.
 
-    `_bras_ab` ne prend QUE le rang : c'est structurellement impossible.
+    🔧 UNE SEULE EXCEPTION, ajoutée le 2026-09-07 : `metier_connu`.
+
+    Elle vient de la COMPANY (`research_json.services_offered`), jamais du
+    contact, donc elle ne rouvre pas la corrélation avec l'ancienneté de la
+    file. Elle existe parce que les têtes de C et D sont fixes et nomment un
+    métier : une entreprise dont aucun métier n'est reconnu n'a rien à mettre
+    dans ce trou, et le rédacteur inventerait une affirmation en première ligne.
+
+    ⚠️ **Ça coûte quelque chose, et il faut le dire.** Les leads sans métier
+    reconnu — 3 sur 141 au 2026-09-07, soit 2 % — ne peuvent plus tirer C ni D.
+    La population de C/D n'est donc plus exactement celle de A/B, ce qui biaise
+    d'autant la comparaison entre gabarits. Le biais est petit et connu ; le
+    courriel cassé qu'il évite ne l'était pas.
+
+    Rien D'AUTRE ne doit s'ajouter à cette signature sans la même justification.
     """
     import inspect
 
     params = set(inspect.signature(http_api._bras_ab).parameters)
-    assert params == {"template_choice", "rang"}, (
-        f"la fonction voit {params} — tout ce qui vient du contact rouvrirait "
-        "la corrélation avec l'ancienneté"
+    assert params == {"template_choice", "rang", "metier_connu"}, (
+        f"la fonction voit {params} — tout ce qui vient du CONTACT rouvrirait "
+        "la corrélation avec l'ancienneté de la file"
+    )
+
+
+def test_le_metier_connu_ne_change_rien_au_cas_normal() -> None:
+    """Contrôle négatif : l'exception ne doit toucher QUE les leads sans métier.
+
+    Sans ce test, `metier_connu` pourrait dévier l'alternance de tout le monde
+    et le test précédent — qui ne regarde que la signature — resterait vert.
+    """
+    normal = [http_api._bras_ab("ABCD", i) for i in range(20)]
+    explicite = [http_api._bras_ab("ABCD", i, metier_connu=True) for i in range(20)]
+    assert normal == explicite
+    assert normal.count("A") == normal.count("B") == normal.count("C") == 5
+
+
+def test_sans_metier_reconnu_ni_C_ni_D() -> None:
+    """La règle elle-même, mesurée sur la sortie plutôt que sur la signature."""
+    bras = {http_api._bras_ab("ABCD", i, metier_connu=False) for i in range(20)}
+    assert bras == {"A", "B"}, (
+        f"un lead sans métier reconnu peut encore tirer {bras - {'A', 'B'}} — "
+        "leur premier paragraphe est fixe et exige un métier"
     )
 
 

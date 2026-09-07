@@ -92,10 +92,13 @@ def test_la_bascule_tombe_un_mois_apres_le_debut(metier: str) -> None:
             continue
         assert moment_de_la_saison(metier, debut) == MOMENT_DEBUT
         assert moment_de_la_saison(metier, debut + timedelta(days=30)) == MOMENT_DEBUT
-        trente_et_un = moment_de_la_saison(metier, debut + timedelta(days=31))
-        # Au 31ᵉ jour : soit on est passé en pleine saison, soit on est déjà
-        # sorti de la fenêtre (déneigement). Jamais « début ».
-        assert trente_et_un in (MOMENT_EN_COURS, None)
+        # 🔧 RESSERRÉ le 2026-09-07, sur constat d'un conseil de relecture.
+        # L'assertion tolérait `None` « au cas où la fenêtre serait déjà
+        # fermée » — mais la mesure dit que les SIX métiers sont encore dans
+        # leur fenêtre au 31ᵉ jour. Le `None` toléré n'arrivait jamais, et il
+        # aurait avalé exactement la régression que ce test existe pour
+        # attraper : une fenêtre fermée un jour trop tôt.
+        assert moment_de_la_saison(metier, debut + timedelta(days=31)) == MOMENT_EN_COURS
 
 
 def test_un_metier_sans_saison_ne_situe_rien() -> None:
@@ -245,6 +248,23 @@ def test_le_check_est_branche_dans_run_all() -> None:
         "tomber, le check passe toujours et la garde est morte"
     )
 
+    # 🔴 L'ASSERTION SYMÉTRIQUE, ajoutée le 2026-09-07. Sans elle, un `run_all`
+    # qui IGNORERAIT son argument et coderait en dur `moment_saison=A_VENIR`
+    # passait le test — un conseil de relecture a posé ce mutant et l'a vu
+    # survivre. Les deux assertions ensemble le tuent : la première exige un
+    # refus sur une combinaison fautive, la seconde un accord sur la bonne.
+    bon = [
+        r
+        for r in run_all(
+            CORPS[MOMENT_DEBUT], social_proof_count=0, moment_saison=MOMENT_DEBUT
+        )
+        if r.name == "saison_au_bon_temps"
+    ]
+    assert bon and bon[0].passed is True, (
+        "run_all rend un verdict indépendant du moment reçu : il ignore son "
+        "paramètre"
+    )
+
 
 # ================================== 3. LA CONSIGNE AU GÉNÉRATEUR ============
 
@@ -362,3 +382,145 @@ def test_le_juge_autorise_le_deuxieme_temps() -> None:
     ).read_text(encoding="utf-8")
     assert "j'ai aussi vu que" in juge.lower()
     assert "Pour le reste de l'année, j'ai aussi vu que tu fais" in juge
+
+
+# ================= 5. CHAQUE MOTIF EST EXERCÉ AU MOINS UNE FOIS =============
+#
+# 🔴 Constat d'un conseil de relecture, 2026-09-07 : `test_la_diagonale`
+# n'utilise que les trois corps du gabarit, donc UNE tournure par moment. Les
+# sept autres motifs n'étaient jamais confrontés à un texte. Une espace
+# littérale au lieu de `\s+` — le défaut déjà trouvé une fois dans ce même
+# fichier — ou une coquille dans une alternative les aurait rendus muets sans
+# qu'un test bronche.
+#
+# Une phrase d'exemple par motif, écrite comme un vrai corps l'écrirait.
+
+EXEMPLES: dict[str, tuple[str, ...]] = {
+    MOMENT_A_VENIR: (
+        "la saison approche",
+        "la saison qui approche",
+        "la saison s'en vient",
+        "la saison arrive",
+        "la saison qui arrive",
+        "avant que la saison commence",
+        "avant que ta saison démarre",
+    ),
+    MOMENT_DEBUT: (
+        "c'est le début de la saison",
+        "c'est le debut de la saison",
+        "le début de la saison",
+        "le début de ta saison",
+        "la saison vient de commencer",
+        "la saison commence à peine",
+    ),
+    MOMENT_EN_COURS: (
+        "t'es en plein dedans",
+        "tu es en pleine saison",
+        "dans le gros de la saison",
+        "dans le gros de ta saison",
+        "en pleine saison",
+        "la saison est commencée",
+        "la saison est déjà commencée",
+    ),
+}
+
+
+@pytest.mark.parametrize("moment", sorted(EXEMPLES))
+def test_chaque_motif_a_son_exemple(moment: str) -> None:
+    """Tout motif déclaré doit être atteint par au moins un exemple.
+
+    C'est le contrôle qui manquait : un motif qu'aucun texte ne touche est
+    indistinguable d'un motif cassé.
+    """
+    import re
+
+    for motif in TOURNURES_PAR_MOMENT[moment]:
+        touche = [ex for ex in EXEMPLES[moment] if re.search(motif, ex, re.IGNORECASE)]
+        assert touche, f"aucun exemple n'atteint le motif {motif!r} de « {moment} »"
+
+
+@pytest.mark.parametrize("moment", sorted(EXEMPLES))
+def test_chaque_exemple_est_refuse_aux_deux_autres_moments(moment: str) -> None:
+    """Et la contre-épreuve : chaque phrase est acceptée à son moment, refusée
+    aux deux autres. Un motif trop large se verrait ici."""
+    for exemple in EXEMPLES[moment]:
+        corps = f"J'ai vu que tu fais du déneigement à Laval. {exemple}, pis je me disais."
+        assert check_saison_au_bon_temps(corps, moment_saison=moment).passed is True, (
+            f"« {exemple} » refusé à son propre moment « {moment} »"
+        )
+        for autre in TOURNURES_PAR_MOMENT:
+            if autre == moment:
+                continue
+            assert check_saison_au_bon_temps(corps, moment_saison=autre).passed is False, (
+                f"« {exemple} » passe au moment « {autre} », où il est faux"
+            )
+
+
+# ============ 6. LA GARDE EST ARMÉE SUR LE VRAI CHEMIN (WF-5) ==============
+
+
+@pytest.fixture
+def _env_vert(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WARMUP_DISABLED", "true")
+    monkeypatch.setenv("LEGAL_COMPANY_NAME", "Couture IA")
+    monkeypatch.setenv("UNSUBSCRIBE_URL", "https://couture-ia.com/unsubscribe")
+    monkeypatch.setenv("LCAP_MENTIONS_REDUITES", "true")
+    monkeypatch.setenv(
+        "INSTANTLY_CAMPAIGN_FOOTER",
+        "Couture IA\nPour te désabonner : https://couture-ia.com/unsubscribe",
+    )
+
+
+@pytest.mark.asyncio
+async def test_la_garde_saison_est_armee_dans_le_vrai_juge(
+    _env_vert: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 MESURÉ PAR MUTATION, et c'est ce qui a rendu ce test nécessaire.
+
+    Un conseil de relecture a supprimé le calcul de `moment_saison` dans
+    `compliance.py` : `check_saison_au_bon_temps` recevait alors `None` pour
+    100 % des brouillons, sortait par la porte « moment inconnu », et **aucun
+    test ne rougissait**. En juin, les 275 contacts en pleine saison auraient
+    reçu « La saison approche » sans une seule note de conformité, et
+    `pytest -q` aurait affiché tout vert.
+
+    Les tests existants n'exerçaient que `run_all` — la fonction — jamais
+    l'ARMEMENT, c'est-à-dire le calcul qui décide quoi lui passer. C'est la
+    quatrième fois cette semaine qu'un garde-fou est testé en isolation sans
+    l'être sur son chemin de production.
+    """
+    import src.tools.compliance as comp
+
+    class _Faux(date):
+        @classmethod
+        def today(cls) -> date:  # type: ignore[override]
+            return date(2026, 12, 20)  # déneigement : saison bien entamée
+
+    monkeypatch.setattr(comp, "date", _Faux)
+
+    out = await comp.compliance_check(
+        message_id="m-saison",
+        body=CORPS[MOMENT_A_VENIR],  # « La saison approche » — faux ce jour-là
+        subject="s",
+        template_used="C",
+        research_json={"services_offered": ["Déneigement résidentiel"]},
+        social_proof=[],
+        available_slots=[],
+        skip_llm=True,
+        track="agence-ia",
+    )
+    # ⚠️ `deterministic_infos`, PAS `warnings` ni `blockers` : la garde est en
+    # sévérité `info`, donc elle annote sans tuer le brouillon. Chercher dans
+    # les warnings aurait fait échouer ce test pour la mauvaise raison — et
+    # laissé croire que le constat du conseil était confirmé alors qu'il ne
+    # l'était pas encore.
+    notes = {n["name"] for n in (out.deterministic_infos or [])}
+    assert "saison_au_bon_temps" in notes, (
+        "le juge n'arme pas la garde saison : elle est muette sur le vrai "
+        f"chemin. Notes vues : {notes or 'aucune'}"
+    )
+    # Et le brouillon PART quand même : c'est toute la raison du `info`.
+    assert out.send_decision != "DO_NOT_SEND", (
+        "une remarque de forme sur la saison ne doit jamais tuer un brouillon "
+        "— ça gèlerait le contact à vie"
+    )

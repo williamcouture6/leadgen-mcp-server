@@ -2398,7 +2398,19 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
         try:
             res = await _personalize_one(
                 contact, company,
-                template_choice=_bras_ab(payload.template_choice, rang),
+                # `metier_connu` : sans metier reconnu, C et D sont ecartes —
+                # leur premier paragraphe est fixe et nomme un metier. Voir
+                # `lib/gabarits.GABARITS_A_TETE_FIXE`.
+                template_choice=_bras_ab(
+                    payload.template_choice,
+                    rang,
+                    metier_connu=bool(
+                        resoudre_metiers(
+                            ((company.get("research_json") or {}).get("services_offered")) or [],
+                            date.today(),
+                        ).metiers
+                    ),
+                ),
                 model=payload.model,
                 persist=payload.persist,
                 available_slots=slots,

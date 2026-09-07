@@ -278,7 +278,16 @@ def _format_input_for_llm(
 
     parts = [
         f"## Template à utiliser\n{template_choice}",
-        f"\n## Entreprise ciblée\nname: {place_name}\nwebsite: {website}",
+        # 🔴 `city` A ÉTÉ AJOUTÉE LE 2026-09-07, et son absence était un vrai
+        # trou. Le premier paragraphe FIXE de C et D dit « dans la région de
+        # {VILLE} » — une affirmation factuelle, en PREMIÈRE LIGNE, que le
+        # prospect vérifie d'un coup d'œil. La ville voyageait pourtant depuis
+        # `http_api` jusqu'ici sans jamais être imprimée : le modèle devait la
+        # déduire du texte libre du research_json, ou l'inventer. C'est
+        # exactement `[[feedback-no-lying-in-outreach]]`, sur la ligne que le
+        # prospect lit en premier. Trouvé par un conseil de relecture.
+        f"\n## Entreprise ciblée\nname: {place_name}\nwebsite: {website}\n"
+        f"city: {company.get('city') or ''}",
     ]
 
     # ⚠️ Les deux blocs d'AC1b ne servent QUE la piste `agence-ia`.

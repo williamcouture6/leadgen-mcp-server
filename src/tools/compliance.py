@@ -32,6 +32,18 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from ..lib.avis import bloc_faits_verifies
 from ..lib.metiers import resoudre_metiers
+
+
+def _sans_accents_minuscules(texte: str) -> str:
+    """Pour comparer un nom de métier au corps sans buter sur les accents.
+
+    « déneigement » dans la table, « Deneigement » dans un corps mal accentué :
+    la comparaison doit tenir, sinon on désarme le contrôle sur une coquille.
+    """
+    import unicodedata
+
+    plat = unicodedata.normalize("NFD", (texte or "").lower())
+    return "".join(c for c in plat if unicodedata.category(c) != "Mn")
 from ..lib.relances import RELANCES
 from ..lib.compliance_checks import (
     CheckResult,
@@ -286,11 +298,45 @@ async def compliance_check(
     # on le recalcule ici plutôt que de le transporter : un brouillon écrit en
     # avril et jugé en mai doit être jugé sur MAI. Le décalage est réel — la
     # file attend parfois plusieurs jours entre WF-4 et WF-5.
+    # ⚠️ `industry` N'EST PAS PASSÉ ICI, alors que `db.fenetre_saisonniere_ouverte`
+    # le passe. Trois lentilles d'un conseil de relecture ont examiné l'écart le
+    # 2026-09-07 et conclu la même chose : **inerte**, parce que
+    # `resoudre_metiers` accepte le paramètre et l'ignore (le repli
+    # `metier_depuis_industry` est écrit mais débranché, décision William du
+    # 2026-09-02, gardée par `test_le_repli_sur_industry_reste_debranche`).
+    #
+    # Et le piège n'est pas silencieux : rebrancher le repli fait ROUGIR ce
+    # test-là. La divergence est donc laissée telle quelle plutôt que corrigée
+    # à l'aveugle — la colonne `industry` n'est même pas dans le SELECT qui
+    # alimente ce chemin, l'aligner demanderait de la plomber jusqu'ici pour un
+    # paramètre que personne ne lit.
     _r = resoudre_metiers(
         ((research_json or {}).get("services_offered")) or [],
         date.today(),
     )
     moment_saison = _r.scene_moment_saison
+    # ⚠️ LA SCÈNE PEUT AVOIR CHANGÉ DEPUIS LA RÉDACTION, et la remarque
+    # porterait alors sur un métier dont le corps ne parle même pas.
+    #
+    # Trouvé par un conseil de relecture le 2026-09-07, avec son scénario :
+    # une entreprise déneigement + lavage de vitres, rédigée le 20 décembre
+    # (fenêtre déneigement ouverte, corps exact), jugée le 5 janvier — la
+    # fenêtre du déneigement s'est fermée, celle du lavage de vitres s'est
+    # ouverte, la scène recalculée devient « lavage de vitres » et son moment
+    # « à venir ». Le contrôle reprochait au corps de dire la saison commencée,
+    # en jugeant sur une saison dont le courriel ne parle pas.
+    #
+    # On n'annote donc que si le corps NOMME le métier de la scène recalculée.
+    # Volontairement grossier — le métier est écrit en toutes lettres dans le
+    # premier paragraphe — mais ça écarte le seul cas nuisible sans transporter
+    # d'état supplémentaire entre WF-4 et WF-5.
+    # ⚠️ LES DEUX CÔTÉS SONT NORMALISÉS. Première version : le corps était
+    # aplati, le nom du métier ne l'était pas — « déneigement » n'était donc
+    # jamais trouvé dans « deneigement… », la condition était vraie à tous les
+    # coups et la garde se désarmait elle-même pour 100 % des brouillons. Le
+    # test du vrai chemin l'a attrapé dans la minute qui a suivi.
+    if _r.scene and _sans_accents_minuscules(_r.scene) not in _sans_accents_minuscules(body):
+        moment_saison = None
 
     det_results: list[CheckResult] = []
     for etiquette, texte, gabarit in corps_a_juger:

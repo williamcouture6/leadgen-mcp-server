@@ -60,7 +60,20 @@ def bras_demandes(template_choice: str | None) -> tuple[str, ...]:
     return ()
 
 
-def bras_du_lot(template_choice: str, rang: int) -> str:
+# Les gabarits dont le PREMIER PARAGRAPHE EST FIXE et nomme un métier.
+#
+# 🔴 C'est la raison pour laquelle `bras_du_lot` doit parfois refuser un bras.
+# Les trois têtes de C et D disent « J'ai vu que tu fais du {METIER}… » puis
+# situent la saison. Une entreprise dont AUCUN métier n'est reconnu n'a rien à
+# mettre dans ce trou : le rédacteur laisserait un blanc, ou piocherait un
+# service au hasard dans `services_offered` — une affirmation inventée en
+# première ligne, ce que tout le reste du système existe pour empêcher.
+#
+# A et B, eux, ont un ouvreur GÉNÉRÉ : ils savent écrire sans nommer de métier.
+GABARITS_A_TETE_FIXE: frozenset[str] = frozenset({"C", "D"})
+
+
+def bras_du_lot(template_choice: str, rang: int, *, metier_connu: bool = True) -> str:
     """Le bras du n-ième contact du lot.
 
     🔴 L'alternance se fait par RANG DANS LE LOT, jamais par une propriété du
@@ -81,6 +94,20 @@ def bras_du_lot(template_choice: str, rang: int) -> str:
         # Valeur inconnue : on la rend telle quelle. Elle sera visible dans
         # `template_demande` et refusée plus loin plutôt que devinée ici.
         return template_choice
+    if not metier_connu:
+        # Trouvé par un conseil de relecture le 2026-09-07. Ces entreprises
+        # restent joignables toute l'année — c'est le garde-fou nº2, « on
+        # inclut dans le doute » — et le bras se tirait au RANG dans le lot,
+        # sans jamais regarder si un métier avait été reconnu. Une sur deux
+        # tombait donc sur un gabarit dont la tête EXIGE un métier.
+        sans_tete_fixe = tuple(b for b in bras if b not in GABARITS_A_TETE_FIXE)
+        # Si l'appelant n'a demandé QUE des gabarits à tête fixe, on ne peut
+        # rien inventer : on rend le tirage normal plutôt que de renvoyer un
+        # bras qu'il n'a pas demandé. Le cas n'existe pas en production
+        # (`template_choice="ABCD"`), et le masquer serait pire que le laisser
+        # visible.
+        if sans_tete_fixe:
+            return sans_tete_fixe[rang % len(sans_tete_fixe)]
     return bras[rang % len(bras)]
 
 
