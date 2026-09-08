@@ -302,15 +302,15 @@ MOIS_APRES_DEFAUT = 2
 #     À 3 mois avant, la fenêtre s'ouvre en JANVIER et décembre reste au
 #     déneigement.
 #
-#     ⚠️ CE QUE ÇA NE RÈGLE PAS, et qu'il ne faut pas lire comme réglé : de
-#     JANVIER À MARS, **93 déneigeurs** ont pour scène un métier de printemps
-#     (67 paysagement, 20 lavage de vitres, 6 tonte) alors qu'ils déneigent
-#     encore — mesuré le 2026-09-07. C'est **voulu** : leur saison de
-#     printemps approche vraiment, et janvier est le mois où un contracteur
-#     planifie son année. Mais le 2ᵉ temps leur dira « pour le reste de
-#     l'année, j'ai aussi vu que tu fais du déneigement » en pleine tempête,
-#     ce qui sonne étrange. Arbitrage ouvert, à porter à William — pas un
-#     défaut à corriger en silence.
+#     ✅ ARBITRAGE TRANCHÉ PAR WILLIAM LE 2026-09-07 — ne pas le rouvrir.
+#     De JANVIER À MARS, **93 déneigeurs** ont pour scène un métier de
+#     printemps (67 paysagement, 20 lavage de vitres, 6 tonte) alors qu'ils
+#     déneigent encore, et leur 2ᵉ temps dit « pour le reste de l'année, j'ai
+#     aussi vu que tu fais du déneigement » en pleine tempête. Ça a été porté
+#     à William avec ce décompte ; sa réponse : « ce n'est pas un problème ».
+#     Et il a raison sur le fond — leur saison de printemps approche vraiment,
+#     et janvier est le mois où un contracteur planifie son année. Un futur
+#     conseil qui « découvre » ce cas doit le classer sans suite.
 #
 # Le déneigement garde 1 mois après : sa saison démarre le 15 novembre et ses
 # contrats se signent en septembre-octobre. Le rejoindre en janvier, c'est

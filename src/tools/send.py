@@ -46,7 +46,30 @@ from ..lib.compliance_checks import check_warmup_window
 from ..lib.relances import CLES_RELANCES
 from ..lib.platform_domains import is_email_on_blocked_domain
 
-DAILY_CAP_DEFAULT = 10
+# 🔴 20, ET C'EST CE NOMBRE QUI GOUVERNE, pas la `limit` du workflow.
+#
+# `run_wf6` calcule `effective_limit = min(payload.limit, daily_cap - deja_pousses)` :
+# un WF-6 qui demande 20 avec un plafond à 10 en envoie 10, SANS ERREUR et sans
+# trace. C'est le piège qu'il faut connaître avant de toucher au débit — monter
+# la limite du workflow seule n'aurait rien changé.
+#
+# Décision William du 2026-09-07 : « on corrige le débit […] 20 envois par
+# jour ». Ce qu'elle corrige, mesuré le même jour sur la file de 325 contacts :
+#
+#     WF-4 rédigeait 20/jour, 7 jours sur 7    → la file se remplit en 17 jours
+#     WF-6 envoyait  10/jour, du lundi au vendredi → il lui fallait 46 jours
+#
+# Le dernier brouillon écrit attendait donc **29 jours** avant de partir, avec
+# une phrase de saison datée du jour de sa rédaction (le moment est calculé au
+# JUGEMENT, pas à l'envoi). À 20/jour l'écoulement tombe à ~23 jours civils et
+# l'attente maximale à **6 jours** — assez court pour qu'une phrase de saison
+# reste vraie, sauf à tomber pile sur une bascule.
+#
+# ⚠️ La variable `INSTANTLY_DAILY_CAP` reste le levier : ce défaut ne fait que
+# déplacer le point de départ, il ne retire aucun contrôle. ⚠️ Et il ne dit rien
+# de la limite propre à la CAMPAGNE Instantly, qui se règle chez eux — la plus
+# basse des deux gagne, en silence.
+DAILY_CAP_DEFAULT = 20
 DAILY_CAP_ENV = "INSTANTLY_DAILY_CAP"
 SEND_TIMEZONE = "America/Toronto"
 # Sur-récolte : un draft sauté (warmup, skip transitoire) reste 'draft' et la
