@@ -73,6 +73,36 @@ def bras_demandes(template_choice: str | None) -> tuple[str, ...]:
 GABARITS_A_TETE_FIXE: frozenset[str] = frozenset({"C", "D"})
 
 
+def tete_fixe_servable(
+    *, metiers_reconnus: bool, citation_autorisee: bool, nb_services: int
+) -> bool:
+    """C et D peuvent-ils être servis à cette entreprise ?
+
+    Leur premier paragraphe est FIXE : il ne s'adapte pas. Deux choses lui
+    manquent parfois, et dans les deux cas le rédacteur devrait inventer.
+
+    1. **Aucun métier reconnu** → `{METIER}` n'a rien à recevoir. Le rédacteur
+       laisserait un blanc, ou piocherait un service au hasard.
+
+    2. **Citation d'avis refusée ET un seul service** → la version de repli de
+       `{ANCRE_CD}` demande « je vois que tu fais {ENUMERATION_SERVICES} » sous
+       la forme « autant X que Y pis Z », puis « On comprend que tu en couvres
+       beaucoup! ». Avec un seul libellé, la forme est impossible et la phrase
+       est fausse. Mesuré le 2026-09-07 : **6 entreprises** sur les 474
+       joignables ce jour-là.
+
+    A et B n'ont pas ce problème : leur ouvreur est GÉNÉRÉ, il s'adapte.
+
+    ⚠️ Ça coûte quelque chose, et c'est écrit dans le test : ces entreprises ne
+    peuvent plus tirer C ni D, donc la population des quatre bras n'est pas
+    exactement la même. Le biais est petit (~2 %), connu, et il évite un
+    courriel que le prospect verrait faux.
+    """
+    if not metiers_reconnus:
+        return False
+    return citation_autorisee or nb_services >= 2
+
+
 def bras_du_lot(template_choice: str, rang: int, *, metier_connu: bool = True) -> str:
     """Le bras du n-ième contact du lot.
 

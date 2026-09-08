@@ -243,6 +243,12 @@ qui parle de l'entreprise. `{ENUMERATION_SERVICES}` se construit depuis
 — par exemple « autant le déneigement résidentiel que les contrats saisonniers
 pis le service de nuit ». Deux à quatre éléments, jamais plus.
 
+🔴 **Si tu reçois C ou D, `services_offered` porte au moins deux libellés** —
+sinon le code ne t'aurait pas donné ce gabarit. La forme « autant X que Y » est
+donc toujours possible. Tu n'as **jamais** à l'adapter à un service unique, et
+tu ne dois surtout pas gonfler une liste courte en découpant un libellé en deux
+pour atteindre le compte : ce serait inventer des services.
+
 ⚠️ La phrase du milieu change entre les deux versions et c'est voulu : « tes
 clients aiment ton travail » découle d'une note, « tu en couvres beaucoup »
 découle d'une liste. La chute, elle, est **identique** dans les deux.
@@ -250,6 +256,12 @@ découle d'une liste. La chute, elle, est **identique** dans les deux.
 ---
 
 ## LE GABARIT C — la saison, le service décrit en vague
+
+🔴 **Le `{METIER}` du paragraphe ci-dessous est LE MÊME que celui du premier**,
+c'est-à-dire le **métier de la scène**, jamais le dominant. Un courriel qui
+ouvre sur le déneigement puis dit « j'aide les PME de paysagement » se contredit
+en trois lignes, et le prospect le voit. Le bloc « Métiers résolus » ne nomme
+qu'un seul métier comme scène : c'est celui-là, partout.
 
 Après `{ANCRE_CD}`, C continue ainsi :
 

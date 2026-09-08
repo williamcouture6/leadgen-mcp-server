@@ -26,6 +26,7 @@ from ..lib.avis import bloc_faits_verifies, nom_commercial
 from ..lib.lexique_metiers import lexique_pour
 from ..lib.gabarits import est_un_gabarit
 from ..lib.relances import CLES_RELANCES, CORPS_RELANCES
+from ..lib.gabarits import GABARITS_A_TETE_FIXE
 from ..lib.metiers import (
     MOMENT_A_VENIR,
     MOMENT_DEBUT,
@@ -59,7 +60,7 @@ class LLMUsage(BaseModel):
 # ----------------------------------------------------------------------
 
 def bloc_metiers_resolus(
-    services_offered: list[str] | None, aujourdhui: date
+    services_offered: list[str] | None, aujourdhui: date, gabarit: str | None = None
 ) -> str:
     """Ce que le rédacteur reçoit sur les métiers. **Il ne classe rien.**
 
@@ -196,6 +197,21 @@ def bloc_metiers_resolus(
         else:
             lignes.append("- **Entreprise mono-métier : aucun 2ᵉ temps.** Ne l'invente pas.")
 
+    # 🔴 LE LEXIQUE NE SERT QU'À A ET B. Ses deux entrées — « où il est », pour
+    # l'ouvreur, et « les trois questions », pour le bloc service — n'existent
+    # que dans des paragraphes GÉNÉRÉS. C et D ont un premier paragraphe fixe et
+    # un bloc service fixe : ils n'ont nulle part où les mettre.
+    #
+    # Le leur servir quand même, c'était donner deux consignes détaillées sur des
+    # paragraphes qu'ils doivent recopier sans changer une virgule — du bruit qui
+    # invite à improviser là où on demande justement de ne pas improviser.
+    # Signalé par un conseil de relecture le 2026-09-07.
+    #
+    # `gabarit is None` garde l'ancien comportement : le lexique est servi. Les
+    # appelants qui ne savent pas quel bras sera tiré ne perdent donc rien.
+    if gabarit in GABARITS_A_TETE_FIXE:
+        return "\n".join(lignes)
+
     q = lex_dominant.questions
     lignes += [
         "",
@@ -314,7 +330,9 @@ def _format_input_for_llm(
     if track == "agence-ia":
         parts += [
             "\n" + bloc_metiers_resolus(
-                research.get("services_offered"), aujourdhui or date.today()
+                research.get("services_offered"),
+                aujourdhui or date.today(),
+                gabarit=template_choice,
             ),
             "\n" + bloc_faits_verifies(
                 company.get("google_rating"), company.get("google_reviews_count")

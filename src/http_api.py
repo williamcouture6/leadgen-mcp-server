@@ -18,7 +18,14 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from pydantic import BaseModel
 
 from . import supabase_client as sb
-from .lib.gabarits import GABARITS, bras_demandes, bras_du_lot, est_un_gabarit
+from .lib.avis import bloc_avis_autorise
+from .lib.gabarits import (
+    GABARITS,
+    bras_demandes,
+    bras_du_lot,
+    est_un_gabarit,
+    tete_fixe_servable,
+)
 from .lib.metiers import resoudre_metiers
 from .lib.relances import CLES_RELANCES
 from .tools import booking as booking_tools
@@ -1950,6 +1957,24 @@ def _tombe_sur_le_repli_du_lexique(company_row: dict[str, Any]) -> bool:
 # des tests et des docstrings, et le renommer n'apprendrait rien à personne.
 # ⚠️ Le paramètre LISTE désormais les bras : « AB » garde son sens exact,
 # « ABCD » ouvre aux quatre. Voir l'en-tête de `lib/gabarits.py`.
+def _tete_fixe_servable(company: dict[str, Any]) -> bool:
+    """C et D peuvent-ils être servis à cette entreprise ?
+
+    Un seul endroit décide, pour le LOT comme pour le REJEU manuel : les deux
+    passaient auparavant par deux expressions recopiées, et la route de rejeu
+    n'en avait aucune. Voir `lib/gabarits.tete_fixe_servable` pour le pourquoi.
+    """
+    research = company.get("research_json") or {}
+    services = research.get("services_offered") or []
+    return tete_fixe_servable(
+        metiers_reconnus=bool(resoudre_metiers(services, date.today()).metiers),
+        citation_autorisee=bloc_avis_autorise(
+            company.get("google_rating"), company.get("google_reviews_count")
+        ),
+        nb_services=len(services),
+    )
+
+
 _bras_ab = bras_du_lot
 
 
@@ -2191,12 +2216,7 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
         template_choice=bras_du_lot(
             payload.template_choice,
             0,
-            metier_connu=bool(
-                resoudre_metiers(
-                    ((company.get("research_json") or {}).get("services_offered")) or [],
-                    date.today(),
-                ).metiers
-            ),
+            metier_connu=_tete_fixe_servable(company),
         ),
         model=payload.model,
         persist=payload.persist,
@@ -2420,12 +2440,7 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
                 template_choice=_bras_ab(
                     payload.template_choice,
                     rang,
-                    metier_connu=bool(
-                        resoudre_metiers(
-                            ((company.get("research_json") or {}).get("services_offered")) or [],
-                            date.today(),
-                        ).metiers
-                    ),
+                    metier_connu=_tete_fixe_servable(company),
                 ),
                 model=payload.model,
                 persist=payload.persist,
