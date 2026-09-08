@@ -276,7 +276,10 @@ def _consignes(services: list[str], jour: date) -> str:
     un garde-fou testé en isolation mais branché nulle part, c'est le défaut
     qui est revenu trois fois cette semaine.
     """
-    return bloc_metiers_resolus(services, jour)
+    # `gabarit="C"` : on teste la consigne de l'ouvreur de C et D, donc on
+    # appelle comme le vrai chemin appelle. Sans la lettre, la consigne est
+    # volontairement tue — voir la docstring de `bloc_metiers_resolus`.
+    return bloc_metiers_resolus(services, jour, gabarit="C")
 
 
 @pytest.mark.parametrize(
@@ -665,3 +668,50 @@ def test_tous_les_messages_du_check_sont_assertes() -> None:
         assert fragment in _RIEN_PAR_MOMENT[moment]
         r = check_saison_au_bon_temps(CORPS[moment], moment_saison=moment)
         assert r.passed is True and fragment in r.message
+
+
+def test_la_consigne_de_saison_ne_part_jamais_vers_A_ni_B() -> None:
+    """🔴 Trouvé par un conseil de vérification le 2026-09-08.
+
+    La consigne dit « emploie la 2ᵉ version de l'ouvreur de C et D » — une
+    phrase FIXE, qui n'existe pas dans A ni B, dont l'ouvreur est ÉCRIT par le
+    modèle. Servie à un rédacteur de A, elle l'invitait à recopier du gabarit
+    dans un paragraphe qu'il doit composer.
+
+    Et le même jour, `check_saison_au_bon_temps` avait été restreint à C et D :
+    **plus rien ne l'aurait rattrapé.** Deux changements corrects séparément,
+    qui ouvraient un trou ensemble.
+    """
+    for gabarit in ("A", "B"):
+        txt = bloc_metiers_resolus(
+            ["Déneigement résidentiel"], date(2026, 12, 10), gabarit=gabarit
+        )
+        assert "ouvreur de C et D" not in txt, (
+            f"le gabarit {gabarit} reçoit une consigne sur une phrase qu'il n'a pas"
+        )
+        assert "VIENT DE COMMENCER" not in txt
+
+    # Contre-épreuve : C et D la reçoivent toujours.
+    for gabarit in ("C", "D"):
+        txt = bloc_metiers_resolus(
+            ["Déneigement résidentiel"], date(2026, 12, 10), gabarit=gabarit
+        )
+        assert "VIENT DE COMMENCER" in txt
+
+
+def test_le_metier_est_servi_avec_son_article_aux_gabarits_fixes() -> None:
+    """La tête fixe dit « tu fais {METIER} » et le nom de famille est nu dans la
+    table. « de la tonte » mais « du paysagement » — l'article n'est pas le même,
+    et le rédacteur n'a pas à le deviner dans une phrase qu'on lui demande de
+    recopier virgule pour virgule."""
+    tonte = bloc_metiers_resolus(["Tonte de pelouse"], date(2026, 5, 10), gabarit="C")
+    assert "**de la tonte**" in tonte
+
+    pays = bloc_metiers_resolus(
+        ["Aménagement paysager"], date(2026, 5, 10), gabarit="D"
+    )
+    assert "**du paysagement**" in pays
+
+    # A et B composent leur ouvreur : ils n'ont pas de trou à remplir.
+    a = bloc_metiers_resolus(["Tonte de pelouse"], date(2026, 5, 10), gabarit="A")
+    assert "recopier TEL QUEL" not in a

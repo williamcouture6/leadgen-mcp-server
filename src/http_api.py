@@ -2206,13 +2206,23 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
 
     return await _personalize_one(
         contact, company,
-        # Le rejeu manuel passe par la MÊME garde que le lot : sans métier
-        # reconnu, C et D sont écartés — leur premier paragraphe est fixe et
-        # nomme un métier. Un conseil de relecture a relevé le 2026-09-07 que
-        # cette route court-circuitait `bras_du_lot`, donc qu'un rejeu à la main
-        # sur `template_choice="C"` produisait le courriel cassé que le lot,
-        # lui, savait éviter. `rang=0` : il n'y a qu'un contact, il n'y a rien
-        # à alterner.
+        # Le rejeu manuel passe par la même garde que le lot — avec UNE
+        # DIFFÉRENCE qu'il faut connaître.
+        #
+        # Quand `template_choice` est une CONSIGNE D'ALTERNANCE (« ABCD »), la
+        # garde s'applique : sans métier reconnu, le tirage évite C et D.
+        # Quand c'est UNE SEULE LETTRE (« C »), la lettre GAGNE et le gabarit
+        # part tel quel.
+        #
+        # ⚠️ Le commentaire d'origine affirmait que la garde s'appliquait dans
+        # les deux cas. C'était faux, et un conseil de vérification l'a relevé
+        # le 2026-09-08. Le comportement, lui, est VOULU : demander « C » pour
+        # un lead précis est un geste délibéré de rejeu, et substituer « A » en
+        # silence donnerait un courriel qu'on n'a pas demandé, sans le dire.
+        # C'est le même principe que partout ici — on ne devine pas à la place
+        # de celui qui a écrit la requête.
+        #
+        # `rang=0` : il n'y a qu'un contact, il n'y a rien à alterner.
         template_choice=bras_du_lot(
             payload.template_choice,
             0,

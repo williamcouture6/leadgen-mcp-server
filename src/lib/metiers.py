@@ -536,8 +536,21 @@ class MetiersResolus:
     fausse dès que le classement se trompe."""
 
     meme_saison: bool
-    """Les autres partagent-ils la saison de la scène ? Décide entre
-    « Pour le reste de l'année, tu fais X » et « Tu fais aussi X »."""
+    """AU MOINS UN des autres métiers partage-t-il la saison de la scène ?
+
+    🔴 « Au moins un », pas « tous » — corrigé le 2026-09-07. Avec `all(...)`,
+    un seul métier d'une autre saison suffisait à coller la forme contrastée sur
+    TOUTE l'énumération, y compris sur les métiers du même été. 56 entreprises
+    lisaient « pour le reste de l'année, tu fais de la tonte » alors que la
+    tonte est la même saison que leur paysagement.
+
+    Décide entre les deux formulations du 2ᵉ temps (décidées par William le
+    2026-09-07) :
+      vrai  → « J'ai aussi vu que tu fais X. »                    (neutre)
+      faux  → « Pour le reste de l'année, j'ai aussi vu que tu fais X. »
+
+    On retombe sur la forme neutre au moindre doute : elle n'affirme aucun
+    contraste temporel, donc elle ne peut pas mentir."""
 
     joignable: bool
     """Au moins une fenêtre ouverte. Faux = l'entreprise attend son ouverture.

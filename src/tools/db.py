@@ -582,18 +582,6 @@ async def mark_company_disqualified(company_id: str, reason: str) -> dict[str, A
     }
 
 
-async def get_company(company_id: str) -> dict[str, Any] | None:
-    rows = await db.select(
-        "companies",
-        params={
-            "select": "id,name,domain,website,city,icp_segment,industry,status,google_place_id",
-            "id": f"eq.{company_id}",
-            "limit": "1",
-        },
-    )
-    return rows[0] if rows else None
-
-
 # ----------------------------------------------------------------------
 # Personalize (Phase 2 — WF-4)
 # ----------------------------------------------------------------------

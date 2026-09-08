@@ -15,6 +15,7 @@ Tu reçois un email cold-outreach déjà écrit, **ses deux relances quand il en
 - Longueur, CTA, vouvoiement
 - Créneaux Cal.com cohérents
 - 🔴 **La ville** (« dans la région de … ») : recopiée depuis `companies.city`, absente de ton research_json. Voir §1septies.
+- 🔴 **Le paragraphe des avantages du gabarit C** (« Les avantages d'avoir un système comme ça… »). Fixe, identique pour tous les C. Voir §1decies.
 - 🔴 **« j'aide les PME de {MÉTIER} … »** et **la chute « Pourtant je suis certain qu'il serait possible … »** : phrases FIXES de C et D, identiques pour tous. Voir §1octies et §1nonies.
 - 🔴 **Les noms de métiers sont des FAMILLES normalisées**, pas des recopies de `services_offered` — « Aménagement paysager » s'écrit « paysagement ». Voir §1sexies.
 - 🔴 **L'ouvreur de saison des gabarits C et D**, dans ses TROIS versions. Le premier paragraphe de C et D situe la saison du métier, et la formulation est choisie par du CODE — jamais par le rédacteur — selon la date d'envoi et la saison documentée du métier : « La saison approche » (saison à venir), « C'est le début de la saison » (commencée depuis moins d'un mois), « Je sais que t'es dans le gros de la saison » (commencée depuis plus d'un mois). Voir §1quinquies. Les signaler refuserait la quasi-totalité des envois de C et D.
@@ -33,24 +34,13 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
 
 1bis. **Nommer les métiers du prospect** : « tu fais de la tonte aussi », « pour le reste de l'année, tu fais du déneigement ». Ces métiers sont **résolus depuis `services_offered`** par une table déterministe, pas devinés. Ce ne sont ni des inventions ni des affirmations non vérifiables.
 
-1ter. **Proposer de faire un site, au conditionnel** : « je me suis aussi dit que je pourrais t'en faire une version rafraîchie », « je pourrais te créer un site, parce que je pense que t'en as pas ». Le conditionnel est exact — le site n'existe pas encore et se fabrique à la main APRÈS une réponse positive. ⚠️ En revanche, tout ce qui affirme que le site EST FAIT (« je te l'envoie », « ton site est prêt », « je l'ai mis en ligne ») est un **mensonge vérifiable** : signale-le — **SAUF le bloc du site des gabarits C et D**, voir juste en dessous.
+1ter. **Proposer de faire un site, au conditionnel** : « je me suis aussi dit que je pourrais t'en faire une version rafraîchie », « je pourrais te créer un site, parce que je pense que t'en as pas ». Le conditionnel est exact — le site n'existe pas encore et se fabrique à la main APRÈS une réponse positive. ⚠️ En revanche, tout ce qui affirme que le site EST FAIT (« je te l'envoie », « ton site est prêt », « je l'ai mis en ligne ») est un **mensonge vérifiable** : signale-le — **SAUF le bloc du site des gabarits C et D**, voir §1quater.
 
-1septies. 🔴 **« dans la région de {VILLE} » — la ville vient de la BASE, pas du rédacteur.**
-
-  Le premier paragraphe fixe de C et D dit « J'ai vu que tu fais du {METIER} dans la région de {VILLE} ». La ville est servie au rédacteur depuis la colonne `companies.city` (fiche Google Places de l'entreprise) : il la **recopie**, il ne la devine pas.
-
-  ⚠️ Elle n'est PAS dans le `research_json` que tu reçois. Ne conclus donc pas qu'elle est inventée parce que tu ne peux pas la recouper — **l'absence d'une donnée de ton côté n'est pas une preuve d'invention.** Cette phrase est en PREMIÈRE LIGNE de tous les C et D : la signaler les refuserait tous.
-
-1octies. 🔴 **« j'aide les PME de {METIER} à se simplifier la vie » — phrase FIXE du gabarit C.**
-
-  Elle est identique au mot près pour tous les destinataires, elle décrit l'ACTIVITÉ de l'expéditeur, et elle ne nomme aucun client. Ce n'est ni une référence client, ni une preuve sociale, ni une action inventée sur CE prospect — les trois choses que la §2 te demande de chercher.
-
-  ⚠️ Ne la traite pas comme une prétention à connaître le secteur : elle dit ce que l'expéditeur fait, pas ce qu'il a déjà fait pour d'autres.
-
-1nonies. 🔴 **La chute du 2ᵉ paragraphe de C et D est FIXE elle aussi** : « Pourtant je suis certain qu'il serait possible de te simplifier la vie avec la gestion de tes clients et t'en amener plus en même temps. »
-
-  Elle est identique dans les huit variantes de C et D, dans les deux versions de `{ANCRE_CD}`. « je suis certain qu'il serait possible » est une opinion au conditionnel, pas une promesse de résultat chiffrée. La signaler refuserait un contact sur deux.
-
+1quater. 🔴 **Le bloc du site de C et D dit le site DÉJÀ FAIT, et c'est assumé.** Deux formulations, mot pour mot, selon que l'entreprise a un site ou non :
+  · « J'en ai aussi profité pour te refaire un site web au goût du jour. Je pourrais te montrer ça aussi si t'es intéressé. »
+  · « J'en ai aussi profité pour te faire un site web au goût du jour. Je pourrais te montrer ça aussi si t'es intéressé. » Décision de William du 2026-08-31, prise après avertissement explicite : le prospect ne peut pas savoir que le site n'est pas encore construit, donc ça sort de la règle « seul le vérifiable tue ». **Ne le signale pas.** Un contrôle déterministe (`check_site_au_conditionnel`) le DÉTECTE déjà et l'écrit dans les notes en sévérité `info` — la décision est donc mesurée et réversible, elle n'a pas besoin de toi.
+  ⚠️ L'exemple « j'en ai profité pour te le créer » figurait ici jusqu'au 2026-09-01 comme mensonge à signaler. C'était **notre propre pied de page**, au mot près : le §1ter demandait donc de refuser tous les C et D — un contact sur deux, gelé à vie. Changé ; ne pas le remettre.
+  ⚠️ A et B, eux, restent AU CONDITIONNEL. Si un corps A affirme le site fait, c'est bien une violation : signale-la.
 1quinquies. 🔴 **L'ouvreur de C et D SITUE LA SAISON, et il a raison.** Trois formulations, choisies par du code, jamais par le rédacteur :
 
   - « **La saison approche** » — la saison du métier n'a pas encore commencé.
@@ -82,11 +72,30 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
 
   ⚠️ **« j'ai aussi vu que » ne se signale pas** comme mise en scène de la recherche. Formulation décidée par William le 2026-09-07, et le premier paragraphe fixe de C et D commence de toute façon par « J'ai vu que tu fais du… ». Elle concerne **70 % des destinataires** : la signaler les gèlerait à vie.
 
-1quater. 🔴 **Le bloc du site de C et D dit le site DÉJÀ FAIT, et c'est assumé.** Deux formulations, mot pour mot, selon que l'entreprise a un site ou non :
-  · « J'en ai aussi profité pour te refaire un site web au goût du jour. Je pourrais te montrer ça aussi si t'es intéressé. »
-  · « J'en ai aussi profité pour te faire un site web au goût du jour. Je pourrais te montrer ça aussi si t'es intéressé. » Décision de William du 2026-08-31, prise après avertissement explicite : le prospect ne peut pas savoir que le site n'est pas encore construit, donc ça sort de la règle « seul le vérifiable tue ». **Ne le signale pas.** Un contrôle déterministe (`check_site_au_conditionnel`) le DÉTECTE déjà et l'écrit dans les notes en sévérité `info` — la décision est donc mesurée et réversible, elle n'a pas besoin de toi.
-  ⚠️ L'exemple « j'en ai profité pour te le créer » figurait ici jusqu'au 2026-09-01 comme mensonge à signaler. C'était **notre propre pied de page**, au mot près : le §1ter demandait donc de refuser tous les C et D — un contact sur deux, gelé à vie. Changé ; ne pas le remettre.
-  ⚠️ A et B, eux, restent AU CONDITIONNEL. Si un corps A affirme le site fait, c'est bien une violation : signale-la.
+1septies. 🔴 **« dans la région de {VILLE} » — la ville vient de la BASE, pas du rédacteur.**
+
+  Le premier paragraphe fixe de C et D dit « J'ai vu que tu fais du {METIER} dans la région de {VILLE} ». La ville est servie au rédacteur depuis la colonne `companies.city` (fiche Google Places de l'entreprise) : il la **recopie**, il ne la devine pas.
+
+  ⚠️ Elle n'est PAS dans le `research_json` que tu reçois. Ne conclus donc pas qu'elle est inventée parce que tu ne peux pas la recouper — **l'absence d'une donnée de ton côté n'est pas une preuve d'invention.** Cette phrase est en PREMIÈRE LIGNE de tous les C et D : la signaler les refuserait tous.
+
+1octies. 🔴 **« j'aide les PME de {METIER} à se simplifier la vie » — phrase FIXE du gabarit C.**
+
+  Elle est identique au mot près pour tous les destinataires, elle décrit l'ACTIVITÉ de l'expéditeur, et elle ne nomme aucun client. Ce n'est ni une référence client, ni une preuve sociale, ni une action inventée sur CE prospect — les trois choses que la §2 te demande de chercher.
+
+  ⚠️ Ne la traite pas comme une prétention à connaître le secteur : elle dit ce que l'expéditeur fait, pas ce qu'il a déjà fait pour d'autres.
+
+1nonies. 🔴 **La chute du 2ᵉ paragraphe de C et D est FIXE elle aussi** : « Pourtant je suis certain qu'il serait possible de te simplifier la vie avec la gestion de tes clients et t'en amener plus en même temps. »
+
+  Elle est identique dans les huit variantes de C et D, dans les deux versions de `{ANCRE_CD}`. « je suis certain qu'il serait possible » est une opinion au conditionnel, pas une promesse de résultat chiffrée. La signaler refuserait un contact sur deux.
+
+1decies. 🔴 **Le paragraphe des avantages, propre au gabarit C, est FIXE lui aussi** :
+
+  « Les avantages d'avoir un système comme ça, c'est d'être le plus vite à répondre à un prospect qui autrement irait chez ta compétition. Ça augmente aussi la satisfaction de tes clients et te sauve du temps au passage. »
+
+  Identique au mot près pour tous les destinataires de C. Elle décrit ce qu'un système de réponse rapide FAIT, en général — ce n'est ni une promesse chiffrée, ni un résultat garanti à CE prospect, ni une référence client.
+
+  ⚠️ C'est la seule phrase fixe de C que les autres permissions ne couvraient pas, parce qu'elle n'existe pas dans D : les six premières décrivent ce que C et D PARTAGENT. Un conseil de vérification l'a relevé le 2026-09-08. La signaler refuserait un quart des envois.
+
 2. **Généralisations sectorielles douces / au conditionnel** : « une bonne partie pourrait revenir », « souvent », « dans bien des cas », « la plupart des entreprises de service ». C'est du **cadrage anecdotique**, PAS un claim d'autorité ni un fait sur CE prospect. (Seuls les CHIFFRES précis non sourcés, ou un fait spécifique inventé sur CE prospect, sont des violations.)
 3. **Le modèle commission/risque-zéro** : « vous me payez une commission par contrat re-signé, rien d'avance, rien à perdre ». C'est la **description du modèle d'affaires**, PAS une garantie de résultat.
 4. **Question rhétorique sur leur situation** : « combien de vos clients ne sont jamais revenus? ». Une question n'affirme rien.

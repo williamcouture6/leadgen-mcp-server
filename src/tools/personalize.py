@@ -62,6 +62,29 @@ class LLMUsage(BaseModel):
 def bloc_metiers_resolus(
     services_offered: list[str] | None, aujourdhui: date, gabarit: str | None = None
 ) -> str:
+    """(voir plus bas) — `gabarit` : la lettre du bras tiré, quand on la connaît.
+
+    🔴 LES DEUX RÈGLES QUI EN DÉPENDENT TOMBENT DU CÔTÉ SÛR, ET PAS DU MÊME :
+
+      · **le LEXIQUE** est servi quand `gabarit` est inconnu. Il gouverne
+        l'ouvreur GÉNÉRÉ de A et B ; le leur retirer par erreur leur enlèverait
+        leurs seules consignes de vocabulaire. C et D l'ignorent — c'est du
+        bruit, pas un danger.
+
+      · **la CONSIGNE DE SAISON** est TUE quand `gabarit` est inconnu. Elle dit
+        « emploie la Nᵉ version de l'ouvreur de C et D » — une phrase FIXE, qui
+        n'existe pas dans A ni B. Servie à un rédacteur de A, elle l'invite à
+        recopier du gabarit dans un paragraphe qu'il doit composer. Et depuis
+        que `check_saison_au_bon_temps` ne vise plus que C et D, rien ne le
+        rattraperait. À l'inverse, un C ou D privé de la consigne choisit une
+        tête au hasard — et LÀ, le contrôle l'attrape et l'écrit au résumé.
+
+    Autrement dit : dans le doute, on retire ce qui peut faire écrire une phrase
+    fausse, et on garde ce qui ne peut que manquer.
+
+    ⚠️ Sur le vrai chemin, `_format_input_for_llm` passe toujours la lettre :
+    ces deux replis ne servent qu'aux appelants d'appoint.
+    """
     """Ce que le rédacteur reçoit sur les métiers. **Il ne classe rien.**
 
     Tout est décidé par du code déterministe : quel métier fournit la scène
@@ -114,6 +137,24 @@ def bloc_metiers_resolus(
         ]
     else:
         lignes.append(f"- **Métier de la scène** (l'ouvreur) : {scene}")
+        if gabarit in GABARITS_A_TETE_FIXE:
+            # 🔴 AVEC SON ARTICLE, parce que la tête fixe de C et D dit
+            # « tu fais {METIER} » et non « tu fais du {METIER} ».
+            #
+            # Le nom de famille est nu dans la table (« tonte », « paysagement »)
+            # et l'article français n'est pas le même pour tous : « DE LA tonte »
+            # mais « DU paysagement ». Le gabarit portait « tu fais du {METIER} »
+            # et le bloc servait le nom nu — le rédacteur lisait donc « tu fais
+            # du tonte », dans une phrase qu'on lui demande par ailleurs de
+            # recopier virgule pour virgule.
+            #
+            # On lui donne la forme finie plutôt qu'une règle de grammaire à
+            # appliquer : c'est la même logique que partout ailleurs ici, le code
+            # décide, le rédacteur recopie.
+            lignes.append(
+                f"  ✍️ À recopier TEL QUEL dans le trou `{{METIER}}` : "
+                f"**{_avec_article(scene)}**"
+            )
         # 🔴 L'OUVREUR DE C ET D AFFIRME UNE DATE, et une date peut être fausse.
         # « La saison approche » lue par un paysagiste qui tond depuis six
         # semaines dit, dès la première ligne, que personne ne l'a lu. Mesuré le
@@ -126,7 +167,18 @@ def bloc_metiers_resolus(
         # écrit le 31 juillet tond depuis trois mois. William a tranché le
         # 2026-09-07 — une troisième formulation, qui démarre 1 mois après le
         # début. `moment_de_la_saison` est la seule source de cet état.
-        if r.scene_moment_saison == MOMENT_DEBUT:
+        # 🔴 CES TROIS CONSIGNES NE VISENT QUE C ET D, et il a fallu un conseil
+        # de vérification pour s'en apercevoir. Elles disent « emploie la Nᵉ
+        # version de l'ouvreur de C et D » — une phrase FIXE, qui n'existe pas
+        # dans A ni B, dont l'ouvreur est ÉCRIT par le modèle.
+        #
+        # Servies à un rédacteur de A, elles l'invitaient à recopier une phrase
+        # de gabarit dans un paragraphe qu'il est censé composer. Et depuis que
+        # `check_saison_au_bon_temps` est restreint à C et D — le même jour —
+        # **plus rien ne l'aurait rattrapé**.
+        if gabarit not in GABARITS_A_TETE_FIXE:
+            pass
+        elif r.scene_moment_saison == MOMENT_DEBUT:
             lignes.append(
                 "  🔴 **Sa saison VIENT DE COMMENCER** (moins d'un mois). "
                 "Emploie la 2ᵉ version de l'ouvreur de C et D — « C'est le "

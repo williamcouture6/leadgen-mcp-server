@@ -128,7 +128,7 @@ def _today_start_utc_iso() -> str:
     return start_local.astimezone(timezone.utc).isoformat()
 
 
-async def count_pushed_today() -> int:
+async def count_pushed_today(track: str | None = None) -> int:
     """Combien de drafts on a déjà handé off à Instantly aujourd'hui (Toronto).
 
     On compte les messages outbound dont scheduled_at >= today_start_local.
@@ -137,15 +137,29 @@ async def count_pushed_today() -> int:
     été plus efficace, mais ici N quotidien est petit (~10), SELECT suffit.
     """
     today_start = _today_start_utc_iso()
-    rows = await db.select(
-        "messages",
-        params={
-            "select": "id",
-            "direction": "eq.outbound",
-            "scheduled_at": f"gte.{today_start}",
-            "status": "neq.draft",
-        },
-    )
+    params: dict[str, str] = {
+        "select": "id",
+        "direction": "eq.outbound",
+        "scheduled_at": f"gte.{today_start}",
+        "status": "neq.draft",
+    }
+    # 🔴 `track` AJOUTÉ le 2026-09-08, sur constat d'un conseil de vérification.
+    #
+    # Sans lui, le plafond quotidien était un budget COMMUN aux deux pistes. Tout
+    # le reste de `run_wf6` est scopé — les drafts, la campagne, le refus si la
+    # campagne du track manque — mais ce compteur additionnait les deux. Un lot
+    # OPT aurait mangé le quota d'`agence-ia`, et l'inverse.
+    #
+    # L'effet est nul tant qu'OPT est en pause ; il ne l'aurait plus été le jour
+    # où quelqu'un rallume ce cron, et il aurait été INVISIBLE : l'envoi se
+    # serait simplement arrêté plus tôt, sans erreur ni alerte.
+    #
+    # ⚠️ Le défaut reste `None` = « toutes pistes confondues ». C'est ce que veut
+    # un appelant qui surveille la charge globale de la boîte d'envoi ; ce n'est
+    # PAS ce que veut `run_wf6`, qui gère un budget par piste.
+    if track:
+        params["track"] = f"eq.{track}"
+    rows = await db.select("messages", params=params)
     return len(rows)
 
 
@@ -406,7 +420,10 @@ class RunWf6In(BaseModel):
     limit: int = 10
     campaign_id: str | None = None
     dry_run: bool = False
-    # Override le daily cap (défaut: env INSTANTLY_DAILY_CAP ou 10).
+    # Override le daily cap (défaut : env INSTANTLY_DAILY_CAP, sinon
+    # `DAILY_CAP_DEFAULT`). ⚠️ Ne pas recopier le chiffre ici : il a
+    # déjà menti une journée entière en disant « 10 » après le passage
+    # à 20. La constante est la seule source.
     daily_cap: int | None = None
     track: str = "OPT"  # OPT (legacy) | agence-ia — filtre les drafts + choisit la campagne Instantly
 
@@ -556,7 +573,16 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
     """Pass complet WF-6 : pousse jusqu'à `limit` drafts approuvés à Instantly,
     en respectant le daily cap (compté sur fenêtre Toronto)."""
     daily_cap = payload.daily_cap if payload.daily_cap is not None else _daily_cap()
-    already = await count_pushed_today()
+    # 🔴 SCOPÉ AU TRACK. Sans ça, le plafond de 20 est un budget COMMUN aux
+    # deux pistes : tout le reste de `run_wf6` filtre par track — les drafts,
+    # la campagne, le refus si la campagne du track manque — mais le compteur
+    # du jour, lui, additionnait les deux. Un lot OPT aurait donc mangé le
+    # quota d'`agence-ia`, et l'inverse.
+    #
+    # OPT est en pause, donc l'effet est nul aujourd'hui ; il ne l'était plus
+    # le jour où quelqu'un rallume le cron OPT, et il aurait été invisible —
+    # l'envoi se serait simplement arrêté plus tôt, sans erreur.
+    already = await count_pushed_today(track=payload.track)
     remaining = max(0, daily_cap - already)
     effective_limit = min(payload.limit, remaining)
 
