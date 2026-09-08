@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from . import supabase_client as sb
 from .lib.gabarits import GABARITS, bras_demandes, bras_du_lot, est_un_gabarit
+from .lib.metiers import resoudre_metiers
 from .lib.relances import CLES_RELANCES
 from .tools import booking as booking_tools
 from .tools import compliance as compliance_tools
@@ -1939,7 +1940,6 @@ def _tombe_sur_le_repli_du_lexique(company_row: dict[str, Any]) -> bool:
     qui n'a pas assez creuse. La spec le dit depuis le debut ; il manquait juste
     quelqu'un pour compter.
     """
-    from .lib.metiers import resoudre_metiers
 
     research = company_row.get("research_json") or {}
     return resoudre_metiers(research.get("services_offered"), date.today()).dominant is None

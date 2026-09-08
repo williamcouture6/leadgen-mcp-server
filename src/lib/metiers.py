@@ -790,8 +790,40 @@ def resoudre_metiers(
         dominant=dominant,
         scene=scene,
         autres=autres,
+        # 🔴 `not any(...)`, ET SURTOUT PAS `all(...)`. Corrigé le 2026-09-07,
+        # sur constat d'un conseil de relecture confirmé par deux vérificateurs.
+        #
+        # Avec `all`, il suffisait qu'UN SEUL des autres métiers soit d'une
+        # autre saison pour que la forme contrastée s'applique à TOUTE
+        # l'énumération — y compris aux métiers qui partagent la saison de la
+        # scène. Un paysagiste qui fait aussi la tonte ET le déneigement lisait,
+        # en janvier :
+        #
+        #     « Pour le reste de l'année, j'ai aussi vu que tu fais de la tonte
+        #       pis du déneigement. »
+        #
+        # La partie « déneigement » est vraie ; la partie « tonte » est fausse,
+        # et il le voit d'un coup d'œil — la tonte et le paysagement, c'est le
+        # même été. Mesuré sur la base : **56 entreprises**, de janvier à
+        # juillet.
+        #
+        # C'était exactement le mensonge que `_meme_saison` existe pour
+        # empêcher, et que sa propre docstring décrit. Le quantificateur n'était
+        # exercé par aucun test : les quatre fiches de référence n'ont qu'UN
+        # SEUL élément dans `autres`, où `all` et `any` sont indiscernables.
+        #
+        # La règle, énoncée : dès qu'un seul des autres métiers partage la
+        # saison de la scène, on retombe sur la forme neutre — celle qui
+        # n'affirme aucun contraste temporel, donc celle qui ne peut pas mentir.
+        #
+        # ⚠️ `any`, ET SURTOUT PAS `not any` : le correctif que le conseil
+        # proposait inversait la règle. Appliqué tel quel pendant deux minutes,
+        # il donnait « pour le reste de l'année » à un paysagiste-tondeur et
+        # « j'ai aussi vu que » à un déneigeur-paysagiste — exactement l'inverse
+        # dans les deux cas. Quatre tests l'ont dit tout de suite. Un correctif
+        # suggéré se relit ; il ne se recopie pas.
         meme_saison=(
-            all(_meme_saison(scene, a) for a in autres) if scene and autres else True
+            any(_meme_saison(scene, a) for a in autres) if scene and autres else True
         ),
         joignable=bool(ouverts),
         deuxieme_temps_obligatoire=len(metiers) > 1,

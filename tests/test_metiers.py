@@ -344,6 +344,35 @@ def test_hiver_plus_ete_donne_pour_le_reste_de_lannee() -> None:
     assert not r.meme_saison
 
 
+def test_le_cas_MIXTE_retombe_sur_la_forme_neutre() -> None:
+    """🔴 LE CAS QUI MANQUAIT, trouvé par un conseil de relecture le 2026-09-07.
+
+    Les deux tests voisins ne couvrent que les cas PURS : tous les autres
+    métiers dans une autre saison, ou tous dans la même. Le cas mixte — un
+    paysagiste qui fait AUSSI la tonte (même été) ET le déneigement (autre
+    saison) — n'était testé nulle part.
+
+    Et il se trompait : `meme_saison` employait `all(...)`, donc un seul métier
+    hors saison suffisait à coller « Pour le reste de l'année » sur TOUTE
+    l'énumération. Le prospect lisait « pour le reste de l'année, tu fais de la
+    tonte pis du déneigement » — vrai pour la neige, faux pour la tonte, et il
+    le voit d'un coup d'œil. **56 entreprises**, de janvier à juillet.
+
+    ⚠️ Ce test est le seul à distinguer `all` de `any` : partout ailleurs
+    `autres` n'a qu'UN élément, où les deux quantificateurs sont identiques.
+    Le supprimer rouvrirait le défaut en silence.
+    """
+    r = resoudre_metiers(
+        ["aménagement paysager", "tonte de gazon", "déneigement"], FEVRIER
+    )
+    assert r.scene == "paysagement"
+    assert set(r.autres) == {"tonte", "déneigement"}
+    assert r.meme_saison is True, (
+        "un seul métier de la même saison dans la liste suffit à interdire le "
+        "contraste temporel : on choisit la forme qui ne peut pas mentir"
+    )
+
+
 def test_ete_seulement_donne_tu_fais_aussi() -> None:
     """34 boîtes. « Pour le reste de l'année » serait FAUX ici : la tonte et le
     paysagement, c'est le même été."""
