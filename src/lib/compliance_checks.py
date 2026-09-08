@@ -1,6 +1,17 @@
 """Deterministic compliance checks for outreach emails — no LLM needed.
 
-Chaque check retourne (passed: bool, message: str, severity: 'block'|'warn').
+Chaque check retourne (passed: bool, message: str, severity: 'block'|'info').
+
+🔴 `'warn'` N'EXISTE PLUS, et ce n'est pas un oubli de nettoyage. Un `warn` fait
+rendre `needs_revision` au juge, donc `compliance_check_passed = false`, donc le
+brouillon quitte le lot POUR TOUJOURS et le contact reste gelé à vie — il tuait
+exactement comme un `block`. Décision William du 2026-08-31 : seul ce que le
+prospect peut vérifier tue un brouillon ; le reste est `info`, annoté et compté
+au résumé du soir. 13 des 23 checks sont en `info` aujourd'hui.
+
+⚠️ Poser `severity="warn"` sur un nouveau check en croyant obtenir une remarque
+non fatale gèlerait donc des contacts. Le canal reste lu par
+`tools/compliance.py` (au cas où), mais aucun check ne l'emprunte.
 L'orchestrateur (`tools/compliance.py`) les collecte en verdict. Ces checks
 tournent AVANT le LLM judge pour court-circuiter sur les violations dures.
 

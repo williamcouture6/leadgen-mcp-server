@@ -2,9 +2,25 @@
 
 Pre-send firewall pour les drafts outbound. Deux layers :
   1. **Deterministic checks** (rapide, sans LLM) — voir `lib/compliance_checks.py`.
-     Bloque sur mots bannis, actions 1ère personne, fake social proof, footer
-     LCAP, longueur, CTA, registre (cohérence tu/vous), créneaux Cal.com
-     fabriqués, warmup window.
+     🔴 CETTE LISTE EST DÉRIVÉE DES SÉVÉRITÉS RÉELLES. Elle a menti une
+     semaine durant, en annonçant comme bloquants la longueur, le CTA, le
+     registre et les mots bannis — tous passés en `info` le 2026-08-31.
+
+     BLOQUE, et un blocage fait quitter le lot au brouillon POUR TOUJOURS,
+     le contact restant gelé à vie :
+       avis_conformes · cta_slots_real · fake_social_proof
+       first_person_actions · legal_footer · statistiques_conformes
+       subject_fake_social_proof · subject_first_person_actions · warmup_window
+
+     ANNOTE seulement (`info`) — le courriel PART, la remarque va au résumé
+     du soir :
+       banned_words · cta_present · length · registre · tics_de_langage
+       mise_en_scene · saison_au_bon_temps · site_au_conditionnel
+       subject_banned_words · loi25_privacy_contact
+
+     Ce qui range un check dans l'une ou l'autre, décision William du
+     2026-08-31 : **seul ce que le prospect peut VÉRIFIER et qui l'induit en
+     erreur sur un FAIT a le droit de tuer un brouillon.**
   2. **LLM judge** (Claude Sonnet) — voir `prompts/compliance.md`. Détecte les
      violations sémantiques que les regex ne peuvent pas voir (faits non
      vérifiables, preuve sociale subtile, promesses non tenables, etc.).

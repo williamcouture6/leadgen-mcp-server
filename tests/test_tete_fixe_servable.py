@@ -169,3 +169,77 @@ def test_le_gabarit_dit_quel_metier_va_au_4e_paragraphe() -> None:
         "le gabarit C ne dit pas quel métier va dans « j'aide les PME de … »"
     )
     assert "jamais le dominant" in consigne
+
+
+# ============ 5. LA COMPOSITION : le trou + la phrase du gabarit ============
+#
+# 🔴 AUCUN test ne faisait cette composition, et c'est ce qui a laissé passer
+# « J'ai vu que tu fais du du lavage de vitres » en PREMIÈRE LIGNE de tous les
+# C et D. Les tests vérifiaient la valeur injectée (« du lavage de vitres » :
+# correcte) et la phrase du gabarit (« tu fais du {METIER} » : correcte), jamais
+# les deux ENSEMBLE. Chaque moitié était juste ; leur somme ne l'était pas.
+
+
+def _valeurs(services: list[str], jour: date) -> dict[str, str]:
+    """Ce que le bloc sert pour chaque trou, extrait comme le modèle le lirait."""
+    import re
+
+    txt = bloc_metiers_resolus(services, jour, gabarit="C")
+    out: dict[str, str] = {}
+    for trou, motif in (
+        ("METIER_ARTICLE", r"`\{METIER_ARTICLE\}`[^*]+\*\*(.+?)\*\*"),
+        ("METIER", r"`\{METIER\}`[^*]+\*\*(.+?)\*\*"),
+    ):
+        m = re.search(motif, txt)
+        assert m, f"le bloc ne sert pas {trou}"
+        out[trou] = m.group(1)
+    return out
+
+
+@pytest.mark.parametrize(
+    "services,jour",
+    [
+        (["Tonte de pelouse"], date(2026, 5, 10)),          # féminin : de la
+        (["Lavage de vitres"], date(2026, 4, 10)),          # masculin pluriel
+        (["Aménagement paysager"], date(2026, 5, 10)),      # masculin : du
+        (["Déneigement résidentiel"], date(2026, 12, 10)),  # masculin : du
+        (["Extermination de parasites"], date(2026, 4, 10)),
+    ],
+)
+def test_les_phrases_du_gabarit_sont_grammaticales_une_fois_remplies(
+    services: list[str], jour: date
+) -> None:
+    """On prend les VRAIES lignes du gabarit, on y substitue les VRAIES valeurs,
+    et on lit le résultat. C'est le seul test qui voit ce que le prospect verra.
+    """
+    from pathlib import Path
+
+    prompt = (
+        Path(__file__).parent.parent / "src/prompts/reacti/personalize.md"
+    ).read_text(encoding="utf-8")
+    v = _valeurs(services, jour)
+
+    lignes = [
+        l for l in prompt.split(chr(10))
+        if "{METIER_ARTICLE}" in l or "les PME de {METIER}" in l
+    ]
+    assert lignes, "aucune ligne de gabarit ne porte les trous"
+
+    for ligne in lignes:
+        rendu = ligne.replace("{METIER_ARTICLE}", v["METIER_ARTICLE"])
+        rendu = rendu.replace("{METIER}", v["METIER"])
+        for faute in ("du du ", "de de ", "du de ", "de du ", "de la de ", "la la "):
+            assert faute not in rendu.lower(), (
+                f"article doublé — « …{faute.strip()}… » dans : {rendu.strip()}"
+            )
+        assert "{METIER" not in rendu, f"un trou n'a pas été rempli : {rendu.strip()}"
+
+
+def test_les_deux_trous_recoivent_des_valeurs_differentes_au_besoin() -> None:
+    """Contrôle négatif : si les deux trous recevaient la même chaîne, le test
+    ci-dessus passerait pour le nom nu et raterait l'article — ou l'inverse.
+    Pour un métier féminin, les deux formes DOIVENT différer."""
+    v = _valeurs(["Tonte de pelouse"], date(2026, 5, 10))
+    assert v["METIER"] == "tonte"
+    assert v["METIER_ARTICLE"] == "de la tonte"
+    assert v["METIER"] != v["METIER_ARTICLE"]

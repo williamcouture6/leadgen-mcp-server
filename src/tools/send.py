@@ -582,11 +582,17 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
     # OPT est en pause, donc l'effet est nul aujourd'hui ; il ne l'était plus
     # le jour où quelqu'un rallume le cron OPT, et il aurait été invisible —
     # l'envoi se serait simplement arrêté plus tôt, sans erreur.
-    already = await count_pushed_today(track=payload.track)
+    track = (payload.track or "OPT").strip() or "OPT"
+    # ⚠️ `track` NORMALISÉ, pas `payload.track` brut. Le compteur était appelé
+    # AVANT la normalisation faite quelques lignes plus bas pour les drafts :
+    # un track avec une espace parasite donnait `eq. agence-ia `, zéro ligne, et
+    # le plafond repartait à neuf à chaque appel pendant que les drafts, eux,
+    # étaient bien lus. Le cron n8n poste une valeur propre, donc l'effet est nul
+    # aujourd'hui — mais la panne aurait été silencieuse.
+    already = await count_pushed_today(track=track)
     remaining = max(0, daily_cap - already)
     effective_limit = min(payload.limit, remaining)
 
-    track = (payload.track or "OPT").strip() or "OPT"
     campaign = payload.campaign_id or _campaign_for_track(track)
     # Garde : un track non-OPT DOIT avoir sa campagne dédiée, sinon on refuse —
     # ne JAMAIS pousser des drafts REACTI vers la campagne OPT par défaut.

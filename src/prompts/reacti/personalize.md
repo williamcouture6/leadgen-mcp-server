@@ -125,8 +125,8 @@ t'aime pas. C'est parce que t'as pas pu répondre à temps.
 
 🔴 **Lis ça avant les deux gabarits.** C et D ne se rédigent pas comme A et B.
 Ils n'ont **pas d'ouvreur généré** : leur premier paragraphe est fixe et ne
-porte que trois trous, `{METIER}`, `{VILLE}` et `{DEUXIEME_TEMPS}`, tous
-fournis — `{DEUXIEME_TEMPS}` se remplace par **rien du tout** (et l'espace qui
+porte que quatre trous — `{METIER_ARTICLE}`, `{METIER}`, `{VILLE}` et
+`{DEUXIEME_TEMPS}` —, tous fournis — `{DEUXIEME_TEMPS}` se remplace par **rien du tout** (et l'espace qui
 le précède disparaît) quand l'entreprise est mono-métier. Tout ce que
 tu décides ici, c'est :
 
@@ -145,7 +145,7 @@ Ne les « améliore » pas, ne les raccourcis pas, ne change pas une virgule.
 ```
 Bonjour,
 
-J'ai vu que tu fais du {METIER} dans la région de {VILLE}. La saison
+J'ai vu que tu fais {METIER_ARTICLE} dans la région de {VILLE}. La saison
 approche, pis je me disais que je pourrais te contacter pour te parler de
 quelque chose qui pourrait t'intéresser. {DEUXIEME_TEMPS}
 
@@ -158,7 +158,7 @@ identique au mot près :
 ```
 Bonjour,
 
-J'ai vu que tu fais du {METIER} dans la région de {VILLE}. C'est le début
+J'ai vu que tu fais {METIER_ARTICLE} dans la région de {VILLE}. C'est le début
 de la saison, pis je me disais que je pourrais te contacter pour te parler
 de quelque chose qui pourrait t'intéresser. {DEUXIEME_TEMPS}
 
@@ -170,7 +170,7 @@ EST BIEN ENTAMÉE ». Même règle : une seule proposition change.
 ```
 Bonjour,
 
-J'ai vu que tu fais du {METIER} dans la région de {VILLE}. Je sais que t'es
+J'ai vu que tu fais {METIER_ARTICLE} dans la région de {VILLE}. Je sais que t'es
 dans le gros de la saison, pis je me disais que je pourrais te contacter
 pour te parler de quelque chose qui pourrait t'intéresser. {DEUXIEME_TEMPS}
 
@@ -257,7 +257,24 @@ découle d'une liste. La chute, elle, est **identique** dans les deux.
 
 ## LE GABARIT C — la saison, le service décrit en vague
 
-🔴 **Le `{METIER}` du paragraphe ci-dessous est LE MÊME que celui du premier**,
+🔴 **DEUX TROUS, DEUX FORMES DU MÊME MÉTIER — et ce n'est pas un doublon.**
+
+| trou | ce qu'il reçoit | où |
+|---|---|---|
+| `{METIER_ARTICLE}` | **du paysagement**, **de la tonte** | « tu fais … », 1ᵉʳ paragraphe |
+| `{METIER}` | **paysagement**, **tonte** | « j'aide les PME de … », plus bas |
+
+L'article français n'est pas le même pour tous les métiers, et les deux phrases
+ne le prennent pas au même endroit : « tu fais **de la** tonte » mais « les PME
+**de** tonte ». Le bloc « Métiers résolus » sert les deux formes toutes faites —
+recopie-les, ne les fabrique pas.
+
+⚠️ Une version antérieure écrivait « tu fais **du** {METIER} » et le code
+injectait déjà l'article : ça donnait « tu fais du du lavage de vitres » en
+PREMIÈRE LIGNE de tous les C et D. C'est la raison d'être des deux trous.
+
+🔴 **Le métier est LE MÊME aux deux endroits** — celui de la scène, jamais le
+dominant,
 c'est-à-dire le **métier de la scène**, jamais le dominant. Un courriel qui
 ouvre sur le déneigement puis dit « j'aide les PME de paysagement » se contredit
 en trois lignes, et le prospect le voit. Le bloc « Métiers résolus » ne nomme
@@ -369,7 +386,7 @@ Les deux moitiés étaient fausses, et un conseil de relecture l'a relevé :
    décision de William : seul ce que le prospect peut vérifier tue un
    brouillon. Il ANNOTE, il ne bloque pas.
 2. Surtout, le premier paragraphe fixe de C et D commence littéralement par
-   « J'ai vu que tu fais du {METIER} », et le 2ᵉ temps porte « j'ai aussi vu
+   « J'ai vu que tu fais {METIER_ARTICLE} », et le 2ᵉ temps porte « j'ai aussi vu
    que ». Un rédacteur qui prenait la consigne au mot était poussé à réécrire
    un gabarit qui se recopie sans changer une virgule.
 

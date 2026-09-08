@@ -207,7 +207,7 @@ def test_le_prompt_ne_pretend_plus_qu_un_controle_bloque_j_ai_vu_que() -> None:
     2026-08-31, et le premier paragraphe fixe de C et D commence littéralement
     par « J'ai vu que tu fais du {METIER} ». Un rédacteur qui prenait la
     consigne au mot était poussé à réécrire un gabarit intouchable."""
-    assert "J'ai vu que tu fais du {METIER}" in PROMPT
+    assert "J'ai vu que tu fais {METIER_ARTICLE}" in PROMPT
     assert "et un contrôle déterministe **bloque** désormais le brouillon" not in PROMPT
 
 

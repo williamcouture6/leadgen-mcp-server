@@ -335,7 +335,8 @@ MOIS_APRES_DEFAUT = 2
 #     tonte, piscine   4 mois avant le 01/05 → 1er janvier      = 120 jours
 #
 # Ça compte pour juger la phrase « La saison approche » : son maximum réel est
-# de 106 jours, pas de 90. Un conseil de relecture l'a relevé le 2026-09-07,
+# de 120 jours (tonte et piscine, au 1er janvier) — 106 pour le déneigement,
+# pas de 90. Un conseil de relecture l'a relevé le 2026-09-07,
 # parce que deux commentaires disaient « la fenêtre s'ouvre le 15 » — ce qui
 # aurait trompé une session future venue arbitrer la longueur de l'ouvreur.
 FENETRE_PAR_METIER: dict[str, tuple[int, int]] = {

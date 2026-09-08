@@ -62,7 +62,19 @@ class LLMUsage(BaseModel):
 def bloc_metiers_resolus(
     services_offered: list[str] | None, aujourdhui: date, gabarit: str | None = None
 ) -> str:
-    """(voir plus bas) — `gabarit` : la lettre du bras tiré, quand on la connaît.
+    """Ce que le rédacteur reçoit sur les métiers. **Il ne classe rien.**
+
+    Tout est décidé par du code déterministe : quel métier fournit la scène
+    (celui dont la fenêtre est ouverte et dont la saison arrive le plus tôt),
+    lesquels sont les autres, quelle FORMULATION employer pour le 2ᵉ temps, et
+    quel lexique gouverne le bloc service.
+
+    🔴 La formulation n'est pas laissée au modèle. « Pour le reste de l'année »
+    affirme un contraste temporel qui devient un MENSONGE quand les métiers
+    partagent la même saison — la tonte et le paysagement, c'est le même été.
+    « Tu fais X aussi » n'affirme rien de temporel et ne peut pas être faux.
+
+    (voir plus bas) — `gabarit` : la lettre du bras tiré, quand on la connaît.
 
     🔴 LES DEUX RÈGLES QUI EN DÉPENDENT TOMBENT DU CÔTÉ SÛR, ET PAS DU MÊME :
 
@@ -84,18 +96,6 @@ def bloc_metiers_resolus(
 
     ⚠️ Sur le vrai chemin, `_format_input_for_llm` passe toujours la lettre :
     ces deux replis ne servent qu'aux appelants d'appoint.
-    """
-    """Ce que le rédacteur reçoit sur les métiers. **Il ne classe rien.**
-
-    Tout est décidé par du code déterministe : quel métier fournit la scène
-    (celui dont la fenêtre est ouverte et dont la saison arrive le plus tôt),
-    lesquels sont les autres, quelle FORMULATION employer pour le 2ᵉ temps, et
-    quel lexique gouverne le bloc service.
-
-    🔴 La formulation n'est pas laissée au modèle. « Pour le reste de l'année »
-    affirme un contraste temporel qui devient un MENSONGE quand les métiers
-    partagent la même saison — la tonte et le paysagement, c'est le même été.
-    « Tu fais X aussi » n'affirme rien de temporel et ne peut pas être faux.
     """
     r = resoudre_metiers(services_offered, aujourdhui)
 
@@ -138,8 +138,9 @@ def bloc_metiers_resolus(
     else:
         lignes.append(f"- **Métier de la scène** (l'ouvreur) : {scene}")
         if gabarit in GABARITS_A_TETE_FIXE:
-            # 🔴 AVEC SON ARTICLE, parce que la tête fixe de C et D dit
-            # « tu fais {METIER} » et non « tu fais du {METIER} ».
+            # 🔴 DEUX FORMES, parce que les deux phrases fixes de C et D ne
+            # prennent pas l'article au même endroit : « tu fais DE LA tonte »
+            # mais « les PME DE tonte ».
             #
             # Le nom de famille est nu dans la table (« tonte », « paysagement »)
             # et l'article français n'est pas le même pour tous : « DE LA tonte »
@@ -152,8 +153,10 @@ def bloc_metiers_resolus(
             # appliquer : c'est la même logique que partout ailleurs ici, le code
             # décide, le rédacteur recopie.
             lignes.append(
-                f"  ✍️ À recopier TEL QUEL dans le trou `{{METIER}}` : "
-                f"**{_avec_article(scene)}**"
+                f"  ✍️ `{{METIER_ARTICLE}}` (« tu fais … ») : **{_avec_article(scene)}**"
+            )
+            lignes.append(
+                f"  ✍️ `{{METIER}}` (« les PME de … ») : **{scene}**"
             )
         # 🔴 L'OUVREUR DE C ET D AFFIRME UNE DATE, et une date peut être fausse.
         # « La saison approche » lue par un paysagiste qui tond depuis six
