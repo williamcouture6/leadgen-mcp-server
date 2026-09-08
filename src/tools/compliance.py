@@ -33,17 +33,6 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from ..lib.avis import bloc_faits_verifies
 from ..lib.metiers import resoudre_metiers
 
-
-def _sans_accents_minuscules(texte: str) -> str:
-    """Pour comparer un nom de métier au corps sans buter sur les accents.
-
-    « déneigement » dans la table, « Deneigement » dans un corps mal accentué :
-    la comparaison doit tenir, sinon on désarme le contrôle sur une coquille.
-    """
-    import unicodedata
-
-    plat = unicodedata.normalize("NFD", (texte or "").lower())
-    return "".join(c for c in plat if unicodedata.category(c) != "Mn")
 from ..lib.relances import RELANCES
 from ..lib.compliance_checks import (
     CheckResult,
@@ -314,29 +303,35 @@ async def compliance_check(
         ((research_json or {}).get("services_offered")) or [],
         date.today(),
     )
-    moment_saison = _r.scene_moment_saison
-    # ⚠️ LA SCÈNE PEUT AVOIR CHANGÉ DEPUIS LA RÉDACTION, et la remarque
-    # porterait alors sur un métier dont le corps ne parle même pas.
+    # 🔴 LE CONTRÔLE DE SAISON NE VAUT QUE POUR C ET D.
     #
-    # Trouvé par un conseil de relecture le 2026-09-07, avec son scénario :
-    # une entreprise déneigement + lavage de vitres, rédigée le 20 décembre
-    # (fenêtre déneigement ouverte, corps exact), jugée le 5 janvier — la
-    # fenêtre du déneigement s'est fermée, celle du lavage de vitres s'est
-    # ouverte, la scène recalculée devient « lavage de vitres » et son moment
-    # « à venir ». Le contrôle reprochait au corps de dire la saison commencée,
-    # en jugeant sur une saison dont le courriel ne parle pas.
+    # Eux seuls ont un premier paragraphe FIXE qui situe la saison. L'ouvreur de
+    # A et B est écrit par le modèle et ne porte aucune des trois formulations :
+    # leur appliquer le contrôle ne peut produire que du bruit.
     #
-    # On n'annote donc que si le corps NOMME le métier de la scène recalculée.
-    # Volontairement grossier — le métier est écrit en toutes lettres dans le
-    # premier paragraphe — mais ça écarte le seul cas nuisible sans transporter
-    # d'état supplémentaire entre WF-4 et WF-5.
-    # ⚠️ LES DEUX CÔTÉS SONT NORMALISÉS. Première version : le corps était
-    # aplati, le nom du métier ne l'était pas — « déneigement » n'était donc
-    # jamais trouvé dans « deneigement… », la condition était vraie à tous les
-    # coups et la garde se désarmait elle-même pour 100 % des brouillons. Le
-    # test du vrai chemin l'a attrapé dans la minute qui a suivi.
-    if _r.scene and _sans_accents_minuscules(_r.scene) not in _sans_accents_minuscules(body):
-        moment_saison = None
+    # ⚠️ CE QUI A ÉTÉ RETIRÉ ICI. Une garde ajoutée le matin même mettait
+    # `moment_saison = None` quand le corps ne nommait pas la scène recalculée.
+    # Un conseil de relecture a montré qu'elle ne marchait dans AUCUN des deux
+    # sens :
+    #
+    #   · sur C et D elle ne se déclenchait JAMAIS — le 2ᵉ temps énumère
+    #     précisément les autres métiers, donc le nom recalculé se trouve
+    #     presque toujours quelque part dans le corps ;
+    #   · sur A et B elle se déclenchait TOUJOURS — leur ouvreur est généré et
+    #     ne recopie pas le nom de famille de la table (« paysagement » n'est
+    #     pas dans « aménagement paysager »), ce qui éteignait le seul contrôle
+    #     de saison qui leur restait.
+    #
+    # Exactement l'inverse de l'intention, des deux côtés. Restreindre aux
+    # gabarits qui portent vraiment la phrase fait le travail sans deviner.
+    #
+    # Reste un cas assumé : un brouillon C/D rédigé avant une bascule de fenêtre
+    # et jugé après reçoit une remarque qui vise le nouveau métier de scène. Ça
+    # coûte UNE LIGNE au résumé du soir — sévérité `info`, aucun brouillon tué —
+    # et le débit porté à 20/jour a ramené l'attente maximale de 28 j à 6.
+    moment_saison = (
+        _r.scene_moment_saison if (template_used or "") in ("C", "D") else None
+    )
 
     det_results: list[CheckResult] = []
     for etiquette, texte, gabarit in corps_a_juger:

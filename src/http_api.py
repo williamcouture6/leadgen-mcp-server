@@ -2181,7 +2181,23 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
 
     return await _personalize_one(
         contact, company,
-        template_choice=payload.template_choice,
+        # Le rejeu manuel passe par la MÊME garde que le lot : sans métier
+        # reconnu, C et D sont écartés — leur premier paragraphe est fixe et
+        # nomme un métier. Un conseil de relecture a relevé le 2026-09-07 que
+        # cette route court-circuitait `bras_du_lot`, donc qu'un rejeu à la main
+        # sur `template_choice="C"` produisait le courriel cassé que le lot,
+        # lui, savait éviter. `rang=0` : il n'y a qu'un contact, il n'y a rien
+        # à alterner.
+        template_choice=bras_du_lot(
+            payload.template_choice,
+            0,
+            metier_connu=bool(
+                resoudre_metiers(
+                    ((company.get("research_json") or {}).get("services_offered")) or [],
+                    date.today(),
+                ).metiers
+            ),
+        ),
         model=payload.model,
         persist=payload.persist,
         available_slots=slots,
@@ -2442,14 +2458,30 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
     # fin de la liste, soit une panne. On ne paie les deux `count()` que dans ce
     # cas précis — un lot qui tourne n'a rien à demander de plus à la base.
     alerte_famine_envoyee: bool | None = None
-    if len(items) == 0:
+    # 🔴 `drafts == 0`, ET SURTOUT PAS `len(items) == 0`. Corrigé le 2026-09-07,
+    # sur constat d'un conseil de relecture.
+    #
+    # Un item en `status='error'` compte comme du travail fait : un lot de 20
+    # contacts dont les 20 ÉCHOUENT rendait `len(items) == 20`, donc pas de
+    # famine, donc silence. L'alerte ne voyait que la file vide, jamais la
+    # panne.
+    #
+    # Ce n'est pas théorique : le même jour, un import manquant faisait échouer
+    # les 20 contacts d'un lot sur un `NameError` avalé par le `try/except`
+    # ci-dessus. Le pipeline aurait écrit zéro brouillon par jour, indéfiniment,
+    # et CETTE alerte — la seule qui existe pour ça — serait restée muette.
+    #
+    # C'est exactement la panne des cinq semaines de Google Places que la
+    # docstring de `_doit_alerter_famine` raconte. Un pipeline fail-soft doit
+    # crier quand il ne PRODUIT plus rien, pas quand il ne LIT plus rien.
+    if drafts == 0:
         restants, compte_lu = await _compter_envoyables_restants(payload.track)
         # `not compte_lu` d'ABORD : si le compte est illisible, on crie quand
         # même. Sans ça, une panne de lecture ferait rendre 0, donc « fin de
         # liste », donc silence — l'alerte se saborderait elle-même exactement
         # au moment où quelque chose ne va pas.
         if not compte_lu or _doit_alerter_famine(
-            processed=len(items), envoyables_restants=restants
+            processed=drafts, envoyables_restants=restants
         ):
             alerte_famine_envoyee = await _alerter_famine_wf4(
                 track=payload.track, restants=restants,

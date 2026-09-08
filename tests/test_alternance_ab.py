@@ -11,6 +11,14 @@ repli de la piste OPT (60-95 mots) et refusait un corps de 217 mots. Poser
 « AB » dans n8n (tâche 18) aurait refusé 100 % des brouillons, chacun sorti du
 lot pour toujours, chaque contact gelé à vie.
 
+⚠️ **Cette conséquence est HISTORIQUE.** `check_length` était en sévérité `warn`
+au moment où ce texte a été écrit (2026-08-30) ; il est passé en `info` le
+lendemain, décision William — seul ce que le prospect peut vérifier tue un
+brouillon. Un corps hors bornes ne gèle donc plus personne. Les trois ceintures
+restent, parce qu'un corps de 217 mots jugé sur des bornes de 60-95 reste un
+mauvais courriel, et parce que la mine d'origine — la colonne qui porte « AB »
+sur toutes les lignes — n'a rien à voir avec la sévérité.
+
 Trois ceintures indépendantes ferment ce trou. Chacune a son test ici.
 """
 from __future__ import annotations
@@ -113,10 +121,18 @@ def test_le_metier_connu_ne_change_rien_au_cas_normal() -> None:
     Sans ce test, `metier_connu` pourrait dévier l'alternance de tout le monde
     et le test précédent — qui ne regarde que la signature — resterait vert.
     """
-    normal = [http_api._bras_ab("ABCD", i) for i in range(20)]
-    explicite = [http_api._bras_ab("ABCD", i, metier_connu=True) for i in range(20)]
-    assert normal == explicite
-    assert normal.count("A") == normal.count("B") == normal.count("C") == 5
+    # 🔧 2026-09-07 : l'assertion `normal == explicite` était une TAUTOLOGIE —
+    # `metier_connu` vaut True par défaut, donc les deux listes sont le même
+    # appel et ne peuvent pas différer, quelle que soit la mutation du code. Un
+    # conseil de relecture l'a relevé.
+    #
+    # Ce qu'on veut vraiment dire : avec un métier reconnu, les QUATRE bras
+    # tournent, également répartis, dans l'ordre. C'est ça qu'une régression de
+    # `metier_connu` casserait.
+    bras = [http_api._bras_ab("ABCD", i, metier_connu=True) for i in range(20)]
+    assert bras[:4] == ["A", "B", "C", "D"], bras[:4]
+    for lettre in "ABCD":
+        assert bras.count(lettre) == 5, f"{lettre} sort {bras.count(lettre)} fois sur 20"
 
 
 def test_sans_metier_reconnu_ni_C_ni_D() -> None:

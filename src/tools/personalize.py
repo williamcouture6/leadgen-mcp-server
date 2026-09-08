@@ -175,7 +175,20 @@ def bloc_metiers_resolus(
             lignes.append(
                 f"- **2ᵉ temps OBLIGATOIRE**, formulation imposée : « {formule} »"
             )
-            if r.scene_est_minoritaire:
+            # ⚠️ `r.dominant != scene` : sans cette condition, la consigne
+            # exigeait de nommer un métier ABSENT de la liste qu'elle impose.
+            #
+            # `scene_est_minoritaire` ne teste que « la scène pèse ≤ 25 % des
+            # libellés » — jamais qu'elle DIFFÈRE du dominant. Chez une
+            # entreprise à quatre métiers ou plus, le métier le plus fréquent
+            # peut lui-même passer sous le quart : la scène est alors le
+            # dominant, `autres_metiers` l'exclut par construction, et le
+            # rédacteur lisait « nomme le dominant en premier » à propos d'un
+            # métier que la formulation imposée ne contient pas.
+            #
+            # Mesuré le 2026-09-07 : 4 combinaisons de métiers réels produisent
+            # ce cas. Trouvé par un conseil de relecture.
+            if r.scene_est_minoritaire and r.dominant != scene:
                 lignes.append(
                     f"  ⚠️ Le métier de la scène pèse ≤ 25 % de ses libellés : le 2ᵉ temps "
                     f"doit NOMMER son métier dominant ({r.dominant}) en premier."

@@ -14,6 +14,9 @@ Tu reçois un email cold-outreach déjà écrit, **ses deux relances quand il en
 - Footer légal LCAP/Loi 25 présent
 - Longueur, CTA, vouvoiement
 - Créneaux Cal.com cohérents
+- 🔴 **La ville** (« dans la région de … ») : recopiée depuis `companies.city`, absente de ton research_json. Voir §1septies.
+- 🔴 **« j'aide les PME de {MÉTIER} … »** et **la chute « Pourtant je suis certain qu'il serait possible … »** : phrases FIXES de C et D, identiques pour tous. Voir §1octies et §1nonies.
+- 🔴 **Les noms de métiers sont des FAMILLES normalisées**, pas des recopies de `services_offered` — « Aménagement paysager » s'écrit « paysagement ». Voir §1sexies.
 - 🔴 **L'ouvreur de saison des gabarits C et D**, dans ses TROIS versions. Le premier paragraphe de C et D situe la saison du métier, et la formulation est choisie par du CODE — jamais par le rédacteur — selon la date d'envoi et la saison documentée du métier : « La saison approche » (saison à venir), « C'est le début de la saison » (commencée depuis moins d'un mois), « Je sais que t'es dans le gros de la saison » (commencée depuis plus d'un mois). Voir §1quinquies. Les signaler refuserait la quasi-totalité des envois de C et D.
 - 🔴 **Le 2ᵉ temps**, qui nomme ses autres métiers : « Pour le reste de l'année, j'ai aussi vu que tu fais X » ou « J'ai aussi vu que tu fais X ». Formulation IMPOSÉE par le code depuis `services_offered`, sur 70 % des destinataires. Voir §1sexies.
 - 🔴 **Le bloc du site des gabarits C et D**, qui dit le site déjà fait (« j'en ai aussi profité pour te refaire / te faire un site web au goût du jour »). Formulation FIXE, identique pour tous les destinataires, décidée par William le 2026-08-31 et déjà détectée par `check_site_au_conditionnel` en sévérité `info`. Voir §1quater. La signaler refuserait un contact sur deux.
@@ -32,6 +35,22 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
 
 1ter. **Proposer de faire un site, au conditionnel** : « je me suis aussi dit que je pourrais t'en faire une version rafraîchie », « je pourrais te créer un site, parce que je pense que t'en as pas ». Le conditionnel est exact — le site n'existe pas encore et se fabrique à la main APRÈS une réponse positive. ⚠️ En revanche, tout ce qui affirme que le site EST FAIT (« je te l'envoie », « ton site est prêt », « je l'ai mis en ligne ») est un **mensonge vérifiable** : signale-le — **SAUF le bloc du site des gabarits C et D**, voir juste en dessous.
 
+1septies. 🔴 **« dans la région de {VILLE} » — la ville vient de la BASE, pas du rédacteur.**
+
+  Le premier paragraphe fixe de C et D dit « J'ai vu que tu fais du {METIER} dans la région de {VILLE} ». La ville est servie au rédacteur depuis la colonne `companies.city` (fiche Google Places de l'entreprise) : il la **recopie**, il ne la devine pas.
+
+  ⚠️ Elle n'est PAS dans le `research_json` que tu reçois. Ne conclus donc pas qu'elle est inventée parce que tu ne peux pas la recouper — **l'absence d'une donnée de ton côté n'est pas une preuve d'invention.** Cette phrase est en PREMIÈRE LIGNE de tous les C et D : la signaler les refuserait tous.
+
+1octies. 🔴 **« j'aide les PME de {METIER} à se simplifier la vie » — phrase FIXE du gabarit C.**
+
+  Elle est identique au mot près pour tous les destinataires, elle décrit l'ACTIVITÉ de l'expéditeur, et elle ne nomme aucun client. Ce n'est ni une référence client, ni une preuve sociale, ni une action inventée sur CE prospect — les trois choses que la §2 te demande de chercher.
+
+  ⚠️ Ne la traite pas comme une prétention à connaître le secteur : elle dit ce que l'expéditeur fait, pas ce qu'il a déjà fait pour d'autres.
+
+1nonies. 🔴 **La chute du 2ᵉ paragraphe de C et D est FIXE elle aussi** : « Pourtant je suis certain qu'il serait possible de te simplifier la vie avec la gestion de tes clients et t'en amener plus en même temps. »
+
+  Elle est identique dans les huit variantes de C et D, dans les deux versions de `{ANCRE_CD}`. « je suis certain qu'il serait possible » est une opinion au conditionnel, pas une promesse de résultat chiffrée. La signaler refuserait un contact sur deux.
+
 1quinquies. 🔴 **L'ouvreur de C et D SITUE LA SAISON, et il a raison.** Trois formulations, choisies par du code, jamais par le rédacteur :
 
   - « **La saison approche** » — la saison du métier n'a pas encore commencé.
@@ -47,7 +66,19 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
   - « **Pour le reste de l'année, j'ai aussi vu que tu fais {AUTRES}.** »
   - « **J'ai aussi vu que tu fais {AUTRES}.** »
 
-  `{AUTRES}` vient de `services_offered` — donc du research_json que tu as sous les yeux. Vérifie que les métiers nommés y correspondent ; c'est le SEUL contrôle qui t'appartient sur cette phrase.
+  🔴 **LA TABLE RENOMME LES MÉTIERS — n'exige JAMAIS l'égalité littérale.** Les noms de la phrase sont des **familles normalisées**, pas des recopies de `services_offered` :
+
+  | ce que dit `services_offered` | ce que la phrase écrit |
+  |---|---|
+  | « Aménagement paysager », « Plates-bandes », « Murs de soutènement » | **paysagement** |
+  | « Tonte de pelouse », « Gazon », « Tondre » | **tonte** |
+  | « Déneigement résidentiel », « Transport de neige », « Souffleuse » | **déneigement** |
+  | « Lavage de vitres », « Nettoyage de fenêtres », « Lavage à pression » | **lavage de vitres** |
+  | « Extermination », « Gestion parasitaire », « Punaises » | **extermination** |
+
+  ⚠️ « paysagement » n'apparaît PAS dans « Aménagement paysager » — c'est une famille, pas une sous-chaîne. Chercher le mot tel quel et conclure à l'invention **refuserait la quasi-totalité des multi-métiers**, soit 70 % des destinataires.
+
+  Ce qui t'appartient vraiment : que la FAMILLE nommée soit plausiblement couverte par au moins un libellé de `services_offered`. Un métier qui n'a aucun rapport avec la liste (« toiture » chez un laveur de vitres) reste à signaler.
 
   ⚠️ **« j'ai aussi vu que » ne se signale pas** comme mise en scène de la recherche. Formulation décidée par William le 2026-09-07, et le premier paragraphe fixe de C et D commence de toute façon par « J'ai vu que tu fais du… ». Elle concerne **70 % des destinataires** : la signaler les gèlerait à vie.
 

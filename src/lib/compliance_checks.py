@@ -556,7 +556,7 @@ _BORNES_LONGUEUR = {
     # 🔧 Borne haute portee de 250 a 270 le 2026-08-30, apres le conseil de
     # revue. Les 250 avaient ete calibres sur des corps de 206 et 224 mots qui
     # ne portaient PAS deux elements aujourd'hui obligatoires : le 2e temps
-    # (jusqu'a ~10 mots, obligatoire des que l'entreprise est multi-metier,
+    # (jusqu'a 24 mots — le chiffre disait ~10 jusqu'au 2026-09-07, mesure faite avant que le 2e temps ne prenne sa forme longue ; le pire cas reel de la base fait 257 mots, 13 sous la borne, obligatoire des que l'entreprise est multi-metier,
     # soit 44 % de la liste) et la variante « sans site » (+6 mots, 97
     # entreprises). Mesure avec les deux : CORPS_B_SANS_SITE = 246 mots, soit
     # 4 de marge -- exactement la marge d'un cheveu que la spec interdit.

@@ -177,10 +177,28 @@ def test_les_gabarits_C_et_D_ont_une_place_pour_le_deuxieme_temps() -> None:
     raison qu'une seule l'ait, et une version oubliée ne se verrait qu'au mois
     où elle sert.
     """
-    assert PROMPT.count("{DEUXIEME_TEMPS}") >= 3, (
-        f"seulement {PROMPT.count('{DEUXIEME_TEMPS}')} occurrence(s) : les trois "
-        "ouvreurs de C et D doivent chacun porter la place du 2ᵉ temps"
-    )
+    # 🔧 RÉÉCRIT le 2026-09-07. La version d'avant comptait les occurrences
+    # dans TOUT le prompt (`count(...) >= 3`). Or le jeton apparaît 7 fois, dont
+    # 4 en PROSE explicative : la prose seule franchissait le seuil, donc les
+    # TROIS têtes pouvaient perdre leur trou sans que le test bronche. Un
+    # conseil de relecture l'a montré par mutation.
+    #
+    # On assertionne maintenant chaque tête NOMMÉMENT, sur sa phrase de saison.
+    for phrase, etiquette in (
+        ("La saison" + chr(10) + "approche", "saison à venir"),
+        ("C'est le début" + chr(10) + "de la saison", "saison qui vient de commencer"),
+        ("dans le gros de la saison", "saison bien entamée"),
+    ):
+        i = PROMPT.find(phrase)
+        assert i > 0, f"la tête « {etiquette} » a disparu du gabarit"
+        # Le trou vit dans le même paragraphe que la phrase de saison : on lit
+        # jusqu'à la ligne vide qui ferme le paragraphe.
+        fin = PROMPT.find(chr(10) + chr(10), i)
+        paragraphe = PROMPT[i:fin if fin > 0 else i + 400]
+        assert "{DEUXIEME_TEMPS}" in paragraphe, (
+            f"la tête « {etiquette} » n'a pas de place pour le 2ᵉ temps — "
+            "70 % des destinataires sont multi-métier"
+        )
 
 
 def test_le_prompt_ne_pretend_plus_qu_un_controle_bloque_j_ai_vu_que() -> None:
@@ -237,4 +255,10 @@ def test_le_prompt_ne_demande_plus_de_relances() -> None:
     prompt = _REACTI_PROMPT_PATH.read_text(encoding="utf-8")
     assert '"relance_1":' not in prompt, "le schéma de sortie redemande les relances"
     assert "{OUVREUR_RELANCE" not in prompt, "un gabarit de relance est revenu"
-    assert "tu n'en écris AUCUNE" in prompt.lower() or "n'écris QUE le courriel" in prompt
+    # 🔧 2026-09-07 : la première branche cherchait « AUCUNE » en MAJUSCULES
+    # dans une meule minusculée — toujours fausse, quoi que dise le prompt. Le
+    # test ne tenait donc que sur la seconde, sans que ce soit voulu.
+    assert (
+        "tu n'en écris aucune" in prompt.lower()
+        or "n'écris que le courriel" in prompt.lower()
+    )

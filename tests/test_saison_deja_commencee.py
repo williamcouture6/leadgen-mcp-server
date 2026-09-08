@@ -319,9 +319,17 @@ def test_les_trois_ouvreurs_existent_dans_le_gabarit() -> None:
     prompt = (
         Path(__file__).parent.parent / "src/prompts/reacti/personalize.md"
     ).read_text(encoding="utf-8")
-    assert "La saison" + chr(10) + "approche" in prompt
-    assert "C'est le début" + chr(10) + "de la saison" in prompt
-    assert "dans le gros de la saison" in prompt
+    # 🔧 2026-09-07 : deux des trois assertions figeaient la POSITION du retour
+    # de ligne, alors que la docstring ne parle que de PRÉSENCE. Un simple
+    # re-formatage du gabarit — qui ne change pas un mot de la copie — les
+    # aurait cassées. On normalise les espaces avant de chercher.
+    plat = " ".join(prompt.split())
+    for phrase in (
+        "La saison approche",
+        "C'est le début de la saison",
+        "dans le gros de la saison",
+    ):
+        assert phrase in plat, f"l'ouvreur « {phrase} » a disparu du gabarit"
 
 
 # ============================ 4. LE JUGE SÉMANTIQUE =========================
@@ -440,6 +448,33 @@ def test_chaque_motif_a_son_exemple(moment: str) -> None:
 
 
 @pytest.mark.parametrize("moment", sorted(EXEMPLES))
+def test_chaque_motif_survit_au_retour_de_ligne(moment: str) -> None:
+    """🔴 Le contrôle que §5 promettait sans le faire.
+
+    Son en-tête annonce « une espace littérale au lieu de \\s+ les aurait rendus
+    muets ». Mais les EXEMPLES sont écrits sur UNE LIGNE, en espaces simples :
+    ils ne distinguent pas `\\s+` d'une espace. Dix des onze motifs n'étaient
+    donc jamais confrontés au cas qui a réellement mordu — le corps généré est
+    formaté en colonnes, et la coupure tombe où elle veut.
+
+    Ici, on coupe à CHAQUE espace de la phrase, tour à tour.
+    """
+    for exemple in EXEMPLES[moment]:
+        mots = exemple.split(" ")
+        for i in range(1, len(mots)):
+            coupe = " ".join(mots[:i]) + chr(10) + " ".join(mots[i:])
+            corps = f"J'ai vu que tu fais du déneigement à Laval. {coupe}, pis bon."
+            assert check_saison_au_bon_temps(corps, moment_saison=moment).passed is True
+            autre = next(m for m in TOURNURES_PAR_MOMENT if m != moment)
+            assert (
+                check_saison_au_bon_temps(corps, moment_saison=autre).passed is False
+            ), (
+                f"« {exemple} » coupé après le mot {i} n'est plus reconnu : le "
+                "motif ne tolère pas le retour de ligne"
+            )
+
+
+@pytest.mark.parametrize("moment", sorted(EXEMPLES))
 def test_chaque_exemple_est_refuse_aux_deux_autres_moments(moment: str) -> None:
     """Et la contre-épreuve : chaque phrase est acceptée à son moment, refusée
     aux deux autres. Un motif trop large se verrait ici."""
@@ -519,8 +554,114 @@ async def test_la_garde_saison_est_armee_dans_le_vrai_juge(
         "le juge n'arme pas la garde saison : elle est muette sur le vrai "
         f"chemin. Notes vues : {notes or 'aucune'}"
     )
+
+    # 🔴 L'AUTRE SENS, ajouté le 2026-09-07 : sans lui, un `moment_saison` codé
+    # en dur survivait au test — un conseil de relecture a posé le mutant et l'a
+    # vu passer. Le même corps, jugé un jour où la saison N'EST PAS commencée,
+    # ne doit produire AUCUNE note : c'est la preuve que le moment est bien
+    # calculé depuis la date, et pas figé.
+    class _Avant(date):
+        @classmethod
+        def today(cls) -> date:  # type: ignore[override]
+            return date(2026, 9, 10)  # déneigement : saison à venir
+
+    monkeypatch.setattr(comp, "date", _Avant)
+    avant = await comp.compliance_check(
+        message_id="m-saison-2",
+        body=CORPS[MOMENT_A_VENIR],  # « La saison approche » — exact ce jour-là
+        subject="s",
+        template_used="C",
+        research_json={"services_offered": ["Déneigement résidentiel"]},
+        social_proof=[],
+        available_slots=[],
+        skip_llm=True,
+        track="agence-ia",
+    )
+    assert "saison_au_bon_temps" not in {
+        n["name"] for n in (avant.deterministic_infos or [])
+    }, "le moment est figé au lieu d'être calculé depuis la date du jour"
     # Et le brouillon PART quand même : c'est toute la raison du `info`.
     assert out.send_decision != "DO_NOT_SEND", (
         "une remarque de forme sur la saison ne doit jamais tuer un brouillon "
         "— ça gèlerait le contact à vie"
     )
+
+
+def _notes(out) -> set[str]:
+    return {n["name"] for n in (out.deterministic_infos or [])}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "gabarit,attendu",
+    [("C", True), ("D", True), ("A", False), ("B", False)],
+)
+async def test_le_controle_de_saison_ne_vise_que_C_et_D(
+    _env_vert: None, monkeypatch: pytest.MonkeyPatch, gabarit: str, attendu: bool
+) -> None:
+    """🔴 La restriction posée le 2026-09-07, et sa contre-épreuve.
+
+    Seuls C et D ont un premier paragraphe FIXE qui situe la saison. L'ouvreur
+    de A et B est écrit par le modèle et ne porte aucune des trois formulations.
+
+    Ce test remplace une garde qui ne marchait dans aucun sens : elle comparait
+    le métier de la scène au corps ENTIER, donc sur C et D elle ne se
+    déclenchait jamais (le 2ᵉ temps énumère justement les autres métiers) et sur
+    A et B elle se déclenchait toujours (« paysagement » n'est pas dans
+    « aménagement paysager »). Exactement l'inverse de l'intention.
+    """
+    import src.tools.compliance as comp
+
+    class _Faux(date):
+        @classmethod
+        def today(cls) -> date:  # type: ignore[override]
+            return date(2026, 12, 20)  # déneigement : saison bien entamée
+
+    monkeypatch.setattr(comp, "date", _Faux)
+    out = await comp.compliance_check(
+        message_id=f"m-{gabarit}",
+        body=CORPS[MOMENT_A_VENIR],
+        subject="s",
+        template_used=gabarit,
+        research_json={"services_offered": ["Déneigement résidentiel"]},
+        social_proof=[],
+        available_slots=[],
+        skip_llm=True,
+        track="agence-ia",
+    )
+    assert ("saison_au_bon_temps" in _notes(out)) is attendu, (
+        f"gabarit {gabarit} : la garde saison devrait "
+        f"{'être armée' if attendu else 'rester muette'}"
+    )
+
+
+def test_tous_les_messages_du_check_sont_assertes() -> None:
+    """🔴 Constat d'un conseil : quatre des six messages n'étaient assertés
+    nulle part. Une note de conformité peut donc mentir sur ce qu'elle a vu —
+    et une note qui ment est pire qu'une note absente, parce qu'on la croit.
+
+    On les vérifie tous les six, dans les deux états (faute / rien à signaler).
+    """
+    from src.lib.compliance_checks import _FAUTE_PAR_MOMENT, _RIEN_PAR_MOMENT
+
+    attendus_faute = {
+        MOMENT_A_VENIR: "À VENIR",
+        MOMENT_DEBUT: "QUI VIENT DE COMMENCER",
+        MOMENT_EN_COURS: "BIEN ENTAMÉE",
+    }
+    for moment, fragment in attendus_faute.items():
+        assert fragment in _FAUTE_PAR_MOMENT[moment]
+        # Et le message SORT vraiment, avec ce fragment.
+        autre = next(m for m in CORPS if m != moment)
+        r = check_saison_au_bon_temps(CORPS[autre], moment_saison=moment)
+        assert r.passed is False and fragment in r.message
+
+    attendus_rien = {
+        MOMENT_A_VENIR: "à venir",
+        MOMENT_DEBUT: "vient de commencer",
+        MOMENT_EN_COURS: "bien entamée",
+    }
+    for moment, fragment in attendus_rien.items():
+        assert fragment in _RIEN_PAR_MOMENT[moment]
+        r = check_saison_au_bon_temps(CORPS[moment], moment_saison=moment)
+        assert r.passed is True and fragment in r.message

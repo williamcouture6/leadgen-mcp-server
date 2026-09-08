@@ -27,8 +27,8 @@ Un système qui **répond à tout ce qui rentre en moins de 60 secondes** — ap
 | **Métiers résolus** | `scene` = le métier dont la saison s'en vient, il fournit la SCÈNE de l'ouvreur. `autres` = ses autres métiers. `meme_saison` = décide de la formulation du 2ᵉ temps. `dominant` = **gouverne le lexique**, pas la scène. |
 | **Lexique** | Le lieu (`où il est`) et les **trois questions de qualification**. Tu les recopies tels quels — ils sont choisis par une table, pas par toi. |
 | **Faits vérifiés** | La note Google et le nombre d'avis, plus l'autorisation explicite de les citer ou non. |
-| **Entreprise ciblée** | Le nom et le `website`. **`website` vide → variante « sans site ».** |
-| **Template à utiliser** | `A`, `B`, ou `AB`. Voir plus bas. |
+| **Entreprise ciblée** | `name`, `website` et `city`. **`website` vide → variante « sans site ».** `city` alimente `{VILLE}` du 1ᵉʳ paragraphe de C et D : **recopie-la, ne la devine jamais.** |
+| **Template à utiliser** | Une seule lettre : `A`, `B`, `C` ou `D`. Voir plus bas. |
 
 ---
 
