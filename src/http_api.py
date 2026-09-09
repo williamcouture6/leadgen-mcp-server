@@ -3195,9 +3195,22 @@ async def run_wf6(payload: send_tools.RunWf6In) -> send_tools.RunWf6Out:
 
 
 @app.get("/send/healthcheck", dependencies=[Depends(_require_auth)])
-async def send_healthcheck() -> dict[str, Any]:
-    """Vérifie que l'API Instantly est joignable et que la campagne existe.
+async def send_healthcheck(track: str = "agence-ia") -> dict[str, Any]:
+    """Vérifie que l'API Instantly est joignable et que la campagne du TRACK existe.
     Utilisable comme smoke test avant d'activer le cron WF-6.
+
+    🔴 `track` A ÉTÉ AJOUTÉ LE 2026-09-08, et son absence rendait ce
+    healthcheck trompeur — il vérifiait la MAUVAISE campagne.
+
+    Il appelait `get_campaign()` sans argument, donc `INSTANTLY_CAMPAIGN_ID` :
+    « Cold outreach PME QC OPTI », la campagne de la piste OPT, en pause depuis
+    le pivot. Or `agence-ia` pousse vers `INSTANTLY_CAMPAIGN_ID_REACTI` (nom
+    d'env legacy), une campagne différente. Le test de fumée d'avant-envoi
+    rendait donc un `ok: true` rassurant sur une campagne que personne
+    n'utilisera — et serait resté vert même avec la variable d'agence-ia vide.
+
+    Le défaut est `agence-ia` parce que c'est la seule piste vivante. Passer
+    `?track=OPT` retrouve l'ancien comportement.
 
     Retourne toujours 200 — `ok=false` + `error=<msg>` si problème. Évite
     qu'un 500 cache le vrai diagnostic (env var manquante, réseau, etc.).
@@ -3228,13 +3241,27 @@ async def send_healthcheck() -> dict[str, Any]:
         ),
         "daily_cap_defaut_du_code": DAILY_CAP_DEFAULT,
     }
+    from .tools.send import _campaign_for_track
+
+    cid = _campaign_for_track(track)
+    if track.strip().lower() == "agence-ia" and not cid:
+        # ⚠️ Le cas que l'ancien healthcheck ne pouvait PAS voir : la variable
+        # d'agence-ia vide, et un `ok: true` rendu sur la campagne OPT.
+        return {
+            "ok": False,
+            "track": track,
+            "error_type": "CampagneManquante",
+            "error": "INSTANTLY_CAMPAIGN_ID_REACTI est vide : agence-ia n'a pas "
+                     "de campagne. WF-6 refusera d'envoyer.",
+            **cadence,
+        }
     try:
-        camp = await instantly_lib.get_campaign()
-        return {"ok": True, "campaign_id": camp.get("id"), "name": camp.get("name"),
-                **cadence}
+        camp = await instantly_lib.get_campaign(cid)
+        return {"ok": True, "track": track, "campaign_id": camp.get("id"),
+                "name": camp.get("name"), **cadence}
     except Exception as e:  # noqa: BLE001 — endpoint diag, on veut tout voir
-        return {"ok": False, "error_type": type(e).__name__, "error": str(e)[:500],
-                **cadence}
+        return {"ok": False, "track": track, "error_type": type(e).__name__,
+                "error": str(e)[:500], **cadence}
 
 
 @app.post(
