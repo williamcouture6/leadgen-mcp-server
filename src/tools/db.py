@@ -611,6 +611,15 @@ async def mark_company_disqualified(company_id: str, reason: str) -> dict[str, A
 # Personalize (Phase 2 — WF-4)
 # ----------------------------------------------------------------------
 
+# Combien de pages la sélection accepte de lire avant d'abandonner.
+#
+# Borne de COÛT, pas de logique : 10 pages de 200 couvrent 2000 contacts, très
+# au-delà de la file actuelle (345 au 2026-09-09). L'atteindre signifie que la
+# file est majoritairement bouchée — l'alerte de famine le dira, puisque le lot
+# reviendra court.
+MAX_PAGES_SELECTION = 10
+
+
 def _contact_priority_score(contact: dict[str, Any]) -> int:
     """Score de priorité (plus bas = meilleur) pour choisir 1 contact par company.
 
@@ -751,24 +760,79 @@ async def list_contacts_to_personalize(
        status sauf 'failed' — voir le commentaire sur la requête messages).
     4) On garde les top-N contacts par company selon priorité.
     """
-    contacts = await db.select(
-        "contacts",
-        params={
-            "select": (
-                "id,first_name,last_name,email,email_verified,title,company_id,"
-                "status,email_verification_source,raw_payload,track,"
-                "owner_confidence,potential_owner"
-            ),
-            "email": "not.is.null",
-            "status": "in.(new,ready)",
-            "track": f"eq.{track}",  # filtre track au niveau DB (sinon les contacts d'un
-            # track minoritaire sont noyés par l'over-fetch oldest-first)
-            "order": "created_at.asc",
-            # Voir `FACTEUR_SURRECOLTE` : le chiffre et son raisonnement y
-            # vivent, pour ne pas diverger du message de l'alerte de famine.
-            "limit": str(limit * FACTEUR_SURRECOLTE),
-        },
-    )
+    # 🔴 LA FILE SE LIT PAR PAGES, jusqu'à en avoir assez — plus par une fenêtre
+    # fixe. C'est le correctif de la FAMINE, ouverte depuis mai et refermée le
+    # 2026-09-09.
+    #
+    # L'ancienne version lisait `limit * FACTEUR_SURRECOLTE` contacts, une fois,
+    # et filtrait ensuite. La fenêtre était donc proportionnelle au LOT, alors
+    # que ce qu'il faut franchir est proportionnel à la FILE — le bouchon des
+    # contacts déjà rédigés, qui grossit chaque jour.
+    #
+    # Ce que ça donnait, mesuré le 2026-09-09 avec 58 brouillons déjà écrits :
+    #     91 contacts éligibles, mais le premier en 87ᵉ position
+    #     limit=20 → lit 240 → 45 éligibles dedans → rend 20   ✅
+    #     limit=10 → lit 120 →  2 éligibles dedans → rend  2   ❌
+    #
+    # Diviser le lot par deux divisait la fenêtre par deux, et la famine
+    # revenait — le lot serait tombé à 2 dès le lendemain, puis à 0, en silence.
+    #
+    # Monter le facteur ne ferait que déplacer le seuil : le bouchon grandit
+    # avec chaque envoi. Lire par pages jusqu'à avoir son compte supprime la
+    # question, et ne coûte rien quand la file est courte (une page suffit).
+    #
+    # ⚠️ `MAX_PAGES_SELECTION` borne le coût sur une file énorme. L'atteindre
+    # veut dire « la file est majoritairement bouchée » — c'est exactement ce
+    # que l'alerte de famine doit dire, et elle se déclenche alors d'elle-même
+    # puisque le lot revient court.
+    taille_page = max(limit * FACTEUR_SURRECOLTE, 200)
+    contacts: list[dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
+    for page in range(MAX_PAGES_SELECTION):
+        lot = await db.select(
+            "contacts",
+            params={
+                "select": (
+                    "id,first_name,last_name,email,email_verified,title,company_id,"
+                    "status,email_verification_source,raw_payload,track,"
+                    "owner_confidence,potential_owner"
+                ),
+                "email": "not.is.null",
+                "status": "in.(new,ready)",
+                "track": f"eq.{track}",  # filtre track au niveau DB (sinon les
+                # contacts d'un track minoritaire sont noyés par l'over-fetch)
+                "order": "created_at.asc",
+                "limit": str(taille_page),
+                "offset": str(page * taille_page),
+            },
+        )
+        if not lot:
+            break
+        contacts.extend(lot)
+        out = await _retenir(
+            contacts, limit=limit, max_per_company=max_per_company,
+            track=track, require_research=require_research,
+        )
+        if len(out) >= limit or len(lot) < taille_page:
+            break
+    return out
+
+
+async def _retenir(
+    contacts: list[dict[str, Any]],
+    *,
+    limit: int,
+    max_per_company: int,
+    track: str,
+    require_research: bool,
+) -> list[dict[str, Any]]:
+    """Les contacts d'une page qui méritent un courriel, dans l'ordre de la file.
+
+    Séparée de la lecture pour que celle-ci puisse tourner en boucle. Prend la
+    liste ACCUMULÉE et non la dernière page : les déduplications par entreprise
+    et par courriel doivent voir tout ce qui précède, sinon la page 2 pourrait
+    resservir une entreprise déjà retenue en page 1.
+    """
     if not contacts:
         return []
 
@@ -833,7 +897,7 @@ async def list_contacts_to_personalize(
             continue
         eligible.setdefault(c["company_id"], []).append(c)
 
-    out: list[dict[str, Any]] = []
+    retenus: list[dict[str, Any]] = []
     # Préserve l'ordre d'arrivée des companies (created_at.asc du premier contact).
     seen_companies: list[str] = []
     for c in contacts:
@@ -852,10 +916,10 @@ async def list_contacts_to_personalize(
             if email_key in seen_emails:
                 continue
             seen_emails.add(email_key)
-            out.append({"contact": c, "company": by_id[company_id]})
-            if len(out) >= limit:
-                return out
-    return out
+            retenus.append({"contact": c, "company": by_id[company_id]})
+            if len(retenus) >= limit:
+                return retenus
+    return retenus
 
 
 # Seuil de la garde « sans site ». C'est UN BOUTON, pas une vérité : la spec le
