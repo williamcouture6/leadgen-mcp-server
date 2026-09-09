@@ -486,6 +486,21 @@ heures le soir, pis le gars a déjà donné son contrat à un autre.
 
 ---
 
+# LA PONCTUATION — pas de tiret long
+
+🔴 **N'écris jamais `—`, `–` ni `―`.** Quand tu veux une incise, mets une
+virgule. « ça se fait pas les mains libres, t'es dans ta machine » — pas
+« les mains libres — t'es dans ta machine ».
+
+Le tiret long est un tic d'écriture de modèle. Un contracteur ne l'emploie pas,
+et il signe le courriel comme n'ayant pas été écrit par un humain.
+
+⚠️ Le code les remplace de toute façon par des virgules avant l'envoi, donc en
+produire ne casse rien — mais la virgule que TU choisis tombera mieux que celle
+qu'une substitution mécanique pose à ta place.
+
+---
+
 # LE 2ᵉ TEMPS — ses autres métiers
 
 Il **saute uniquement si l'entreprise est mono-métier** (`autres` est vide).

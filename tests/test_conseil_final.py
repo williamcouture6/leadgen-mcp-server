@@ -215,7 +215,10 @@ def test_le_lieu_suit_la_scene_et_les_questions_le_dominant() -> None:
          "lavage de vitres résidentiel", "déneigement"],
         date(2026, 12, 10),
     )
-    assert "dans la machine" in bloc, "le lieu doit suivre la scène (déneigement)"
+    # 🔧 « dans TA machine » depuis le 2026-09-09 (décision William, en relisant
+    # les brouillons réels) : le tutoiement rapproche, « la machine » sonnait
+    # comme une machine en général.
+    assert "dans ta machine" in bloc, "le lieu doit suivre la scène (déneigement)"
     assert "le nombre d'étages" in bloc, "les questions suivent le dominant (vitres)"
     assert "en haut d'une échelle" not in bloc
     assert "DEUX métiers différents" in bloc, (

@@ -59,6 +59,40 @@ class LLMUsage(BaseModel):
 # Construction du user message
 # ----------------------------------------------------------------------
 
+# Les tirets que le modèle produit et que William ne veut pas voir.
+#
+# 🔴 CORRIGÉ PAR LE CODE, PAS PAR UNE CONSIGNE — décision du 2026-09-09, en
+# relisant les brouillons réels : 5 sur 60 en portaient un, tous dans l'ouvreur
+# GÉNÉRÉ du gabarit A. Les gabarits fixes n'en produisent aucun, forcément.
+#
+# Une règle de plus dans le prompt aurait été le réflexe. Mais un caractère
+# typographique est exactement ce qu'un modèle oublie sous charge, et la
+# vérifier coûterait un contrôle de conformité qui ne peut, lui, qu'ANNOTER —
+# le tiret partirait quand même. Une substitution mécanique ne peut pas être
+# oubliée et ne peut pas changer le sens : on remplace un signe de ponctuation
+# par un autre.
+#
+# ⚠️ Le remplacement par une VIRGULE et non par un trait d'union : le tiret long
+# sert d'incise (« ça se fait pas les mains libres — t'es dans la machine »), et
+# la virgule est ce qu'un francophone écrirait à sa place. Un « - » donnerait
+# une coupure de mot, ce que le tiret long ne veut jamais dire ici.
+_TIRETS_LONGS = ("—", "–", "―")
+
+
+def sans_tiret_long(texte: str | None) -> str | None:
+    """Remplace les tirets longs par une virgule, sans toucher au reste.
+
+    Rend `None` tel quel : un sujet absent n'est pas une chaîne vide.
+    """
+    if not texte:
+        return texte
+    for tiret in _TIRETS_LONGS:
+        # « mot — mot » devient « mot, mot » : on absorbe l'espace qui précède
+        # pour ne pas laisser « mot , mot ».
+        texte = texte.replace(f" {tiret} ", ", ").replace(tiret, ", ")
+    return texte
+
+
 def bloc_metiers_resolus(
     services_offered: list[str] | None, aujourdhui: date, gabarit: str | None = None
 ) -> str:
@@ -595,6 +629,14 @@ async def personalize(payload: PersonalizeIn) -> PersonalizeOut:
     if payload.track == "agence-ia":
         for cle in CLES_RELANCES:
             email_json[cle] = CORPS_RELANCES[cle]
+
+    # 🔴 LE DERNIER GESTE SUR LA COPIE, et il vient APRÈS l'écrasement des
+    # relances : celles-ci sont des constantes écrites à la main par William et
+    # n'en portent aucun, mais les passer au filtre coûte trois microsecondes et
+    # garantit que la règle vaut pour TOUT ce qui part, sans exception à retenir.
+    for cle in ("subject", "body_text", *CLES_RELANCES):
+        if cle in email_json:
+            email_json[cle] = sans_tiret_long(email_json[cle])
 
     return PersonalizeOut(
         email=email_json,

@@ -52,7 +52,7 @@ _TABLE: dict[str, Lexique] = {
         ("l'adresse", "la grandeur du terrain", "ce qu'il veut faire faire"),
     ),
     "déneigement": Lexique(
-        "déneigement", "dans la machine",
+        "déneigement", "dans ta machine",
         ("l'adresse", "la grandeur de l'entrée", "à la saison ou à la bordée"),
     ),
     "piscine": Lexique(
@@ -68,7 +68,7 @@ _TABLE: dict[str, Lexique] = {
         ("l'adresse", "la surface à faire", "asphalte ou pavé uni"),
     ),
     "excavation": Lexique(
-        "excavation", "dans la machine",
+        "excavation", "dans ta machine",
         ("l'adresse", "l'accès au terrain", "ce qu'il y a à creuser"),
     ),
     "extermination": Lexique(
