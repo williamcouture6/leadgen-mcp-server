@@ -243,3 +243,57 @@ def test_les_deux_trous_recoivent_des_valeurs_differentes_au_besoin() -> None:
     assert v["METIER"] == "tonte"
     assert v["METIER_ARTICLE"] == "de la tonte"
     assert v["METIER"] != v["METIER_ARTICLE"]
+
+
+# ============ 6. LA PLACE DU 2ᵉ TEMPS — pas la même selon le gabarit ========
+#
+# Décision William du 2026-09-09, prise en relisant les 57 premiers brouillons
+# réels. En A et B l'ouvreur finit sur la supposition — « le client qui tombe
+# sur ta boîte vocale, lui, il sait pas ça » — et coller un constat factuel
+# juste derrière casse le rythme. En C et D la phrase qui précède est déjà
+# neutre, donc l'enchaînement passe.
+
+
+@pytest.mark.parametrize("gabarit", sorted(GABARITS_A_TETE_FIXE))
+def test_en_C_et_D_le_2e_temps_va_dans_le_trou(gabarit: str) -> None:
+    txt = bloc_metiers_resolus(SERVICES, FEVRIER, gabarit=gabarit)
+    assert "{DEUXIEME_TEMPS}" in txt
+    assert "SA PROPRE LIGNE" not in txt
+
+
+@pytest.mark.parametrize("gabarit", ["A", "B"])
+def test_en_A_et_B_le_2e_temps_a_sa_propre_ligne(gabarit: str) -> None:
+    """🔴 Le contraire du test précédent, et c'est le but : une consigne qui
+    dirait la même chose aux quatre gabarits raterait exactement le défaut que
+    William a vu dans les brouillons."""
+    txt = bloc_metiers_resolus(SERVICES, FEVRIER, gabarit=gabarit)
+    assert "SA PROPRE LIGNE" in txt
+    assert "{DEUXIEME_TEMPS}" not in txt, (
+        "A et B n'ont pas de trou : leur ouvreur est généré"
+    )
+
+
+def test_un_mono_metier_ne_recoit_aucune_consigne_de_place() -> None:
+    """Contrôle négatif : sans 2ᵉ temps, pas de consigne sur où le mettre.
+    Sans ça, une entreprise mono-métier lirait « pose-la sur sa propre ligne »
+    à propos d'une phrase qui n'existe pas."""
+    txt = bloc_metiers_resolus(["Déneigement résidentiel"], FEVRIER, gabarit="A")
+    assert "mono-métier" in txt
+    assert "SA PROPRE LIGNE" not in txt
+    assert "2ᵉ temps OBLIGATOIRE" not in txt
+
+
+def test_le_gabarit_et_la_consigne_disent_la_meme_chose() -> None:
+    """Les deux sources doivent s'accorder. Quand elles divergent, c'est
+    l'exemple concret qui gagne — donc une consigne juste avec un gabarit
+    périmé produirait quand même le mauvais courriel."""
+    from pathlib import Path
+
+    prompt = (
+        Path(__file__).parent.parent / "src/prompts/reacti/personalize.md"
+    ).read_text(encoding="utf-8")
+    i = prompt.find("# LE 2ᵉ TEMPS")
+    assert i > 0
+    section = prompt[i:i + 2000]
+    assert "SA PROPRE LIGNE" in section, "le gabarit ne dit pas la place en A/B"
+    assert "{DEUXIEME_TEMPS}" in section, "le gabarit ne dit pas la place en C/D"

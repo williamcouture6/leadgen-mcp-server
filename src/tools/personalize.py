@@ -231,6 +231,27 @@ def bloc_metiers_resolus(
             lignes.append(
                 f"- **2ᵉ temps OBLIGATOIRE**, formulation imposée : « {formule} »"
             )
+            # 🔴 LA PLACE, redite ici parce que l'instruction concrète l'emporte
+            # sur la règle abstraite du gabarit — c'est la leçon qui revient à
+            # chaque conseil de relecture.
+            #
+            # Décision William du 2026-09-09, en relisant les 57 premiers
+            # brouillons réels : en A et B l'ouvreur finit sur la supposition
+            # (« le client qui tombe sur ta boîte vocale, lui, il sait pas ça »)
+            # et coller un constat factuel juste derrière casse le rythme. Sur
+            # sa propre ligne, la phrase a son temps. En C et D la phrase qui
+            # précède est déjà neutre, donc l'enchaînement passe.
+            if gabarit in GABARITS_A_TETE_FIXE:
+                lignes.append(
+                    "  📍 Elle se pose à la fin du 1ᵉʳ paragraphe, dans le trou "
+                    "`{DEUXIEME_TEMPS}`."
+                )
+            else:
+                lignes.append(
+                    "  📍 Elle a **SA PROPRE LIGNE** : un paragraphe court, seul, "
+                    "juste après l'ouvreur. Ne la colle PAS à la fin de ta "
+                    "supposition — la bascule de ton serait trop brusque."
+                )
             # ⚠️ `r.dominant != scene` : sans cette condition, la consigne
             # exigeait de nommer un métier ABSENT de la liste qu'elle impose.
             #

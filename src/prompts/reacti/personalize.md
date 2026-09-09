@@ -488,7 +488,35 @@ heures le soir, pis le gars a déjà donné son contrat à un autre.
 
 # LE 2ᵉ TEMPS — ses autres métiers
 
-Il vient **à la fin de l'ouvreur**, collé au même paragraphe. Il **saute uniquement si l'entreprise est mono-métier** (`autres` est vide).
+Il **saute uniquement si l'entreprise est mono-métier** (`autres` est vide).
+
+🔴 **SA PLACE N'EST PAS LA MÊME EN A/B QU'EN C/D**, et c'est une décision de
+William du 2026-09-09, prise en relisant les 57 premiers brouillons réels.
+
+| gabarit | où il va |
+|---|---|
+| **A et B** | **SA PROPRE LIGNE** — un paragraphe court, seul, juste après l'ouvreur |
+| **C et D** | collé à la fin du 1ᵉʳ paragraphe, à la place du trou `{DEUXIEME_TEMPS}` |
+
+**Pourquoi la différence.** Ton ouvreur en A et B finit sur la supposition —
+l'appel manqué, le client qui tombe sur la boîte vocale. Coller un constat
+factuel juste derrière casse le rythme :
+
+    ...Le client qui tombe sur ta boîte vocale, lui, il sait pas ça. J'ai aussi
+    vu que tu fais du paysagement pis de l'excavation.
+
+La bascule de ton est trop brusque — on passe de l'empathie à l'inventaire dans
+la même respiration. Sur sa propre ligne, la phrase a son temps :
+
+    ...Le client qui tombe sur ta boîte vocale, lui, il sait pas ça.
+
+    J'ai aussi vu que tu fais du paysagement pis de l'excavation.
+
+En C et D le problème ne se pose pas : la phrase qui précède est déjà neutre
+(« ...quelque chose qui pourrait t'intéresser »), donc l'enchaînement passe.
+
+⚠️ **La FORMULATION ne change pas** — c'est le code qui l'impose, mot pour mot.
+Seul l'endroit où tu la poses change.
 
 🔴 **EN C ET D AUSSI**, et il faut le dire parce que leur premier paragraphe est
 fixe : le 2ᵉ temps s'ajoute **à la fin de ce paragraphe**, à la place du trou
