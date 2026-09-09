@@ -65,6 +65,7 @@ def _require_auth(authorization: str | None = Header(default=None)) -> None:
 
 app = FastAPI(title="leadgen-mcp HTTP API", version="0.1.0")
 
+import asyncio
 import logging
 
 _startup_log = logging.getLogger("leadgen.startup")
@@ -1140,6 +1141,19 @@ class RunWf1Out(BaseModel):
 
 @app.post("/wf1/run", dependencies=[Depends(_require_auth)], response_model=RunWf1Out)
 async def run_wf1(payload: RunWf1In) -> RunWf1Out:
+    # Un lot a la fois — voir `_VERROUS_DE_LOT`. Un n8n qui relance sa
+    # requete ne doit pas demarrer un lot NEUF par-dessus celui qui court.
+    _cle = f"wf1:{payload.track}"
+    if _lot_deja_en_cours(_cle):
+        logging.getLogger("run_wf1").warning(
+            "lot refuse : un lot tourne deja (%s)", _cle
+        )
+        return RunWf1Out(target={}, run_id="", total_results=0, new_companies_count=0, duplicates_count=0)
+    async with _verrou_de_lot(_cle):
+        return await _run_wf1(payload)
+
+
+async def _run_wf1(payload: RunWf1In) -> RunWf1Out:
     import asyncio
 
     # 1) Pick target
@@ -1533,6 +1547,19 @@ class RunWf3Out(BaseModel):
 
 @app.post("/wf3/run", dependencies=[Depends(_require_auth)], response_model=RunWf3Out)
 async def run_wf3(payload: RunWf3In) -> RunWf3Out:
+    # Un lot a la fois — voir `_VERROUS_DE_LOT`. Un n8n qui relance sa
+    # requete ne doit pas demarrer un lot NEUF par-dessus celui qui court.
+    _cle = f"wf3:{payload.track}"
+    if _lot_deja_en_cours(_cle):
+        logging.getLogger("run_wf3").warning(
+            "lot refuse : un lot tourne deja (%s)", _cle
+        )
+        return RunWf3Out(processed=0, succeeded=0, failed=0, skipped=0, items=[])
+    async with _verrou_de_lot(_cle):
+        return await _run_wf3(payload)
+
+
+async def _run_wf3(payload: RunWf3In) -> RunWf3Out:
     import asyncio
 
     backlog = await db_tools.list_companies_to_research(
@@ -1957,6 +1984,57 @@ def _tombe_sur_le_repli_du_lexique(company_row: dict[str, Any]) -> bool:
 # des tests et des docstrings, et le renommer n'apprendrait rien à personne.
 # ⚠️ Le paramètre LISTE désormais les bras : « AB » garde son sens exact,
 # « ABCD » ouvre aux quatre. Voir l'en-tête de `lib/gabarits.py`.
+# ----------------------------------------------------------------------
+# UN LOT A LA FOIS
+# ----------------------------------------------------------------------
+# 🔴 POURQUOI CE VERROU EXISTE — incident du 2026-09-08, observe en direct.
+#
+# William lance `[REACTI] WF-4` UNE fois depuis l'editeur n8n. Resultat :
+# **57 brouillons au lieu de 20**, ecrits par trois lots concurrents.
+#
+# Trois faits se combinent, et chacun est normal pris seul :
+#
+#   1. Le noeud HTTP de n8n porte `retryOnFail: true, maxTries: 3`. Quand la
+#      requete parait echouer — trop longue, connexion coupee, execution
+#      annulee — n8n la RELANCE.
+#   2. Une relance n'est pas un rejeu : elle demarre un lot NEUF cote serveur,
+#      qui lit les 20 contacts suivants (les 20 premiers ont deja un draft).
+#   3. **Annuler dans n8n n'arrete rien.** n8n ferme sa connexion ; la coroutine
+#      FastAPI continue jusqu'au bout, sur Railway, en brulant des jetons
+#      Anthropic. William l'a vu : le compteur montait encore apres l'annulation.
+#
+# Cote WF-6 le plafond quotidien couvre deja le cas — une deuxieme passe voit
+# `deja_pousses = 20` et n'envoie rien. WF-4 n'avait aucune borne equivalente.
+#
+# ⚠️ UN VERROU EN MEMOIRE SUFFIT ICI, et seulement parce que le service tourne
+# en UN SEUL processus : `uvicorn src.http_api:app` sans `--workers`
+# (Procfile + railway.json). Le jour ou quelqu'un ajoute des workers, ce verrou
+# devient decoratif — il faudra un verrou consultatif Postgres. C'est ecrit ici
+# pour que ce jour-la, on le sache.
+_VERROUS_DE_LOT: dict[str, asyncio.Lock] = {}
+
+
+def _verrou_de_lot(cle: str) -> asyncio.Lock:
+    """Le verrou de cette (route, piste). Cree a la demande, jamais libere."""
+    verrou = _VERROUS_DE_LOT.get(cle)
+    if verrou is None:
+        verrou = asyncio.Lock()
+        _VERROUS_DE_LOT[cle] = verrou
+    return verrou
+
+
+def _lot_deja_en_cours(cle: str) -> bool:
+    """Un lot tourne-t-il deja pour cette (route, piste) ?
+
+    On REFUSE plutot que d'attendre : attendre ferait exactement ce qu'on veut
+    empecher — la relance de n8n s'executerait apres la premiere, et le double
+    lot arriverait quand meme, juste plus tard. Refuser rend la main tout de
+    suite avec un compte a zero, ce que le noeud IF de n8n lit comme un lot
+    vide, pas comme une erreur.
+    """
+    return _verrou_de_lot(cle).locked()
+
+
 def _tete_fixe_servable(company: dict[str, Any]) -> bool:
     """C et D peuvent-ils être servis à cette entreprise ?
 
@@ -2402,6 +2480,21 @@ async def _alerter_famine_wf4(
 
 @app.post("/wf4/run", dependencies=[Depends(_require_auth)], response_model=RunWf4Out)
 async def run_wf4(payload: RunWf4In) -> RunWf4Out:
+    # Un lot a la fois par piste — voir `_VERROUS_DE_LOT`.
+    cle = f"wf4:{payload.track}"
+    if _lot_deja_en_cours(cle):
+        logging.getLogger("wf4").warning(
+            "lot refuse : un /wf4/run tourne deja pour track=%s", payload.track
+        )
+        return RunWf4Out(
+            processed=0, drafts_created=0, skipped=0, failed=0, slots_available=0,
+            repli_lexique=0, items=[],
+        )
+    async with _verrou_de_lot(cle):
+        return await _run_wf4(payload)
+
+
+async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
     backlog = await db_tools.list_contacts_to_personalize(
         limit=payload.limit, max_per_company=payload.max_per_company, track=payload.track,
     )
@@ -3068,6 +3161,19 @@ async def _alerter_wf5(
 
 @app.post("/wf5/run", dependencies=[Depends(_require_auth)], response_model=RunWf5Out)
 async def run_wf5(payload: RunWf5In) -> RunWf5Out:
+    # Un lot a la fois — voir `_VERROUS_DE_LOT`. Un n8n qui relance sa
+    # requete ne doit pas demarrer un lot NEUF par-dessus celui qui court.
+    _cle = "wf5"
+    if _lot_deja_en_cours(_cle):
+        logging.getLogger("run_wf5").warning(
+            "lot refuse : un lot tourne deja (%s)", _cle
+        )
+        return RunWf5Out(processed=0, approved=0, needs_revision=0, blocked=0, errors=0, items=[])
+    async with _verrou_de_lot(_cle):
+        return await _run_wf5(payload)
+
+
+async def _run_wf5(payload: RunWf5In) -> RunWf5Out:
     """Batch compliance sur tous les drafts non encore checked."""
     import asyncio
     from . import supabase_client as db
@@ -3190,8 +3296,28 @@ async def run_wf6(payload: send_tools.RunWf6In) -> send_tools.RunWf6Out:
 
     `dry_run=true` : simule le push sans appel Instantly (pour tester la
     sélection des drafts pendant le warmup).
+
+    🔴 UN LOT A LA FOIS — voir `_VERROUS_DE_LOT`. C'est ICI que le verrou compte
+    le plus : un n8n qui relance sa requête d'envoi ne doit pas pousser un lot
+    NEUF par-dessus celui qui court.
+
+    ⚠️ Le plafond quotidien couvrait déjà l'essentiel — une deuxième passe voit
+    `deja_pousses = 20` et n'envoie rien — mais il ne protège que le TOTAL du
+    jour. Deux lots lancés à la même seconde lisent tous les deux
+    `deja_pousses = 0` et poussent 20 chacun. Le verrou ferme cette fenêtre-là.
     """
-    return await send_tools.run_wf6(payload)
+    cle = f"wf6:{payload.track}"
+    if _lot_deja_en_cours(cle):
+        logging.getLogger("wf6").warning(
+            "lot refuse : un /wf6/run tourne deja pour track=%s", payload.track
+        )
+        return send_tools.RunWf6Out(
+            processed=0, pushed=0, skipped_cap=0, skipped_warmup=0,
+            skipped_suppressed=0, skipped_platform_domain=0, skipped_other=0,
+            errors=0, daily_cap=0, already_pushed_today=0, items=[],
+        )
+    async with _verrou_de_lot(cle):
+        return await send_tools.run_wf6(payload)
 
 
 @app.get("/send/healthcheck", dependencies=[Depends(_require_auth)])
