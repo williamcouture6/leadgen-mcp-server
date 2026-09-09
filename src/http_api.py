@@ -3202,12 +3202,39 @@ async def send_healthcheck() -> dict[str, Any]:
     Retourne toujours 200 — `ok=false` + `error=<msg>` si problème. Évite
     qu'un 500 cache le vrai diagnostic (env var manquante, réseau, etc.).
     """
+    import os
+
     from .lib import instantly as instantly_lib
+    from .tools.send import DAILY_CAP_DEFAULT, DAILY_CAP_ENV, _daily_cap
+
+    # 🔴 LE PLAFOND EST EXPOSÉ ICI PARCE QU'IL PEUT MENTIR EN SILENCE.
+    #
+    # `run_wf6` envoie `min(limit_du_workflow, plafond - déjà_poussés)`. Un WF-6
+    # qui demande 20 sous un plafond de 10 en envoie 10, sans erreur, sans
+    # alerte, sans trace. Et le plafond vit dans une variable d'environnement
+    # Railway qu'on ne peut pas lire d'ici : la seule façon de le CONNAÎTRE est
+    # de le demander au service qui l'applique.
+    #
+    # `source` distingue les deux cas que le nombre seul confond : « 20 parce
+    # que la variable dit 20 » et « 20 parce qu'elle est absente et que c'est le
+    # défaut ». La deuxième est celle qu'on veut, la variable n'ayant plus de
+    # raison d'exister — mais un 10 venu de l'environnement se lit pareil qu'un
+    # 10 voulu.
+    brut = os.environ.get(DAILY_CAP_ENV, "").strip()
+    cadence = {
+        "daily_cap": _daily_cap(),
+        "daily_cap_source": (
+            f"env {DAILY_CAP_ENV}={brut!r}" if brut else "défaut du code"
+        ),
+        "daily_cap_defaut_du_code": DAILY_CAP_DEFAULT,
+    }
     try:
         camp = await instantly_lib.get_campaign()
-        return {"ok": True, "campaign_id": camp.get("id"), "name": camp.get("name")}
+        return {"ok": True, "campaign_id": camp.get("id"), "name": camp.get("name"),
+                **cadence}
     except Exception as e:  # noqa: BLE001 — endpoint diag, on veut tout voir
-        return {"ok": False, "error_type": type(e).__name__, "error": str(e)[:500]}
+        return {"ok": False, "error_type": type(e).__name__, "error": str(e)[:500],
+                **cadence}
 
 
 @app.post(
