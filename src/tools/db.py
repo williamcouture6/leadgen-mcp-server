@@ -488,7 +488,32 @@ async def _record_consent(
 
 
 async def insert_contact(payload: ContactIn) -> InsertContactOut:
-    """Insert contact, dédup sur (company_id, email)."""
+    """Insert contact, dédup sur le COURRIEL SEUL (insensible à la casse).
+
+    🔴 PAS sur le couple (company_id, email) — c'était le cas jusqu'au
+    2026-09-08, et ça laissait passer les vrais doublons.
+
+    Mesuré la veille du premier envoi : **9 adresses portaient 2 ou 3 contacts**,
+    tous sur des entreprises DIFFÉRENTES. Le gars de cVert aurait reçu TROIS
+    courriels quasi identiques, possiblement sur trois gabarits différents.
+
+    La cause est en amont : les doublons viennent de fiches Google Places en
+    double. « cVert », « cVert - Entretien de Pelouse Ville », « … Laval » sont
+    trois inscriptions du même commerce, donc trois `companies` distinctes — et
+    la dédup par couple les voyait comme trois cas légitimes.
+
+    Le bon critère est l'ADRESSE, parce que c'est elle qui reçoit : une boîte
+    de réception, un courriel. Peu importe combien de fiches Google la
+    désignent.
+
+    ⚠️ `lower()` des deux côtés : `Info@X.ca` et `info@x.ca` sont la même boîte,
+    et les fiches Google ne s'accordent pas sur la casse.
+
+    ⚠️ Cette vérification peut se faire doubler par deux WF-3 concurrents. La
+    garde réelle est l'index `contacts_email_actif_unique` (migration 0049) ;
+    celle-ci évite juste d'aller au bout d'une insertion vouée à l'échec, et
+    rend un `duplicate` propre plutôt qu'une erreur.
+    """
     if not payload.email:
         return InsertContactOut(status="skipped_no_email")
 
@@ -496,8 +521,8 @@ async def insert_contact(payload: ContactIn) -> InsertContactOut:
         "contacts",
         params={
             "select": "id",
-            "company_id": f"eq.{payload.company_id}",
-            "email": f"eq.{payload.email}",
+            "email": f"ilike.{payload.email.strip()}",
+            "status": "neq.disqualified",
             "limit": "1",
         },
     )
