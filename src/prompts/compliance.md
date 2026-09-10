@@ -117,11 +117,13 @@ Toute affirmation factuelle sur l'**ENTREPRISE** prospect doit être ancrée dan
 - L'email dit "votre équipe de 12 personnes" mais le research_json estime 5-10 employés.
 - L'email cite une review/quote qui n'apparaît pas dans `research.recent_review_snippet` ou les reviews brutes.
 
-### 1bis. 🔴 Le reproche d'un tiers rapporté au prospect
+### 8. 🔴 Le reproche d'un tiers rapporté au prospect
 Le research contient parfois un avis où un CLIENT se plaint — typiquement de ne pas
 réussir à joindre l'entreprise (`lead_potential.signaux.avis_disent_injoignable`,
 `recent_review_snippet` d'une mauvaise note). Ce constat sert à décider **qui** on
 contacte en premier, jamais **ce qu'on lui dit**.
+
+⚠️ **Numérotée 8 et non 1bis** : l'ancre `1bis.` désigne déjà une PERMISSION dans la liste LÉGITIME (« Nommer les métiers du prospect »), et deux sens opposés sous la même ancre feraient refuser le 2ᵉ temps comme un reproche.
 
 ⚠️ **La règle §1 ne l'attrape pas** : un tel avis EST dans le research, donc citer son
 contenu est « vérifiable » — et passerait. C'est pourtant la faute la plus coûteuse du

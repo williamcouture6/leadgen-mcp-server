@@ -146,6 +146,57 @@ def test_la_marque_s_efface_a_la_recherche_suivante() -> None:
     assert patch["lead_potential_reason"] is None
 
 
+def test_une_disqualification_heritee_ne_met_plus_le_score_a_zero() -> None:
+    """Retiré le 2026-09-10, sur constat du troisième conseil.
+
+    Ces `disqualifications` ont été écrites sous l'ANCIENNE règle, large, que
+    la refonte abroge : « tech-savvy élevé », « agence partenaire visible ».
+    117 des 404 entreprises recherchées en portent une. Les mettre à 0
+    appliquerait rétroactivement une règle supprimée et enterrerait des PME que
+    la décision de William veut garder dans la liste.
+    """
+    patch = db.extract_lead_potential_patch({
+        "disqualifications": ["agence numérique partenaire visible"],
+        "lead_potential": {"score": 72},
+    })
+    assert patch["lead_potential_score"] == 72
+
+
+def test_une_disqualification_fraiche_met_toujours_le_score_a_zero() -> None:
+    # La forme actuelle, elle, est jugée sous la liste fermée : elle compte.
+    patch = db.extract_lead_potential_patch({
+        "disqualifications": ["organisme municipal"],
+        "lead_potential": {"signaux": {"avis_total": 900, "ferme_soir_ou_weekend": True}},
+    })
+    assert patch["lead_potential_score"] == 0
+
+
+def test_le_mot_aucune_n_est_pas_une_disqualification() -> None:
+    # Un modèle qui répond « aucune » remplit quand même le tableau. Sans
+    # filtre, le score tombait à 0 et la tête de file disparaissait.
+    for mot in ("aucune", "Aucune.", "n/a", "  ", "néant"):
+        patch = db.extract_lead_potential_patch({
+            "disqualifications": [mot],
+            "lead_potential": {"signaux": {"avis_total": 138, "ferme_soir_ou_weekend": True}},
+        })
+        assert patch["lead_potential_score"] > 0, mot
+
+
+def test_la_marque_survit_a_une_fiche_google_sans_avis() -> None:
+    """Absence de mesure n'est pas absence de plainte.
+
+    `avis_note_min` vient des ≤ 5 avis que Google fait tourner. Une passe où
+    la fiche revient sans avis rendrait la garde fausse alors que le modèle
+    maintient la plainte — et effacerait une marque toujours méritée.
+    """
+    patch = db.extract_lead_potential_patch({
+        "lead_potential": {
+            "signaux": {"avis_disent_injoignable": True, "avis_note_min": None},
+        }
+    })
+    assert "lead_potential_reason" not in patch, "la marque existante doit rester"
+
+
 def test_la_forme_heritee_ne_touche_pas_a_la_raison() -> None:
     # Sans signaux, on ne sait rien de neuf : on n'efface pas ce qui est là.
     patch = db.extract_lead_potential_patch({"lead_potential": {"score": 65}})

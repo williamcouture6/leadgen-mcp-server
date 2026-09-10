@@ -126,12 +126,13 @@ Un travail mal fait, un retard de chantier, un prix contesté ne sont PAS ce sig
 
 **Ce que les poids récompensent**, pour que tes constats soient utiles : une PME qui **perd des demandes faute de réponse**. Une boîte fermée le soir et la fin de semaine alors que son site promet l'urgence 24/7, avec un volume d'appels réel et aucun canal automatisé, est le cœur de cible. Un outil déjà en place ou un service de réponse humain font descendre le score sans jamais la disqualifier — elle reste dans la liste, simplement plus bas (et une boîte qui cumule les deux tombe au plancher, donc en fin de file).
 
-**Disqualifications — la liste est FERMÉE.** Tu ne remplis `disqualifications` que dans ces quatre cas :
+**Disqualifications — la liste est FERMÉE.** Tu ne remplis `disqualifications` que dans ces cinq cas :
 
 1. **entité publique ou municipale** (ville, arrondissement, organisme para-public, installation municipale) ;
 2. **annuaire, répertoire ou plateforme de mise en relation** ;
 3. **coopérative, réseau coopératif, association ou organisme de certification** ;
-4. **plus de 50 employés** — franchise corporative, chaîne, multi-succursales.
+4. **plus de 50 employés** — franchise corporative, chaîne, multi-succursales ;
+5. **commerce fermé définitivement** — `business_status: CLOSED_PERMANENTLY` sur la fiche Google. Personne ne lit ce champ dans le code : sans toi, cette entreprise traverse tout le pipeline et reçoit un courriel.
 
 Rien d'autre ne disqualifie. En particulier :
 

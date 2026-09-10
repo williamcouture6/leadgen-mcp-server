@@ -229,10 +229,22 @@ def test_les_noms_des_outils_sont_conserves() -> None:
     assert avec == sans
 
 
-def test_sans_site_lu_aucune_trace_inventee() -> None:
+def test_sans_site_on_sait_qu_il_n_y_a_pas_d_outil() -> None:
+    # Corrigé le 2026-09-10 : « pas de site » n'est pas « on n'a pas regardé ».
+    # Une entreprise sans site n'a certainement pas de prise de rendez-vous en
+    # ligne — et c'est le signal low-tech le plus fort qui soit. Le dire
+    # « inconnu » faisait perdre 8 points aux 97 entreprises sans site.
     mesures = research.signaux_mesures({}, {"status": "no_website"})
-    assert mesures["outils_noms"] is None
+    assert mesures["outil_en_place"] is False
+    assert mesures["rdv_en_ligne"] is False
+    assert mesures["outils_noms"] is None, "aucun nom à inventer pour autant"
+
+
+def test_un_site_illisible_reste_inconnu() -> None:
+    # L'inverse : le site existe mais n'a pas répondu. Là, on ne sait rien.
+    mesures = research.signaux_mesures({}, {"status": "error: ConnectTimeout"})
     assert mesures["outil_en_place"] is None
+    assert mesures["rdv_en_ligne"] is None
 
 
 def test_une_boite_sans_site_ne_s_entend_pas_dire_aucun_outil() -> None:
@@ -241,6 +253,71 @@ def test_une_boite_sans_site_ne_s_entend_pas_dire_aucun_outil() -> None:
     bloc = research._format_site_for_llm({"status": "no_website"})
     assert "outils_detectes: (none)" not in bloc
     assert "website_status: no_website" in bloc
+
+
+# --- 7bis. les constats du troisième conseil --------------------------------
+
+def test_le_nom_canonique_est_lui_meme_detecte() -> None:
+    # « Réservation en ligne » est le nom canonique du signal, et la liste de
+    # phrases fixes ne l'attrapait pas. Le `in` casse dès qu'un mot s'insère.
+    for libelle in (
+        "Réservation en ligne",
+        "Rendez-vous en ligne",
+        "Prendre un rendez-vous en ligne",
+        "Cédulez votre rendez-vous en ligne",
+        "Book your appointment online",
+    ):
+        html = f'<a href="/rdv">{libelle}</a>'
+        assert research._outils_detectes(html) == {research.RDV_GENERIQUE}, libelle
+
+
+def test_un_titre_de_carte_court_ne_compte_pas() -> None:
+    # La garde de longueur ne suffisait pas : le titre cité par son propre
+    # commentaire fait 57 caractères, donc il passait. Ce qui trahit une carte,
+    # c'est qu'elle enveloppe un titre ou un paragraphe.
+    html = (
+        '<a href="/blogue/1"><h3>Pourquoi il est impossible de réserver en '
+        "ligne chez nous</h3></a>"
+    )
+    assert research._outils_detectes(html) == set()
+
+
+def test_un_aria_label_descriptif_n_ecarte_pas_un_vrai_bouton() -> None:
+    # Mesurer la CONCATÉNATION des champs rejetait le site le mieux fait.
+    html = (
+        '<a href="/rdv" aria-label="Réserver en ligne un rendez-vous avec un '
+        'de nos conseillers en déneigement">Réserver en ligne</a>'
+    )
+    assert research._outils_detectes(html) == {research.RDV_GENERIQUE}
+
+
+def test_un_service_de_reponse_ne_compte_plus_comme_outil() -> None:
+    # Double comptage : « Ruby Receptionists » sur le site posait
+    # `outil_en_place` (−20) ET faisait poser au modèle
+    # `service_reponse_humain_24_7` (−25). Un seul fait, −45, plancher atteint.
+    html = '<script src="https://callruby.com/widget.js"></script>'
+    assert research._outils_detectes(html) == set()
+    assert "Ruby Receptionists" in research.SERVICES_DE_REPONSE
+
+
+def test_un_outil_qui_ne_repond_a_personne_ne_compte_plus() -> None:
+    # Birdeye collecte des avis, un formulaire HubSpot EST le problème que
+    # l'offre règle. Ni l'un ni l'autre ne répond à un client.
+    for html in (
+        '<script src="https://birdeye.com/embed.js"></script>',
+        '<script src="https://js.hsforms.net/forms/v2.js"></script>',
+    ):
+        assert research._outils_detectes(html) == set(), html
+
+
+def test_une_date_sans_fuseau_ne_fait_pas_planter_la_passe() -> None:
+    # `fromisoformat` accepte une date naïve, puis la comparaison explose —
+    # et une exception ici coûtait le research payé, donc trois passes en
+    # échec disqualifiaient l'entreprise pour de bon.
+    from datetime import datetime, timezone
+    place = {"reviews": [{"publishTime": "2026-09-09T10:00:00"}]}
+    maintenant = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+    assert research._avis_recents(place, maintenant=maintenant) == 1
 
 
 # --- 8. les deux décisions de barème de William -----------------------------

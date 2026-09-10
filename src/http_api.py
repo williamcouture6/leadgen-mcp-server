@@ -2533,11 +2533,17 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
     # ferait retomber l'alternance A/B sur la position dans la file TRIÉE PAR
     # POTENTIEL — le bras A prendrait toujours les meilleurs leads — et rien,
     # ni en test ni en journal, ne le signalerait.
-    if backlog and "rang_arrivee" not in backlog[0]:
+    # On valide la FORME et non la présence de la clé : `_retenir` pose un
+    # placeholder `rang_arrivee: 0` à la construction, que `_poser_rang_arrivee`
+    # renumérote au retour. Qu'un remaniement futur perde cet APPEL et la clé
+    # reste partout — à zéro — donc tout le lot partirait en bras A sans qu'un
+    # contrôle de présence n'y voie rien.
+    rangs = [e.get("rang_arrivee") for e in backlog]
+    if backlog and sorted(r for r in rangs if isinstance(r, int)) != list(range(len(backlog))):
         logging.getLogger("wf4").warning(
-            "rang_arrivee absent du backlog — l'alternance A/B/C/D retombe sur "
-            "la position dans la file triée, donc corrélée au potentiel. Le "
-            "test A/B est FAUSSÉ tant que ça dure."
+            "rang_arrivee mal formé (%r) — l'alternance A/B/C/D retombe sur la "
+            "position dans la file triée, donc corrélée au potentiel. Le test "
+            "A/B est FAUSSÉ tant que ça dure.", rangs[:5],
         )
 
     for rang, entry in enumerate(backlog):

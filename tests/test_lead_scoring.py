@@ -130,12 +130,42 @@ def test_les_horaires_de_bureau_declenchent_l_ancre() -> None:
     assert _ferme_soir_ou_weekend(place) is True
 
 
-def test_ouvert_le_samedi_et_le_soir_ne_declenche_pas() -> None:
+def test_ouvert_tous_les_jours_et_tous_les_soirs_ne_declenche_pas() -> None:
+    # Il faut le soir PARTOUT et le week-end EN ENTIER. Sept jours, chacun
+    # fermant à 21 h : rien ne tombe dans le vide.
     place = {"regularOpeningHours": {"periods": [
-        {"open": {"day": 1, "hour": 8}, "close": {"day": 1, "hour": 20}},
-        {"open": {"day": 6, "hour": 9}, "close": {"day": 6, "hour": 16}},
+        {"open": {"day": j, "hour": 8}, "close": {"day": j, "hour": 21}}
+        for j in range(7)
     ]}}
     assert _ferme_soir_ou_weekend(place) is False
+
+
+def test_un_seul_soir_couvert_ne_suffit_pas() -> None:
+    """Le défaut trouvé par le conseil du 2026-09-10.
+
+    L'ancienne version accumulait « il existe une période le week-end » et
+    « il existe une fermeture après 19 h » SÉPARÉMENT. Cette boîte cochait les
+    deux et ressortait « jamais fermée le soir ni la fin de semaine » — alors
+    qu'elle ferme à 16 h le samedi, tout le dimanche, et à 17 h du mardi au
+    vendredi. Elle perdait les 14 points de l'ancre, plus les 10 de la
+    contradiction si son site promet le 24/7.
+    """
+    place = {"regularOpeningHours": {"periods": [
+        {"open": {"day": 1, "hour": 8}, "close": {"day": 1, "hour": 20}},
+        {"open": {"day": 2, "hour": 8}, "close": {"day": 2, "hour": 17}},
+        {"open": {"day": 6, "hour": 9}, "close": {"day": 6, "hour": 16}},
+    ]}}
+    assert _ferme_soir_ou_weekend(place) is True
+
+
+def test_le_dimanche_manquant_suffit() -> None:
+    # Six jours sur sept, tous ouverts tard : le dimanche seul suffit à ce que
+    # des demandes tombent dans le vide.
+    place = {"regularOpeningHours": {"periods": [
+        {"open": {"day": j, "hour": 8}, "close": {"day": j, "hour": 21}}
+        for j in range(1, 7)
+    ]}}
+    assert _ferme_soir_ou_weekend(place) is True
 
 
 def test_ouvert_en_continu_ne_declenche_pas() -> None:

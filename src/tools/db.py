@@ -24,6 +24,7 @@ Phase 1 (sourcing) :
 """
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -897,6 +898,16 @@ async def _select_par_tranches(
             lignes.extend(lot)
             if len(lot) < PLAFOND_POSTGREST:
                 break
+        else:
+            # Le plafond de pages est atteint et la dernière était pleine : la
+            # réponse est TRONQUÉE. Le seuil est passé de 1 000 à 10 000, mais
+            # le mode de panne est le même — un contact absent d'
+            # `already_drafted` reçoit un deuxième courriel. Ça se crie.
+            logging.getLogger("wf4").warning(
+                "%s : tranche tronquée à %d lignes (plafond de pages atteint) — "
+                "des lignes manquent, un contact déjà rédigé peut repasser",
+                table, MAX_PAGES_SELECTION * PLAFOND_POSTGREST,
+            )
     return lignes
 
 
@@ -959,7 +970,8 @@ async def _retenir(
         "messages",
         cle="contact_id",
         ids=[c["id"] for c in contacts],
-        # `order` → `select_all` : voir la docstring de `_select_par_tranches`.
+        # `order` → tranche PAGINÉE (et non `select_all`, à dessein : les faux
+        # `select` des tests ne connaissent pas `select_all`). Voir la docstring.
         order="id",
         params={
             "select": "contact_id",
@@ -1220,6 +1232,26 @@ async def list_companies_to_discover(
     )
 
 
+# Un modèle qui répond « aucune » remplit quand même le tableau. Sans ce
+# filtre, `bool([...])` mettait le score à 0 et supprimait la tête de file,
+# sans log ni trace.
+_MOTS_VIDES_DISQUALIFICATION = frozenset({
+    "", "aucune", "aucun", "n/a", "na", "non", "rien", "néant", "neant",
+    "aucune disqualification", "pas de disqualification",
+})
+
+
+def _porte_une_disqualification(research_json: dict[str, Any]) -> bool:
+    lignes = research_json.get("disqualifications")
+    if not isinstance(lignes, list):
+        return False
+    return any(
+        isinstance(x, str)
+        and x.strip().rstrip(".").lower() not in _MOTS_VIDES_DISQUALIFICATION
+        for x in lignes
+    )
+
+
 def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     """Extrait les colonnes flat `lead_potential_*` du research_json.
 
@@ -1246,7 +1278,7 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     if not isinstance(lp, dict):
         return {}
     signaux = lp.get("signaux")
-    disqualifie = bool(research_json.get("disqualifications"))
+    disqualifie = _porte_une_disqualification(research_json)
     if isinstance(signaux, dict) and signaux:
         # Forme actuelle : des constats, pondérés par le code.
         score, _ = calculer_score(signaux, disqualifie=disqualifie)
@@ -1264,7 +1296,15 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
         # qu'à la forme actuelle jusqu'au 2026-09-09 : une municipalité déjà
         # en base, notée 72 par l'ancien modèle et disqualifiée par le même
         # research, ressortait à 72 et repassait devant un vrai prospect.
-        score = 0 if disqualifie else base
+        # ⚠️ PAS de mise à zéro sur la forme héritée (retiré le 2026-09-10).
+        # Ces `disqualifications` ont été écrites sous l'ANCIENNE règle, large,
+        # que la refonte abroge : « tech-savvy élevé », « agence partenaire
+        # visible », « site inactif ». 117 des 404 entreprises recherchées en
+        # portent une. Les mettre à 0 appliquerait rétroactivement une règle
+        # supprimée, et enterrerait des PME que la décision de William veut
+        # garder dans la liste. Ces lignes se règlent par un re-scoring, pas
+        # par un jugement rendu sous une loi abrogée.
+        score = base
     patch: dict[str, Any] = {"lead_potential_score": score}
     reason = lp.get("reasoning") if isinstance(lp.get("reasoning"), str) else ""
     # 🔴 Sur le chemin des signaux, la raison est TOUJOURS réécrite, même vide.
@@ -1273,7 +1313,19 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     # c'est lui qui ordonne la file d'envoi, elle restait première de tous les
     # lots, indéfiniment. Tant que la colonne n'était lue par personne le
     # résidu était inoffensif ; depuis qu'elle trie, il capture la tête de file.
-    ecrire_la_raison = isinstance(signaux, dict) and bool(signaux)
+    # …sauf quand la plainte est INVÉRIFIABLE ce jour-là. `avis_note_min` vient
+    # des ≤ 5 avis que Google fait tourner : une passe où la fiche revient sans
+    # avis rendrait `est_tete_de_file` faux alors que le modèle maintient la
+    # plainte, et effacerait une marque toujours méritée. Absence de mesure ≠
+    # absence de plainte — la même doctrine que dans `signaux_mesures`.
+    plainte_invérifiable = (
+        isinstance(signaux, dict)
+        and signaux.get("avis_disent_injoignable") is True
+        and signaux.get("avis_note_min") is None
+    )
+    ecrire_la_raison = (
+        isinstance(signaux, dict) and bool(signaux) and not plainte_invérifiable
+    )
     # La marque de tête de file vit DANS la justification, pas dans le score :
     # le lead garde la note que le barème lui donne (un 8 reste un 8) et cette
     # phrase dit pourquoi il passe quand même devant. Elle est en tête de

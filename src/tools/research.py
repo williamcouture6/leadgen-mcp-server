@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -142,21 +143,30 @@ OUTILS_FINGERPRINTS: dict[str, tuple[str, ...]] = {
     "Booksy": ("booksy",),
     "SimplyBook": ("simplybook",),
     "Square Appointments": ("squareup.com/appointments", "square appointments"),
-    # Chat / messagerie / avis
+    # Chat / messagerie — des outils qui RÉPONDENT. Les outils de collecte
+    # d'avis (Birdeye) et les CRM (Salesforce) ont été RETIRÉS le 2026-09-10 :
+    # ils ne répondent à personne, donc les compter comme « déjà outillé »
+    # retirait 20 points à un prospect dont le problème est entier.
     "Podium": ("podium.com", "widget.podium"),
-    "Birdeye": ("birdeye.com", "birdeye.co"),
     "Tawk.to": ("tawk.to",),
     "LiveChat": ("livechatinc", "livechat.com"),
     "Crisp": ("crisp.chat",),
     "Intercom": ("intercom.io", "intercomcdn", "widget.intercom"),
     "Drift": ("js.driftt.com", "drift.com"),
     "Zendesk": ("zdassets.com", "zendesk.com"),
-    "HubSpot": ("hs-scripts.com", "hubspot.com", "hsforms"),
-    # Pas de `force.com` nu : il attrape `workforce.com`, et un simple lien
-    # sortant vers un article RH faisait perdre 20 points à un prospect.
-    "Salesforce": ("salesforce.com", ".my.salesforce", "sfdcstatic.com"),
+    # `hsforms` retiré : un formulaire HubSpot n'est pas un outil de réponse,
+    # c'est EXACTEMENT le formulaire soumis le soir qui reste sans réponse —
+    # le problème que l'offre règle. Seul le chat HubSpot compte.
+    "HubSpot": ("hs-scripts.com",),
     "ManyChat": ("manychat",),
-    # Réponse téléphonique déléguée — le concurrent direct de l'offre
+}
+
+# Services qui RÉPONDENT au téléphone à la place du propriétaire. Ils sont
+# détectés à part depuis le 2026-09-10 : rangés dans OUTILS_FINGERPRINTS, le
+# même fait — « Ruby Receptionists » écrit sur le site — coûtait DEUX fois,
+# −20 pour `outil_en_place` et −25 pour `service_reponse_humain_24_7`, soit un
+# plancher atteint sur une seule ligne de HTML.
+SERVICES_DE_REPONSE: dict[str, tuple[str, ...]] = {
     "Smith.ai": ("smith.ai",),
     "AnswerConnect": ("answerconnect",),
     "Ruby Receptionists": ("callruby.com", "ruby.com/receptionist"),
@@ -178,12 +188,21 @@ OUTILS_FINGERPRINTS: dict[str, tuple[str, ...]] = {
 # fois sur dix. Le compter comme un outil coûtait 28 points (−20 de malus, plus
 # les +8 de « aucun RDV en ligne » perdus) à exactement le prospect que le
 # barème veut remonter — le faux positif inverse de celui qu'on fermait.
-PHRASES_RDV = (
-    "prendre rendez-vous en ligne", "prenez rendez-vous en ligne",
-    "réserver en ligne", "reserver en ligne",
-    "réservez en ligne", "reservez en ligne",
-    "book online", "schedule online", "book an appointment online",
+# Une expression et non une liste de phrases : la liste ratait « Réservation
+# en ligne » — le nom canonique lui-même — ainsi que « Rendez-vous en ligne »,
+# « Prendre UN rendez-vous en ligne », « Cédulez votre rendez-vous en ligne ».
+# Le `in` sur chaîne fixe casse dès qu'un mot s'insère. Le « en ligne » reste
+# obligatoire : sans lui, « Prendre rendez-vous » compose un numéro neuf fois
+# sur dix sur un site de PME de service.
+MOTIF_RDV = re.compile(
+    r"(rendez-?vous|r[ée]serv|rdv|c[ée]dul|book|schedul)[^.\n]{0,25}(en ligne|online)",
+    re.IGNORECASE,
 )
+# Balises qu'un vrai bouton n'enveloppe pas. Un `<a>` qui contient un titre et
+# un paragraphe est une CARTE cliquable, et `get_text()` ramène tout son
+# contenu — c'est par là que « Pourquoi il est impossible de réserver en ligne
+# chez nous » repassait, quelle que soit la garde de longueur.
+BALISES_DE_BLOC = ("h1", "h2", "h3", "h4", "h5", "h6", "p", "article", "section", "li")
 # Un vrai libellé de bouton est court. Au-delà, c'est que le `<a>` enveloppe un
 # bloc entier (carte de blogue, tuile de service) et que `get_text()` a ramassé
 # tout son contenu — c'est par là que « Pourquoi il est impossible de réserver
@@ -799,15 +818,17 @@ def _bouton_de_rdv(html: str) -> bool:
         href = (el.get("href") or "").strip().lower()
         if href.startswith(("tel:", "mailto:", "sms:")):
             continue
-        libelle = " ".join(filter(None, (
-            el.get_text(" ", strip=True),
-            el.get("aria-label"),
-            el.get("title"),
-        ))).lower().replace("\xa0", " ")
-        if len(libelle) > LONGUEUR_MAX_LIBELLE:
+        if el.find(BALISES_DE_BLOC):
             continue
-        if any(p in libelle for p in PHRASES_RDV):
-            return True
+        # Chaque champ est jugé SÉPARÉMENT : mesurer leur concaténation
+        # écartait un vrai bouton dont l'`aria-label` est descriptif — le site
+        # le mieux fait échappait à la détection.
+        for champ in (el.get_text(" ", strip=True), el.get("aria-label"), el.get("title")):
+            if not champ:
+                continue
+            texte = champ.replace("\xa0", " ")
+            if len(texte) <= LONGUEUR_MAX_LIBELLE and MOTIF_RDV.search(texte):
+                return True
     return False
 
 
@@ -1267,6 +1288,12 @@ def _avis_recents(
             quand = datetime.fromisoformat(brut.replace("Z", "+00:00"))
         except ValueError:
             continue
+        # Une date SANS fuseau parse très bien, puis explose à la comparaison
+        # (« can't compare offset-naive and offset-aware »). Google en rend
+        # toujours avec, mais une exception ici coûtait le research entier —
+        # et trois passes en échec disqualifient l'entreprise pour de bon.
+        if quand.tzinfo is None:
+            quand = quand.replace(tzinfo=timezone.utc)
         if quand >= limite:
             compte += 1
     return compte
@@ -1300,20 +1327,32 @@ def _ferme_soir_ou_weekend(place: dict[str, Any]) -> bool | None:
     periodes = (place.get("regularOpeningHours") or {}).get("periods")
     if not isinstance(periodes, list) or not periodes:
         return None
-    weekend_couvert = False
-    soir_couvert = False
+
+    # ⚠️ Corrigé le 2026-09-10 (conseil). L'ancienne version accumulait les
+    # deux faits SÉPARÉMENT : « il existe une période le week-end » et « il
+    # existe une fermeture après 19 h ». Une boîte ouverte lundi 8 h-20 h et
+    # samedi 9 h-16 h cochait les deux — et ressortait « jamais fermée le soir
+    # ni le week-end », alors qu'elle est fermée tous les soirs du mardi au
+    # vendredi, le samedi après 16 h et tout le dimanche. Elle perdait les 14
+    # points de l'ancre, et les 10 de la contradiction. Il faut que le soir
+    # soit couvert PARTOUT, et le week-end en entier.
+    jours_ouverts: set[int] = set()
+    soir_couvert_partout = True
     for periode in periodes:
         ouverture = (periode or {}).get("open") or {}
         fermeture = (periode or {}).get("close")
-        if ouverture.get("day") in (0, 6):  # 0 = dimanche, 6 = samedi
-            weekend_couvert = True
         if fermeture is None:
-            # Période sans fermeture = ouvert en continu.
+            # Période sans fermeture = ouvert en continu, donc rien ne tombe
+            # dans le vide.
             return False
+        jour = ouverture.get("day")
+        if isinstance(jour, int):
+            jours_ouverts.add(jour)
         heure = fermeture.get("hour")
-        if isinstance(heure, int) and (heure >= 19 or heure <= 5):
-            soir_couvert = True
-    return not (weekend_couvert and soir_couvert)
+        if not (isinstance(heure, int) and (heure >= 19 or heure <= 5)):
+            soir_couvert_partout = False
+    weekend_couvert = {0, 6} <= jours_ouverts  # 0 = dimanche, 6 = samedi
+    return not (weekend_couvert and soir_couvert_partout)
 
 
 def signaux_mesures(place: dict[str, Any], site: dict[str, Any]) -> dict[str, Any]:
@@ -1324,14 +1363,23 @@ def signaux_mesures(place: dict[str, Any], site: dict[str, Any]) -> dict[str, An
     `None` = pas d'information, ce qui ne vaut pas « absent » pour le barème.
     """
     outils = site.get("outils_detectes") or []
-    site_lu = str(site.get("status", "")).startswith("http_2")
+    statut = str(site.get("status", ""))
+    site_lu = statut.startswith("http_2")
+    # Pas de site du tout ≠ site illisible. Sans site, il n'y a certainement
+    # aucune prise de rendez-vous en ligne ni outil : le dire `None` faisait
+    # perdre 8 points aux 97 entreprises sans site, alors que « pas de site »
+    # est le signal low-tech le plus fort qui soit.
+    sans_site = statut == "no_website"
     return {
         "avis_total": place.get("userRatingCount"),
         "avis_30j": _avis_recents(place),
         "avis_note_min": _note_la_plus_basse(place),
         "ferme_soir_ou_weekend": _ferme_soir_ou_weekend(place),
-        "outil_en_place": bool(outils) if site_lu else None,
-        "rdv_en_ligne": any(o in OUTILS_AVEC_RDV for o in outils) if site_lu else None,
+        "outil_en_place": bool(outils) if site_lu else (False if sans_site else None),
+        "rdv_en_ligne": (
+            any(o in OUTILS_AVEC_RDV for o in outils) if site_lu
+            else (False if sans_site else None)
+        ),
         # Ne pèse RIEN dans le barème : c'est la trace, pour qu'on puisse
         # savoir après coup quel outil a coûté ses points à une boîte. Sans
         # elle, `outil_en_place: true` est une affirmation invérifiable.
@@ -1702,13 +1750,49 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
     # payé est jeté — et au bout de `_RESEARCH_MAX_FAILURES` la company est
     # disqualifiée pour de bon. Une forme inattendue doit coûter le scoring,
     # jamais la fiche.
+    # ⚠️ Une passe où le modèle n'a RIEN rendu (repli texte, `_parse_json` qui
+    # ne trouve qu'un objet vide) ne doit pas réécrire le score : les mesures
+    # seules donneraient 25-45 là où la boîte valait 72, et la raison serait
+    # mise à NULL. Le lead se ferait rétrograder par une panne LLM, en silence.
+    if not llm_result.research_json:
+        return ResearchCompanyOut(
+            research_json=research_json,
+            model=llm_result.model,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            usage=llm_result.usage,
+            place_status="ok",
+            site_status=site.get("status", "unknown"),
+            tech_keyword_hits=site.get("tech_keyword_hits", []),
+            emails_found=site.get("emails_found", []),
+        )
+
     lp_brut = research_json.get("lead_potential")
     lead_potential = dict(lp_brut) if isinstance(lp_brut, dict) else {}
     signaux_bruts = lead_potential.get("signaux")
     signaux = dict(signaux_bruts) if isinstance(signaux_bruts, dict) else {}
-    for cle, valeur in signaux_mesures(place, site).items():
-        if valeur is not None or cle not in signaux:
-            signaux[cle] = valeur
+
+    # 🔴 La mesure ÉCRASE, même quand elle vaut `None`. Le schéma de l'outil
+    # n'interdit pas au modèle d'émettre `ferme_soir_ou_weekend` ou
+    # `avis_note_min` ; l'ancienne fusion gardait alors sa valeur quand la
+    # mesure ne savait pas. Le prompt lui promet pourtant l'inverse (« n'y
+    # touche pas, tes valeurs seraient écrasées »), et sur `avis_note_min` la
+    # « double garde » de la tête de file se réduisait à une seule source :
+    # le modèle, pour le signal qui met un lead en position 1 de la file.
+    #
+    # Fail-soft : une donnée Google inattendue ne doit pas coûter le research
+    # payé — trois passes en échec disqualifient l'entreprise pour de bon.
+    try:
+        mesures = signaux_mesures(place, site)
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger("run_wf3").warning(
+            "signaux mesurés indisponibles (%r) — le scoring retombe sur les "
+            "seuls constats du modèle", e
+        )
+        mesures = {}
+    for cle in mesures:
+        signaux.pop(cle, None)
+    signaux.update(mesures)
+
     lead_potential["signaux"] = signaux
     research_json["lead_potential"] = lead_potential
 
