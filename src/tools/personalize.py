@@ -93,6 +93,39 @@ def sans_tiret_long(texte: str | None) -> str | None:
     return texte
 
 
+def recoller_les_paragraphes(texte: str | None) -> str | None:
+    """Un paragraphe = une seule ligne. Les lignes vides restent des séparateurs.
+
+    🔴 POURQUOI : le corps part en TEXTE BRUT dans la variable `{{email_body}}`
+    du gabarit Instantly, qui convertit chaque retour de ligne en saut visible.
+    Une ligne vide devient donc un blanc entre paragraphes — ce qu'on veut — mais
+    un retour AU MILIEU d'un paragraphe devient une coupure que le prospect voit,
+    et le texte arrive haché en lignes courtes au lieu de couler.
+
+    Mesuré le 2026-09-09 : 7 brouillons sur 69, tous en A et B. Jamais en C ni D
+    — leurs paragraphes sont fixes, recopiés tels quels. C'est le modèle qui
+    formate son texte généré en colonnes, comme il le ferait dans un éditeur.
+
+    ⚠️ MÉCANIQUE, PAS UNE CONSIGNE — même raisonnement que `sans_tiret_long` :
+    la mise en forme est ce qu'un modèle fait sans y penser, et un contrôle de
+    conformité ne pourrait qu'ANNOTER, donc le courriel partirait haché quand
+    même.
+
+    ⚠️ Ce qui est PRÉSERVÉ, et ce n'est pas un détail : la ligne vide entre deux
+    paragraphes. Tout aplatir donnerait un pavé illisible — l'inverse du défaut
+    qu'on répare.
+    """
+    if not texte:
+        return texte
+    saut = chr(10)
+    paragraphes = []
+    for bloc in texte.split(saut + saut):
+        lignes = [ligne.strip() for ligne in bloc.split(saut) if ligne.strip()]
+        if lignes:
+            paragraphes.append(" ".join(lignes))
+    return (saut + saut).join(paragraphes)
+
+
 def bloc_metiers_resolus(
     services_offered: list[str] | None, aujourdhui: date, gabarit: str | None = None
 ) -> str:
@@ -637,6 +670,11 @@ async def personalize(payload: PersonalizeIn) -> PersonalizeOut:
     for cle in ("subject", "body_text", *CLES_RELANCES):
         if cle in email_json:
             email_json[cle] = sans_tiret_long(email_json[cle])
+    # Le recollage ne vise QUE les corps : un sujet n'a pas de paragraphes, et
+    # le passer ici ne ferait qu'ajouter un chemin où quelque chose peut casser.
+    for cle in ("body_text", *CLES_RELANCES):
+        if cle in email_json:
+            email_json[cle] = recoller_les_paragraphes(email_json[cle])
 
     return PersonalizeOut(
         email=email_json,

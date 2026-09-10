@@ -90,3 +90,80 @@ def test_les_relances_passent_aussi_au_filtre() -> None:
     for cle, corps in CORPS_RELANCES.items():
         for t in TIRETS:
             assert t not in corps, f"{cle} porte un {t!r}"
+
+
+# ================== LES PARAGRAPHES SE RECOLLENT ============================
+#
+# Le corps part en TEXTE BRUT dans la variable {{email_body}} du gabarit
+# Instantly, qui convertit chaque retour de ligne en saut visible. Une ligne
+# vide devient donc un blanc entre paragraphes — ce qu'on veut — mais un retour
+# AU MILIEU d'un paragraphe devient une coupure que le prospect voit.
+#
+# Mesuré le 2026-09-09 : 7 brouillons sur 69, tous en A et B. Jamais en C ni D,
+# dont les paragraphes sont fixes. C'est le modèle qui formate son texte généré
+# en colonnes, comme dans un éditeur.
+
+from src.tools.personalize import recoller_les_paragraphes
+
+SAUT = chr(10)
+
+
+def test_un_paragraphe_coupe_se_recolle() -> None:
+    """Le cas réel, tiré du brouillon de CM Gravel."""
+    coupe = (
+        "Moi c'est William, et je fais en sorte de régler ces problèmes-là. Ce que"
+        + SAUT
+        + "je propose aux entreprises, c'est de créer un système qui répond"
+        + SAUT
+        + "à tout ce qui rentre."
+    )
+    rendu = recoller_les_paragraphes(coupe)
+    assert SAUT not in rendu
+    assert "Ce que je propose" in rendu, "le recollage doit poser une espace"
+
+
+def test_les_blancs_entre_paragraphes_survivent() -> None:
+    """🔴 LE CONTRÔLE QUI COMPTE. Tout aplatir donnerait un pavé illisible —
+    l'inverse exact du défaut qu'on répare. Un test qui ne vérifierait que
+    « plus de saut au milieu » passerait avec un code qui détruit tout."""
+    texte = (
+        "Bonjour," + SAUT + SAUT
+        + "Un paragraphe coupé" + SAUT + "en deux lignes." + SAUT + SAUT
+        + "Dis-moi juste si tu veux le voir."
+    )
+    rendu = recoller_les_paragraphes(texte)
+    assert rendu.count(SAUT + SAUT) == 2, "les paragraphes ont fusionné"
+    assert len([b for b in rendu.split(SAUT + SAUT)]) == 3
+    assert "coupé en deux lignes." in rendu
+
+
+def test_un_texte_deja_propre_ne_bouge_pas() -> None:
+    """Contrôle négatif : le recollage ne doit rien changer à ce qui est déjà
+    correct — c'est le cas de 62 brouillons sur 69, et des gabarits C et D."""
+    propre = "Bonjour," + SAUT + SAUT + "Une seule ligne." + SAUT + SAUT + "Merci."
+    assert recoller_les_paragraphes(propre) == propre
+
+
+@pytest.mark.parametrize("vide", [None, ""])
+def test_le_vide_ressort_vide(vide) -> None:
+    assert recoller_les_paragraphes(vide) == vide
+
+
+def test_les_lignes_vides_en_trop_disparaissent() -> None:
+    """Trois sauts d'affilée ne doivent pas produire un paragraphe vide, qui
+    donnerait un blanc double chez le prospect."""
+    texte = "A" + SAUT * 4 + "B"
+    rendu = recoller_les_paragraphes(texte)
+    assert rendu == "A" + SAUT + SAUT + "B"
+
+
+def test_les_relances_restent_intactes() -> None:
+    """Les relances sont écrites à la main par William, avec leurs paragraphes
+    voulus. Le recollage ne doit RIEN y changer — sinon on réécrirait sa copie
+    en passant."""
+    from src.lib.relances import CORPS_RELANCES
+
+    for cle, corps in CORPS_RELANCES.items():
+        assert recoller_les_paragraphes(corps) == corps, (
+            f"{cle} a été modifiée par le recollage"
+        )
