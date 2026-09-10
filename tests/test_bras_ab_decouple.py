@@ -88,3 +88,52 @@ async def test_le_bras_suit_le_rang_d_arrivee_pas_la_position(
     assert bras == ["D", "C", "B", "A"], (
         f"les bras suivent la position triée, pas le rang d'arrivée : {vus}"
     )
+
+
+async def test_la_prod_crie_si_l_etiquette_disparait(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Troisième moitié du garde-fou : le journal, pour ce que les tests ratent.
+
+    Les deux tests précédents couvrent le code tel qu'il est écrit. Si un
+    remaniement futur retirait `rang_arrivee` de `_retenir`, le repli de
+    `/wf4/run` ferait retomber l'alternance sur la position triée par
+    potentiel — silencieusement. Ici, la prod le dit.
+    """
+    from src import http_api
+    from src import supabase_client as sb
+    from src.http_api import RunWf4In
+    from src.lib import calcom as calcom_mod
+    from src.lib import slack as slack_mod
+
+    sans_etiquette = [
+        {k: v for k, v in entree.items() if k != "rang_arrivee"}
+        for entree in _backlog_a_rang_inverse()
+    ]
+
+    async def faux_personalize(contact, company, *, template_choice, **kw):
+        return SimpleNamespace(
+            status="ok", message_id="m", template_used=template_choice,
+            duration_ms=1, error_text=None,
+        )
+
+    async def faux_backlog(**kw):
+        return sans_etiquette
+
+    async def faux_count(table, params=None, schema=None):
+        return 0
+
+    async def faux_notify(**kw):
+        return True
+
+    monkeypatch.setattr(http_api.db_tools, "list_contacts_to_personalize", faux_backlog)
+    monkeypatch.setattr(http_api, "_personalize_one", faux_personalize)
+    monkeypatch.setattr(calcom_mod, "get_available_slots", lambda **kw: [])
+    monkeypatch.setattr(http_api, "_load_client_references", lambda: [])
+    monkeypatch.setattr(sb, "count", faux_count)
+    monkeypatch.setattr(slack_mod, "notify", faux_notify)
+
+    with caplog.at_level("WARNING", logger="wf4"):
+        await http_api.run_wf4(RunWf4In(track="agence-ia", template_choice="ABCD"))
+
+    assert any("rang_arrivee" in m for m in caplog.messages), caplog.messages

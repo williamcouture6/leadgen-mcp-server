@@ -2528,6 +2528,18 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
     items: list[RunWf4Item] = []
     drafts = skipped = failed = repli_lexique = 0
 
+    # 🔴 Troisième moitié du garde-fou (voir tests/test_bras_ab_decouple.py) :
+    # si l'étiquette disparaît, la prod le DIT. Sans ce cri, le repli plus bas
+    # ferait retomber l'alternance A/B sur la position dans la file TRIÉE PAR
+    # POTENTIEL — le bras A prendrait toujours les meilleurs leads — et rien,
+    # ni en test ni en journal, ne le signalerait.
+    if backlog and "rang_arrivee" not in backlog[0]:
+        logging.getLogger("wf4").warning(
+            "rang_arrivee absent du backlog — l'alternance A/B/C/D retombe sur "
+            "la position dans la file triée, donc corrélée au potentiel. Le "
+            "test A/B est FAUSSÉ tant que ça dure."
+        )
+
     for rang, entry in enumerate(backlog):
         contact = entry["contact"]
         company = entry["company"]
