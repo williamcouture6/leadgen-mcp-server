@@ -470,6 +470,174 @@ def _ligne_resume_conformite(
     return ligne
 
 
+# ------------------------------------------------- Performance par gabarit
+#
+# Les libellés lisibles des cinq catégories mesurées par agence.v_bras_en_tete.
+# L'ordre est celui de l'entonnoir — répondre, dire oui, prendre RDV, acheter —
+# puis la qualité des réponses, qui n'est pas une étape mais un ratio entre deux
+# d'entre elles.
+_LIBELLES_CATEGORIES: dict[str, str] = {
+    "taux_reponse": "réponse",
+    "taux_oui": "oui",
+    "taux_rdv": "RDV",
+    "taux_vente": "vente",
+    "part_oui_dans_reponses": "qualité des réponses",
+}
+
+# 🔴 Le verdict ne s'affiche JAMAIS en langage de base. « trop tot » se lit comme
+# un état technique ; « trop tôt pour conclure » se lit comme un ordre de ne pas
+# agir, ce qui est exactement ce qu'il veut dire.
+_LIBELLES_VERDICTS: dict[str, str] = {
+    "ecart net": "écart net",
+    "non concluant": "écart non concluant",
+    "trop tot": "trop tôt pour conclure",
+    "pas de comparaison": "un seul bras servi",
+    "aucune donnee": "aucune donnée",
+}
+
+
+def _pourcent_fr(valeur: Any) -> str:
+    """13.2 -> « 13,2 % ». Rend une chaîne vide sur NULL — jamais « 0,0 % » :
+    la vue distingue déjà « pas de donnée » de « zéro », l'affichage ne doit
+    pas recoller les deux."""
+    if valeur is None:
+        return ""
+    return f"{float(valeur):.1f}".replace(".", ",") + " %"
+
+
+def _entier(valeur: Any) -> int:
+    """Un compteur de vue, rendu robuste au type que PostgREST envoie.
+
+    `count(*)` arrive en entier JSON aujourd'hui, mais un `numeric` sérialisé en
+    chaîne ('12.0') ferait lever `int()` — et cette exception, née DANS le rendu,
+    serait maquillée par le try/except de l'appelant en « lecture des vues en
+    ÉCHEC ». On enverrait alors William fouiller les journaux PostgREST pour un
+    défaut de formatage. Le repli à 0 est sûr : les compteurs sont des `count`,
+    jamais une valeur dont l'absence changerait une décision.
+    """
+    try:
+        return int(float(valeur))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _pluriel(n: int, singulier: str, pluriel: str | None = None) -> str:
+    """« 0 livré » · « 1 livré » · « 2 livrés ». Le français ne met le pluriel
+    qu'à partir de deux, et un résumé qui écrit « 1 ventes » se lit comme un
+    résumé qu'on n'a pas relu."""
+    mot = singulier if abs(n) < 2 else (pluriel or singulier + "s")
+    return f"{n} {mot}"
+
+
+def _bloc_performance_gabarit(
+    perf: list[dict[str, Any]], tete: list[dict[str, Any]]
+) -> str:
+    """La performance de chaque gabarit du courriel de tri, pour le résumé.
+
+    🔴 CE QUE CE BLOC REFUSE DE FAIRE : nommer un gagnant tout court. Chaque
+    ligne de tête porte son verdict SUR LA MÊME LIGNE, parce qu'un « B mène »
+    lu seul un soir de fatigue est la phrase qui fait basculer toute une file
+    sur une réponse chanceuse. La vue elle-même refuse déjà de conclure sous
+    400 livrés mûrs par bras (0052) ; ici on ne fait que ne jamais séparer le
+    nom de son verdict.
+
+    TROIS SILENCES DIFFÉRENTS, ET AUCUN N'EST LE VIDE. Le bloc rend TOUJOURS
+    quelque chose quand il est appelé : un bloc absent se lirait comme
+    « aucun écart à signaler », c'est-à-dire comme une information rassurante
+    qu'on n'a pas.
+      - aucun gabarit en base       => on le dit (WF-4 n'écrit peut-être plus)
+      - rien n'est parti            => on le dit, et AUCUN nom de gabarit
+      - tout est parti et a rebondi => 🚨 c'est une PANNE D'ENVOI, pas une file
+                                       en attente. Le premier jet lisait
+                                       `livres == 0` et affichait « aucun
+                                       courriel parti » alors que 40 courriels
+                                       étaient partis et avaient tous rebondi.
+
+    Une catégorie dont le premier est à zéro succès ne fait pas de ligne de
+    tête : un premier à zéro n'est pas un premier, et les compteurs par bras
+    montrent déjà ces zéros.
+    """
+    if not perf:
+        # Lecture réussie mais aucune ligne : soit rien n'a jamais été écrit,
+        # soit WF-4 a cessé de renseigner `template_choice`. Les deux méritent
+        # d'être vus.
+        return (
+            "📊 *Performance gabarit* — aucun gabarit en base. Soit aucun "
+            "brouillon n'a encore été écrit, soit WF-4 n'écrit plus "
+            "`template_choice` : dans le second cas le test A/B ne mesure plus rien."
+        )
+
+    total_leads = sum(_entier(r.get("leads")) for r in perf)
+    total_partis = sum(_entier(r.get("partis")) for r in perf)
+    total_livres = sum(_entier(r.get("livres")) for r in perf)
+    total_rebonds = sum(_entier(r.get("rebonds")) for r in perf)
+
+    if total_partis == 0:
+        return (
+            "📊 *Performance gabarit* — aucun courriel parti, rien à comparer "
+            f"({_pluriel(total_leads, 'brouillon')} en attente)"
+        )
+
+    if total_livres == 0:
+        # 🚨 Tout est parti et TOUT a rebondi. Ce n'est pas une file en attente,
+        # c'est une panne d'envoi en cours ce soir-là.
+        return (
+            f"📊 *Performance gabarit* — 🚨 {_pluriel(total_partis, 'courriel parti', 'courriels partis')} "
+            f"et {_pluriel(total_rebonds, 'rebond')} : RIEN n'a été livré. "
+            "Ce n'est pas une file en attente, c'est un problème d'envoi."
+        )
+
+    lignes = ["📊 *Performance gabarit*"]
+    for r in sorted(perf, key=lambda x: str(x.get("bras") or "")):
+        livres = _entier(r.get("livres"))
+        murs = _entier(r.get("livres_reponse"))
+        bouts = [_pluriel(livres, "livré")]
+        # La base des taux n'est pas le nombre de livrés mais le nombre de
+        # livrés assez anciens pour avoir pu répondre (0052). Quand les deux
+        # diffèrent, le dire — sinon « 512 livrés · 20,0 % » invite à diviser
+        # de tête et à ne pas retrouver le compte.
+        if murs != livres:
+            bouts[-1] += f" ({murs} mûrs)"
+        rep = f"{_entier(r.get('reponses_brutes'))} rép"
+        taux = _pourcent_fr(r.get("taux_reponse"))
+        if taux:
+            rep += f" ({taux})"
+        bouts.append(rep)
+        bouts.append(f"{_entier(r.get('oui_bruts'))} oui")
+        bouts.append(f"{_entier(r.get('rdv_bruts'))} RDV")
+        bouts.append(_pluriel(_entier(r.get("ventes_brutes")), "vente"))
+        rebonds = _entier(r.get("rebonds"))
+        if rebonds:
+            # Un bras à 40 % de rebond était visuellement identique à un bras
+            # sain : le compteur existait dans la vue et n'était pas affiché.
+            bouts.append(f"⚠️ {_pluriel(rebonds, 'rebond')}")
+        lignes.append(f"  *{r.get('bras') or '?'}* — " + " · ".join(bouts))
+
+    par_categorie = {str(t.get("categorie")): t for t in tete}
+    for cle, libelle in _LIBELLES_CATEGORIES.items():
+        t = par_categorie.get(cle)
+        if not t or not t.get("bras_en_tete"):
+            continue
+        if _entier(t.get("succes_en_tete")) == 0:
+            continue
+        brut = str(t.get("verdict") or "")
+        # Un verdict inconnu ne s'affiche PAS en langage de base : il se nomme
+        # comme inconnu. Sans ça, une valeur ajoutée un jour à la vue partirait
+        # dans Slack sans accent et sans qu'on sache que c'est une nouveauté.
+        verdict = _LIBELLES_VERDICTS.get(brut) or f"verdict inconnu ({brut or 'absent'})"
+        ligne = f"  🥇 {libelle} : {t.get('bras_en_tete')} {_pourcent_fr(t.get('valeur_en_tete'))}"
+        if t.get("bras_suivant"):
+            ligne += (
+                f" devant {t.get('bras_suivant')} "
+                f"{_pourcent_fr(t.get('valeur_suivant'))}"
+            )
+        # Le verdict est collé au nom, sur la MÊME ligne : relégué en bas de
+        # bloc, il ne serait pas lu par celui qui survole.
+        lignes.append(f"{ligne} — {verdict}")
+
+    return "\n".join(lignes)
+
+
 class DailySummaryIn(BaseModel):
     category: str = "summary"          # canal Slack du résumé (SLACK_WEBHOOK_SUMMARY)
     # `OPT` reste dans ce défaut alors que la piste est gelée depuis le pivot du
@@ -958,6 +1126,88 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         )
         if ligne_conformite:
             text += "\n" + ligne_conformite
+
+    # ------------------------------------- Performance par gabarit (0050/0052)
+    # Hors de la boucle par track, comme le bloc PT3 : les vues ne portent que
+    # des messages qui ont un bras, et seul `agence-ia` en a un. Les passer en
+    # revue par track imprimerait le bloc deux fois, dont une section OPT vide.
+    #
+    # ⚠️ C'est un ÉTAT CUMULÉ, pas l'activité du jour — et c'est voulu : une
+    # réponse à un cold email arrive sur deux à trois semaines (le courriel, puis
+    # les relances dans le fil). Un découpage quotidien ne montrerait jamais
+    # qu'un dénominateur d'aujourd'hui et un numérateur de personne.
+    #
+    # 🔴 DEUX `try` SÉPARÉS, ET LE RENDU EN DEHORS DES DEUX. Trois raisons, toutes
+    # relevées par le conseil du 2026-09-10 sur le premier jet, qui n'en avait
+    # qu'un seul englobant tout :
+    #   1. une panne sur le seul CLASSEMENT faisait disparaître AUSSI le tableau
+    #      par bras, alors que ses chiffres étaient parfaitement lisibles ;
+    #   2. une exception née dans le RENDU (un type inattendu) se maquillait en
+    #      « lecture en ÉCHEC », ce qui envoie chercher la panne du mauvais côté
+    #      — dans les journaux PostgREST plutôt que dans le formatage ;
+    #   3. le `except` écrasait `totals` avec `{"lu": False}`, détruisant des
+    #      chiffres déjà correctement lus, y compris pour l'appelant en post=False.
+    # Le rendu est donc hors des `try`, comme celui de la ligne de conformité
+    # juste au-dessus : s'il casse, le résumé échoue franchement au lieu de
+    # mentir sur la cause.
+    #
+    # `select_all` et non `select` : le plafond PostgREST de 1000 lignes coupe
+    # en silence, et ce dépôt a déjà payé ce défaut ailleurs.
+    perf_bras: list[dict[str, Any]] = []
+    tete_bras: list[dict[str, Any]] = []
+    lecture_perf_ok = True
+    lecture_tete_ok = True
+    try:
+        perf_bras = await sb.select_all(
+            "v_perf_par_bras", order="bras", schema="agence",
+            params={
+                "select": "bras,leads,partis,rebonds,livres,desabonnements,"
+                          "reponses_brutes,oui_bruts,rdv_bruts,ventes_brutes,"
+                          "livres_reponse,livres_rdv,livres_vente,"
+                          "reponses,oui,rdv,ventes,oui_avec_reponse,"
+                          "taux_reponse,taux_oui,taux_rdv,taux_vente,"
+                          "part_oui_dans_reponses,taux_rebond"
+            },
+        )
+    except Exception as e:  # noqa: BLE001 — non bloquant, mais JAMAIS silencieux
+        print(f"[summary] lecture agence.v_perf_par_bras échouée: {e!r}")
+        lecture_perf_ok = False
+    try:
+        tete_bras = await sb.select_all(
+            "v_bras_en_tete", order="categorie", schema="agence",
+            params={
+                "select": "categorie,bras_en_tete,valeur_en_tete,succes_en_tete,"
+                          "base_en_tete,bras_suivant,valeur_suivant,"
+                          "succes_suivant,base_suivant,z,verdict"
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[summary] lecture agence.v_bras_en_tete échouée: {e!r}")
+        lecture_tete_ok = False
+
+    totals["performance_gabarit"] = {
+        "lu": lecture_perf_ok and lecture_tete_ok,
+        "bras": perf_bras,
+        "en_tete": tete_bras,
+    }
+    if not lecture_perf_ok:
+        # Sans les compteurs, il n'y a rien à afficher — mais l'absence de bloc
+        # ressemble à « aucun écart », c'est-à-dire à une information rassurante
+        # qu'on n'a pas. Même principe que la ligne de conformité.
+        text += (
+            "\n📊 *Performance gabarit* — ⚠️ lecture de agence.v_perf_par_bras en "
+            "ÉCHEC : aucun chiffre par gabarit ce soir. L'absence de bloc ne veut "
+            "PAS dire « aucun écart »."
+        )
+    else:
+        text += "\n" + _bloc_performance_gabarit(perf_bras, tete_bras)
+        if not lecture_tete_ok:
+            # Les compteurs sont bons, seul le classement manque : on le dit
+            # sans jeter le reste.
+            text += (
+                "\n  ⚠️ classement indisponible : lecture de agence.v_bras_en_tete "
+                "en ÉCHEC. Les compteurs ci-dessus restent justes."
+            )
 
     # État du PARC, sans filtre de date : c'est l'entreprise coincée depuis six
     # semaines qu'on veut voir, pas l'activité du jour.

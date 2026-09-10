@@ -126,6 +126,50 @@ def recoller_les_paragraphes(texte: str | None) -> str | None:
     return (saut + saut).join(paragraphes)
 
 
+def variantes_du_meme_metier(
+    services_offered: list[str] | None, aujourdhui: date
+) -> tuple[str, list[str]] | None:
+    """Le métier qu'une énumération répéterait, et les libellés qui le portent.
+
+    Rend `None` si aucun métier n'apparaît dans deux libellés — il n'y a alors
+    rien à raccourcir.
+
+    🔴 CETTE FONCTION A ÉTÉ ÉCRITE DEUX FOIS, ET LA PREMIÈRE VERSION EST LA
+    LEÇON. Elle exigeait que TOUS les libellés se ramènent au même métier.
+    Mesuré ensuite sur les 69 vrais brouillons : **elle attrapait 1 cas sur
+    12**. La répétition ne vient presque jamais d'une liste pure — elle vient
+    de deux ou trois variantes PLUS un service voisin :
+
+        « autant du déneigement résidentiel que du déneigement commercial
+          pis de la mini-excavation »
+
+    « mini-excavation » n'est pas une sorte de déneigement, et pourtant le mot
+    « déneigement » est bien écrit deux fois. Exiger la pureté de la liste,
+    c'était exiger l'absence du seul élément qui ne gêne pas.
+
+    Le vrai critère est donc **deux libellés qui partagent un métier**, quoi
+    qu'il y ait à côté. Ce qui reste garde la forme « autant X que Y pis Z ».
+
+    ⚠️ Un libellé qui porte DEUX métiers (« déneigement et paysagement ») ne
+    compte pour aucun groupe : le rédacteur ne peut pas le ranger sous un seul
+    nom sans amputer l'autre.
+    """
+    groupes: dict[str, list[str]] = {}
+    for libelle in services_offered or []:
+        if not libelle or not libelle.strip():
+            continue
+        metiers = tuple(resoudre_metiers([libelle], aujourdhui).metiers)
+        if len(metiers) == 1:
+            groupes.setdefault(metiers[0], []).append(libelle)
+
+    repetes = [(m, lib) for m, lib in groupes.items() if len(lib) >= 2]
+    if not repetes:
+        return None
+    # Le plus gros groupe : c'est lui qui pèse le plus dans la phrase. À
+    # égalité, l'ordre d'insertion tranche — donc l'ordre du contracteur.
+    return max(repetes, key=lambda x: len(x[1]))
+
+
 def bloc_metiers_resolus(
     services_offered: list[str] | None, aujourdhui: date, gabarit: str | None = None
 ) -> str:
@@ -204,6 +248,31 @@ def bloc_metiers_resolus(
         ]
     else:
         lignes.append(f"- **Métier de la scène** (l'ouvreur) : {scene}")
+        # 🔴 LE CODE DIT AU RÉDACTEUR QUAND LA FORME COURTE S'APPLIQUE.
+        #
+        # Il sait, lui, quels libellés partagent un métier — `resoudre_metiers`
+        # vient de le calculer. Laisser le rédacteur le déduire de la liste
+        # brute, c'est lui demander de refaire un travail déjà fait, et la
+        # leçon de la semaine est qu'une instruction concrète l'emporte sur une
+        # règle abstraite.
+        repetition = variantes_du_meme_metier(services_offered, aujourdhui)
+        if repetition is not None:
+            metier_repete, libelles = repetition
+            reste = [x for x in (services_offered or []) if x not in libelles]
+            lignes.append(
+                f"  ✍️ **{len(libelles)} de ses libellés sont des sortes de "
+                f"« {metier_repete} »** : {' / '.join(libelles)}."
+            )
+            lignes.append(
+                f"     Si tu les énumères, **ne redis pas « {metier_repete} » "
+                f"à chaque fois** — nomme-le une fois, puis ce qui les "
+                f"distingue : « plusieurs sortes de {metier_repete}, … »."
+            )
+            if reste:
+                lignes.append(
+                    f"     Le reste ({' / '.join(reste)}) se rattache après, "
+                    f"avec « pis »."
+                )
         if gabarit in GABARITS_A_TETE_FIXE:
             # 🔴 DEUX FORMES, parce que les deux phrases fixes de C et D ne
             # prennent pas l'article au même endroit : « tu fais DE LA tonte »
