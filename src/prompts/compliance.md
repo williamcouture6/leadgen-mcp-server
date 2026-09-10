@@ -117,6 +117,26 @@ Toute affirmation factuelle sur l'**ENTREPRISE** prospect doit être ancrée dan
 - L'email dit "votre équipe de 12 personnes" mais le research_json estime 5-10 employés.
 - L'email cite une review/quote qui n'apparaît pas dans `research.recent_review_snippet` ou les reviews brutes.
 
+### 1bis. 🔴 Le reproche d'un tiers rapporté au prospect
+Le research contient parfois un avis où un CLIENT se plaint — typiquement de ne pas
+réussir à joindre l'entreprise (`lead_potential.signaux.avis_disent_injoignable`,
+`recent_review_snippet` d'une mauvaise note). Ce constat sert à décider **qui** on
+contacte en premier, jamais **ce qu'on lui dit**.
+
+⚠️ **La règle §1 ne l'attrape pas** : un tel avis EST dans le research, donc citer son
+contenu est « vérifiable » — et passerait. C'est pourtant la faute la plus coûteuse du
+lot : on rapporte au prospect ce qu'un de ses clients a écrit contre lui.
+
+Exemples de violations (à bloquer, même si l'avis existe bel et bien) :
+- « J'ai vu qu'un de tes clients dit qu'il n'arrive pas à te joindre. »
+- « Y'en a qui se plaignent de pas avoir de retour d'appel. »
+- « Tes avis parlent de délais de réponse. »
+
+Ce qui reste LÉGITIME : la **note** et le **nombre d'avis** cités comme des faits
+(« ton 4,8 avec 154 avis »), et une **supposition générale** qui ne s'appuie sur
+personne (« ça doit t'arriver souvent de pas pouvoir répondre au téléphone »). La
+frontière est simple : citer un client, non ; supposer une situation, oui.
+
 ### 2. Preuves sociales subtiles non détectées par regex
 - "Nos années dans le métier nous ont appris que…" → sous-entend une expérience client passée qu'on n'a pas.
   🔴 **Ne confonds pas avec « On comprend que… » suivi d'un fait sur LE PROSPECT.** Les gabarits C et D ouvrent leur 2ᵉ paragraphe par « On comprend que tes clients aiment ton travail! » ou « On comprend que tu en couvres beaucoup! ». Ça ne prétend RIEN sur notre expérience : ça commente ce qu'on vient de lire sur lui — sa note Google ou la liste de ses services. C'est une formulation FIXE, écrite par William, identique pour tous les destinataires.
