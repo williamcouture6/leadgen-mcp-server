@@ -17,14 +17,22 @@ du lot porte une note assez basse pour attester d'une plainte.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from src.lib.lead_scoring import (
+    JOURS_PLAINTE_RECENTE,
     MARQUEUR_TETE_DE_FILE,
-    NOTE_MAX_PLAINTE,
     calculer_score,
     est_tete_de_file,
 )
 from src.tools import db
-from src.tools.research import _note_la_plus_basse, signaux_mesures
+from src.tools.research import _note_la_plus_basse, _plainte_recente, signaux_mesures
+
+MAINTENANT = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+
+
+def _il_y_a(jours: int) -> str:
+    return (MAINTENANT - timedelta(days=jours)).isoformat().replace("+00:00", "Z")
 
 # Citations réelles de la base (companies.research_json->recent_review_snippet).
 PLAINTES = [
@@ -41,10 +49,10 @@ FELICITATIONS = [
 
 # --- le signal ---------------------------------------------------------------
 
-def test_une_plainte_met_le_lead_en_tete() -> None:
-    for note, citation in PLAINTES:
+def test_une_plainte_recente_met_le_lead_en_tete() -> None:
+    for _note, citation in PLAINTES:
         assert est_tete_de_file(
-            {"avis_disent_injoignable": True, "avis_note_min": note}
+            {"avis_disent_injoignable": True, "avis_plainte_recente": True}
         ), citation
 
 
@@ -52,31 +60,67 @@ def test_un_avis_elogieux_ne_propulse_personne() -> None:
     # Le piège mesuré : 35 des 60 correspondances par mots-clés étaient des
     # 5 ★ qui félicitent la rapidité. Si le modèle se trompe de sens, la note
     # de l'avis le rattrape.
-    for note, citation in FELICITATIONS:
+    for _note, citation in FELICITATIONS:
         assert not est_tete_de_file(
-            {"avis_disent_injoignable": True, "avis_note_min": note}
+            {"avis_disent_injoignable": True, "avis_plainte_recente": False}
         ), citation
 
 
-def test_sans_note_d_avis_le_constat_tombe() -> None:
+def test_sans_avis_le_constat_tombe() -> None:
     # Aucun avis dans le lot : le modèle ne peut pas avoir lu une plainte.
-    assert not est_tete_de_file({"avis_disent_injoignable": True, "avis_note_min": None})
-
-
-def test_la_bordure_de_la_garde_est_incluse() -> None:
-    assert est_tete_de_file(
-        {"avis_disent_injoignable": True, "avis_note_min": NOTE_MAX_PLAINTE}
-    )
     assert not est_tete_de_file(
-        {"avis_disent_injoignable": True, "avis_note_min": NOTE_MAX_PLAINTE + 1}
+        {"avis_disent_injoignable": True, "avis_plainte_recente": None}
     )
+
+
+# --- la fenêtre de 90 jours (décision William, 2026-09-10) ------------------
+
+def test_une_plainte_du_mois_dernier_compte() -> None:
+    place = {"reviews": [{"rating": 1, "publishTime": _il_y_a(30)}]}
+    assert _plainte_recente(place, maintenant=MAINTENANT) is True
+
+
+def test_une_plainte_de_l_an_dernier_ne_compte_plus() -> None:
+    """La règle de William : la file sert à décider qui on démarche MAINTENANT.
+
+    Un client qui n'arrivait pas à les joindre il y a trois ans ne dit rien de
+    leur fonctionnement d'aujourd'hui.
+    """
+    place = {"reviews": [{"rating": 1, "publishTime": _il_y_a(400)}]}
+    assert _plainte_recente(place, maintenant=MAINTENANT) is False
+
+
+def test_la_bordure_des_90_jours() -> None:
+    dedans = {"reviews": [{"rating": 2, "publishTime": _il_y_a(JOURS_PLAINTE_RECENTE - 1)}]}
+    dehors = {"reviews": [{"rating": 2, "publishTime": _il_y_a(JOURS_PLAINTE_RECENTE + 1)}]}
+    assert _plainte_recente(dedans, maintenant=MAINTENANT) is True
+    assert _plainte_recente(dehors, maintenant=MAINTENANT) is False
+
+
+def test_un_avis_recent_mais_elogieux_ne_compte_pas() -> None:
+    # La fenêtre ne suffit pas : il faut aussi que l'avis soit une plainte.
+    place = {"reviews": [{"rating": 5, "publishTime": _il_y_a(2)}]}
+    assert _plainte_recente(place, maintenant=MAINTENANT) is False
+
+
+def test_sans_avis_la_fenetre_ne_sait_rien() -> None:
+    # `None` et non `False` : c'est ce qui empêche d'effacer une marque méritée.
+    assert _plainte_recente({}, maintenant=MAINTENANT) is None
+
+
+def test_la_fenetre_voyage_dans_les_signaux_mesures() -> None:
+    mesures = signaux_mesures(
+        {"userRatingCount": 40, "reviews": [{"rating": 1, "publishTime": _il_y_a(10)}]},
+        {"status": "http_200", "outils_detectes": []},
+    )
+    assert mesures["avis_plainte_recente"] is True
 
 
 def test_une_boite_disqualifiee_ne_passe_jamais_devant() -> None:
     # « sauf s'il est disqualifié » — décision William. Une municipalité dont
     # un citoyen dit qu'elle ne rappelle pas n'est pas un prospect.
     assert not est_tete_de_file(
-        {"avis_disent_injoignable": True, "avis_note_min": 1}, disqualifie=True
+        {"avis_disent_injoignable": True, "avis_plainte_recente": True}, disqualifie=True
     )
 
 
@@ -86,7 +130,7 @@ def test_le_score_reste_celui_du_bareme() -> None:
     socle = {"avis_total": 138, "ferme_soir_ou_weekend": True}
     sans = calculer_score(socle)[0]
     avec = calculer_score({
-        **socle, "avis_disent_injoignable": True, "avis_note_min": 1,
+        **socle, "avis_disent_injoignable": True, "avis_plainte_recente": True,
     })[0]
     assert avec == sans, "le signal marque le lead, il ne gonfle pas sa note"
 
@@ -95,7 +139,7 @@ def test_un_petit_score_reste_petit() -> None:
     # Le cas réel : cVert Québec est à 8 et son avis dit « jamais eu de retour
     # d'appel ». Il passe devant, il reste à son score.
     signaux = {
-        "avis_disent_injoignable": True, "avis_note_min": 1,
+        "avis_disent_injoignable": True, "avis_plainte_recente": True,
         "outil_en_place": True, "service_reponse_humain_24_7": True,
     }
     assert calculer_score(signaux)[0] < 10
@@ -108,7 +152,7 @@ def test_la_note_explique_la_place_en_tete() -> None:
     patch = db.extract_lead_potential_patch({
         "lead_potential": {
             "signaux": {
-                "avis_disent_injoignable": True, "avis_note_min": 1,
+                "avis_disent_injoignable": True, "avis_plainte_recente": True,
                 "avis_total": 138,
             },
             "reasoning": "138 avis, un client dit ne jamais avoir eu de retour d'appel.",
@@ -123,7 +167,7 @@ def test_la_note_explique_la_place_en_tete() -> None:
 
 def test_la_marque_tient_meme_sans_justification_du_modele() -> None:
     patch = db.extract_lead_potential_patch({
-        "lead_potential": {"signaux": {"avis_disent_injoignable": True, "avis_note_min": 2}}
+        "lead_potential": {"signaux": {"avis_disent_injoignable": True, "avis_plainte_recente": True}}
     })
     assert patch["lead_potential_reason"] == MARQUEUR_TETE_DE_FILE
 
@@ -185,13 +229,13 @@ def test_le_mot_aucune_n_est_pas_une_disqualification() -> None:
 def test_la_marque_survit_a_une_fiche_google_sans_avis() -> None:
     """Absence de mesure n'est pas absence de plainte.
 
-    `avis_note_min` vient des ≤ 5 avis que Google fait tourner. Une passe où
+    `avis_plainte_recente` vient des ≤ 5 avis que Google fait tourner. Une passe où
     la fiche revient sans avis rendrait la garde fausse alors que le modèle
     maintient la plainte — et effacerait une marque toujours méritée.
     """
     patch = db.extract_lead_potential_patch({
         "lead_potential": {
-            "signaux": {"avis_disent_injoignable": True, "avis_note_min": None},
+            "signaux": {"avis_disent_injoignable": True, "avis_plainte_recente": None},
         }
     })
     assert "lead_potential_reason" not in patch, "la marque existante doit rester"
@@ -214,7 +258,7 @@ def test_une_disqualification_efface_la_marque_et_le_score() -> None:
     patch = db.extract_lead_potential_patch({
         "disqualifications": ["installation municipale"],
         "lead_potential": {
-            "signaux": {"avis_disent_injoignable": True, "avis_note_min": 1},
+            "signaux": {"avis_disent_injoignable": True, "avis_plainte_recente": True},
             "reasoning": "ville de Québec",
         },
     })
@@ -225,7 +269,7 @@ def test_une_disqualification_efface_la_marque_et_le_score() -> None:
 def test_la_troncature_a_500_garde_la_marque_lisible() -> None:
     patch = db.extract_lead_potential_patch({
         "lead_potential": {
-            "signaux": {"avis_disent_injoignable": True, "avis_note_min": 1},
+            "signaux": {"avis_disent_injoignable": True, "avis_plainte_recente": True},
             "reasoning": "x" * 900,
         }
     })

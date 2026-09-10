@@ -33,6 +33,12 @@ from typing import Any
 MARQUEUR_TETE_DE_FILE = "⚑ TÊTE DE FILE — un avis dit ne pas réussir à joindre l'entreprise."
 # La plainte doit être attestée par la note de l'avis, sinon le constat tombe.
 NOTE_MAX_PLAINTE = 3
+# …et elle doit être RÉCENTE. Décision William, 2026-09-10 : un client qui
+# n'arrivait pas à joindre l'entreprise il y a trois ans ne dit rien de son
+# fonctionnement d'aujourd'hui — et la tête de file sert à décider qui on
+# démarche MAINTENANT. Mesuré en Python sur `publishTime` (voir
+# `tools/research._plainte_recente`), jamais laissé au jugement du modèle.
+JOURS_PLAINTE_RECENTE = 90
 
 POIDS: dict[str, int] = {
     "base": 25,
@@ -148,7 +154,11 @@ def calculer_score(
 def est_tete_de_file(signaux: Any, *, disqualifie: bool = False) -> bool:
     """Ce lead doit-il passer devant les autres, score mis à part ?
 
-    Double garde, parce que le mot-clé seul se trompe une fois sur deux.
+    Double garde, et la seconde porte désormais sur la DATE autant que sur la
+    note : le modèle lit le sens de l'avis, le code exige qu'une plainte notée
+    bas ait été écrite dans les 90 derniers jours.
+
+    Le mot-clé seul se trompe une fois sur deux.
     Mesuré le 2026-09-01 sur les 405 fiches recherchées : l'appariement des
     racines prévues par la spec (`rappel`, `répond`, `joindre`, `retour
     d'appel`, `oublié`) marque 60 boîtes, dont **35 avis 5 ★ qui VANTENT la
@@ -163,5 +173,7 @@ def est_tete_de_file(signaux: Any, *, disqualifie: bool = False) -> bool:
         return False
     if signaux.get("avis_disent_injoignable") is not True:
         return False
-    note_min = _entier(signaux.get("avis_note_min"))
-    return note_min is not None and note_min <= NOTE_MAX_PLAINTE
+    # `avis_plainte_recente` est MESURÉ : il vaut True s'il existe un avis noté
+    # NOTE_MAX_PLAINTE ou moins publié dans les JOURS_PLAINTE_RECENTE derniers
+    # jours. `None` = la fiche n'a rendu aucun avis, donc on ne sait pas.
+    return signaux.get("avis_plainte_recente") is True

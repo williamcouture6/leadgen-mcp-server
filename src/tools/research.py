@@ -37,6 +37,7 @@ from tenacity import (
 )
 
 from ..config import settings
+from ..lib.lead_scoring import JOURS_PLAINTE_RECENTE, NOTE_MAX_PLAINTE
 from ..lib import brandkit_parse as bk_parse
 
 # ----------------------------------------------------------------------
@@ -1299,6 +1300,46 @@ def _avis_recents(
     return compte
 
 
+def _plainte_recente(
+    place: dict[str, Any], jours: int | None = None, maintenant: datetime | None = None
+) -> bool | None:
+    """Existe-t-il un avis MAL NOTÉ et RÉCENT dans ce que Google a rendu ?
+
+    C'est la seconde garde de la tête de file (décision William, 2026-09-10) :
+    une plainte d'injoignabilité vieille de trois ans ne dit rien de la boîte
+    d'aujourd'hui, et cette file sert à décider qui on démarche maintenant.
+
+    `None` quand la fiche ne rend aucun avis — absence de mesure n'est pas
+    absence de plainte, et c'est ce qui empêche d'effacer une marque méritée.
+
+    ⚠️ Porte sur les ≤ 5 avis que Google échantillonne, pas sur le corpus. Un
+    avis récent mal noté peut donc exister sans qu'on le voie.
+    """
+    avis = place.get("reviews")
+    if not isinstance(avis, list) or not avis:
+        return None
+    fenetre = jours if jours is not None else JOURS_PLAINTE_RECENTE
+    limite = (maintenant or datetime.now(timezone.utc)) - timedelta(days=fenetre)
+    for rv in avis:
+        note = (rv or {}).get("rating")
+        if not isinstance(note, int) or isinstance(note, bool):
+            continue
+        if note > NOTE_MAX_PLAINTE:
+            continue
+        brut = (rv or {}).get("publishTime")
+        if not isinstance(brut, str):
+            continue
+        try:
+            quand = datetime.fromisoformat(brut.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if quand.tzinfo is None:
+            quand = quand.replace(tzinfo=timezone.utc)
+        if quand >= limite:
+            return True
+    return False
+
+
 def _note_la_plus_basse(place: dict[str, Any]) -> int | None:
     """La note la plus basse parmi les avis rendus par Google.
 
@@ -1374,6 +1415,7 @@ def signaux_mesures(place: dict[str, Any], site: dict[str, Any]) -> dict[str, An
         "avis_total": place.get("userRatingCount"),
         "avis_30j": _avis_recents(place),
         "avis_note_min": _note_la_plus_basse(place),
+        "avis_plainte_recente": _plainte_recente(place),
         "ferme_soir_ou_weekend": _ferme_soir_ou_weekend(place),
         "outil_en_place": bool(outils) if site_lu else (False if sans_site else None),
         "rdv_en_ligne": (

@@ -118,6 +118,8 @@ Mets `false` quand l'avis parle de la même chose **en bien** — c'est le pièg
 > « Demande envoyée un vendredi soir 22h30 / **Rappel** tôt samedi am. » → `false`
 > « Amine a **répondu** rapidement à mon appel. » → `false`
 
+**La plainte doit être RÉCENTE.** Regarde le `when=` de l'avis : une plainte de « il y a 3 ans » ne dit rien de la boîte d'aujourd'hui. Si la seule plainte que tu vois est vieille de plus de trois mois, mets `false`. Le code vérifie de son côté qu'un avis mal noté existe bien dans les 90 derniers jours.
+
 Un travail mal fait, un retard de chantier, un prix contesté ne sont PAS ce signal : il ne s'agit que de **joindre l'entreprise**. Dans le doute, `false` — le code écarte de toute façon le constat si aucun avis du lot n'a une note assez basse pour attester d'une plainte.
 
 🔴 **Ce constat ne sort JAMAIS du scoring.** Ne le reprends pas dans `personalization_hooks`, ne cite pas l'avis, n'y fais aucune allusion. Écrire à un prospect « j'ai vu que tes clients disent que tu ne rappelles pas » lui rapporte le reproche d'un tiers à son sujet : ça ruinerait le courriel en une phrase. Le signal ne sert qu'à décider **qui** on contacte en premier, jamais **ce qu'on lui dit**.

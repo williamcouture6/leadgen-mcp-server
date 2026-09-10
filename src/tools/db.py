@@ -1321,7 +1321,7 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     plainte_invérifiable = (
         isinstance(signaux, dict)
         and signaux.get("avis_disent_injoignable") is True
-        and signaux.get("avis_note_min") is None
+        and signaux.get("avis_plainte_recente") is None
     )
     ecrire_la_raison = (
         isinstance(signaux, dict) and bool(signaux) and not plainte_invérifiable
