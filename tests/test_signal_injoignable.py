@@ -128,6 +128,30 @@ def test_la_marque_tient_meme_sans_justification_du_modele() -> None:
     assert patch["lead_potential_reason"] == MARQUEUR_TETE_DE_FILE
 
 
+def test_la_marque_s_efface_a_la_recherche_suivante() -> None:
+    """🔴 Une entreprise marquée en août, re-recherchée sans plainte en octobre.
+
+    Le marqueur vit dans une colonne que le tri LIT. Tant qu'il n'était effacé
+    par rien, cette entreprise restait première de tous les lots, indéfiniment
+    — capture permanente de la tête de file. Relevé par le conseil du
+    2026-09-09.
+    """
+    patch = db.extract_lead_potential_patch({
+        "lead_potential": {
+            "signaux": {"avis_total": 138, "avis_disent_injoignable": False},
+        }
+    })
+    # La clé est présente ET vide : c'est ce qui écrase l'ancien marqueur.
+    assert "lead_potential_reason" in patch
+    assert patch["lead_potential_reason"] is None
+
+
+def test_la_forme_heritee_ne_touche_pas_a_la_raison() -> None:
+    # Sans signaux, on ne sait rien de neuf : on n'efface pas ce qui est là.
+    patch = db.extract_lead_potential_patch({"lead_potential": {"score": 65}})
+    assert "lead_potential_reason" not in patch
+
+
 def test_pas_de_marque_sans_signal() -> None:
     patch = db.extract_lead_potential_patch({
         "lead_potential": {"signaux": {"avis_total": 138}, "reasoning": "rien de spécial"}

@@ -156,6 +156,32 @@ async def test_le_cout_suit_la_taille_de_la_file(
 
 
 @pytest.mark.asyncio
+async def test_la_page_ne_depasse_jamais_le_plafond_postgrest(
+    monkeypatch: pytest.MonkeyPatch, _decembre
+) -> None:
+    """PostgREST coupe à 1000 lignes sans le dire.
+
+    `limit=84` demandait 84 × 12 = 1008 lignes : la page en rendait 1000, et
+    « page incomplète » faisait conclure « file épuisée » après une seule
+    lecture. Comme la priorisation dépend d'une lecture complète, cette
+    troncature muette aurait décidé de l'ordre d'envoi. Conseil du 2026-09-09.
+    """
+    vus: list[int] = []
+
+    class _Espion(_FausseBase):
+        async def select(self, table, params):
+            if table == "contacts":
+                vus.append(int(params["limit"]))
+            return await super().select(table, params)
+
+    monkeypatch.setattr(db_tools, "db", _Espion(total=50, bouches=0))
+    await db_tools.list_contacts_to_personalize(limit=84, track="agence-ia")
+
+    assert vus, "aucune lecture de contacts"
+    assert max(vus) <= 1000, f"page de {max(vus)} lignes, PostgREST coupe à 1000"
+
+
+@pytest.mark.asyncio
 async def test_une_tete_de_file_au_dela_de_la_premiere_page_entre_dans_le_lot(
     monkeypatch: pytest.MonkeyPatch, _decembre
 ) -> None:

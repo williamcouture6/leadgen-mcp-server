@@ -104,10 +104,16 @@ TECH_KEYWORDS = (
 # Parmi les outils ci-dessous, ceux qui offrent une PRISE DE RENDEZ-VOUS en
 # ligne. Un chat ou un outil d'avis ne remplace pas le téléphone ; un Calendly
 # oui. C'est cette distinction qui alimente le signal `rdv_en_ligne`.
+# Le nom canonique de la promesse générique. Défini ICI pour que
+# `OUTILS_AVEC_RDV` le référence au lieu de recopier la chaîne : les deux
+# doivent correspondre au caractère près, sinon `rdv_en_ligne` ne s'allume
+# jamais pour ce cas et personne ne s'en aperçoit.
+RDV_GENERIQUE = "Réservation en ligne (générique)"
+
 OUTILS_AVEC_RDV = frozenset({
     "Jobber", "Housecall Pro", "ServiceTitan", "Workiz", "ServiceM8", "FieldEdge",
     "Calendly", "Acuity Scheduling", "Setmore", "Booksy", "SimplyBook",
-    "Square Appointments", "Réservation en ligne (générique)",
+    "Square Appointments", RDV_GENERIQUE,
 })
 
 # Empreintes d'outils RÉELLEMENT en place, cherchées dans le HTML BRUT.
@@ -146,7 +152,9 @@ OUTILS_FINGERPRINTS: dict[str, tuple[str, ...]] = {
     "Drift": ("js.driftt.com", "drift.com"),
     "Zendesk": ("zdassets.com", "zendesk.com"),
     "HubSpot": ("hs-scripts.com", "hubspot.com", "hsforms"),
-    "Salesforce": ("salesforce.com", "force.com"),
+    # Pas de `force.com` nu : il attrape `workforce.com`, et un simple lien
+    # sortant vers un article RH faisait perdre 20 points à un prospect.
+    "Salesforce": ("salesforce.com", ".my.salesforce", "sfdcstatic.com"),
     "ManyChat": ("manychat",),
     # Réponse téléphonique déléguée — le concurrent direct de l'offre
     "Smith.ai": ("smith.ai",),
@@ -164,12 +172,23 @@ OUTILS_FINGERPRINTS: dict[str, tuple[str, ...]] = {
 # et +8 de « aucun RDV en ligne » perdus) sur exactement le profil que le
 # barème cherche à remonter. Un vrai bouton de prise de rendez-vous, lui, est
 # un `<a>` ou un `<button>`.
-RDV_GENERIQUE = "Réservation en ligne (générique)"
+# ⚠️ Chaque phrase DOIT qualifier le « en ligne ». Un « Prendre rendez-vous »
+# nu a été essayé le 2026-09-09 puis retiré le jour même : sur un site de PME
+# de service, ce bouton appelle (`tel:`) ou descend vers un formulaire neuf
+# fois sur dix. Le compter comme un outil coûtait 28 points (−20 de malus, plus
+# les +8 de « aucun RDV en ligne » perdus) à exactement le prospect que le
+# barème veut remonter — le faux positif inverse de celui qu'on fermait.
 PHRASES_RDV = (
     "prendre rendez-vous en ligne", "prenez rendez-vous en ligne",
-    "réserver en ligne", "reserver en ligne", "book online",
-    "prendre rendez-vous", "réservez maintenant", "book now",
+    "réserver en ligne", "reserver en ligne",
+    "réservez en ligne", "reservez en ligne",
+    "book online", "schedule online", "book an appointment online",
 )
+# Un vrai libellé de bouton est court. Au-delà, c'est que le `<a>` enveloppe un
+# bloc entier (carte de blogue, tuile de service) et que `get_text()` a ramassé
+# tout son contenu — c'est par là que « Pourquoi il est impossible de réserver
+# en ligne chez nous » repassait.
+LONGUEUR_MAX_LIBELLE = 90
 
 # Email scraping — source unique des courriels du pipeline (site officiel de la PME).
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
@@ -774,11 +793,19 @@ def _bouton_de_rdv(html: str) -> bool:
     except Exception:  # noqa: BLE001 — un HTML illisible ne vaut pas un outil
         return False
     for el in soup.find_all(["a", "button"]):
+        # Un bouton qui compose un numéro ou ouvre un courriel n'est pas une
+        # prise de rendez-vous en ligne — c'est le contraire : la preuve que
+        # tout repasse par le téléphone.
+        href = (el.get("href") or "").strip().lower()
+        if href.startswith(("tel:", "mailto:", "sms:")):
+            continue
         libelle = " ".join(filter(None, (
             el.get_text(" ", strip=True),
             el.get("aria-label"),
             el.get("title"),
-        ))).lower()
+        ))).lower().replace("\xa0", " ")
+        if len(libelle) > LONGUEUR_MAX_LIBELLE:
+            continue
         if any(p in libelle for p in PHRASES_RDV):
             return True
     return False

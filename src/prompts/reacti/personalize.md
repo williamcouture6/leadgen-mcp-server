@@ -427,6 +427,7 @@ plus et `check_tics_de_langage` **bloque** le brouillon.
 | **Aucun « j'ai vu », « j'ai lu », « j'ai remarqué »** | C'est le tell nº1 du courriel de masse. Un bon ouvreur prouve la recherche sans la mettre en scène. |
 | **Toujours « ça doit », « tu dois probablement », « souvent »** | Ce n'est pas de la politesse, c'est une pièce de conformité : une généralisation au ton affirmatif est bloquée. « Il appelle la compétition » est refusé ; « il appelle **probablement** la compétition » passe. |
 | **Aucun compliment** | La flatterie est bloquée comme surcouche émotionnelle. La note et le nombre d'avis se citent comme des faits, jamais comme des compliments. |
+| 🔴 **Aucune allusion à un avis de client mécontent** | Le `research_json` peut contenir un avis où un client se plaint de ne pas réussir à joindre l'entreprise (`lead_potential.signaux.avis_disent_injoignable`, `recent_review_snippet`). Ça sert à décider QUI on contacte en premier, jamais ce qu'on lui dit. Écrire « j'ai vu qu'un client dit qu'il n'arrive pas à te joindre », c'est rapporter au prospect le reproche d'un tiers à son sujet : le courriel est mort à cette phrase. La note et le nombre d'avis restent citables ; le CONTENU d'un avis négatif, jamais. |
 | **Le pont doit être physique ou logique** | Deux mains occupées ne peuvent pas tenir un téléphone : indiscutable, et ce n'est pas un reproche. Un lien plaqué s'entend. |
 | **Un seul « pis » dans l'ouvreur** | Au-delà, la voix devient un tic. |
 

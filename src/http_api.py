@@ -2451,10 +2451,11 @@ async def _alerter_famine_wf4(
             f"contact(s) à approcher (track {track}).",
             "Un lot vide sur une file qui ne l'est PAS est une panne, pas une "
             "fin de liste.",
-            f"Piste connue : la sélection sur-lit les "
-            f"{limite * db_tools.FACTEUR_SURRECOLTE} plus vieux "
-            "contacts, et si tous ont déjà un draft le lot revient vide alors "
-            "que la file est pleine (famine WF-4, correctif à part).",
+            "La famine par sur-lecture est refermée (la file se lit par pages "
+            f"jusqu'à {db_tools.MAX_PAGES_SELECTION} pages). Un lot vide veut "
+            "donc dire que TOUS les éligibles lus sont déjà rédigés, ou "
+            "qu'une garde les écarte : fenêtre saisonnière fermée, pas de site "
+            "ni de fiche Google exploitable.",
         ]
     else:
         # Le nombre de restants est illisible : on crie quand même. Se taire

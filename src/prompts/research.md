@@ -66,7 +66,7 @@ Tu n'écris pas l'email. Tu extrais des **faits vérifiables et des signaux** �
     "notes": "ce que tu as vu sur le site qui pourrait servir au Template B (test du formulaire)"
   },
   "disqualifications": [
-    "raison 1 si applicable (ex: 'filiale réseau US', 'site inactif depuis 4 ans', 'agence partenaire visible')"
+    "UNIQUEMENT un des quatre motifs de la liste fermée (ex: 'organisme municipal', 'annuaire', 'coopérative', 'franchise corporative, plus de 50 employés'). Un outil en place, un site inactif ou une agence partenaire ne sont PAS des motifs."
   ],
   "personalization_hooks": [
     "1-3 angles factuels et spécifiques que l'agent Personalization peut utiliser. Ex: 'mentionne leur 4.9 ★ avec 154 avis', 'mentionne le service d'urgence 24/7 affiché sur la page d'accueil', 'mentionne la review du 12 mars qui dit X'"
@@ -122,7 +122,7 @@ Un travail mal fait, un retard de chantier, un prix contesté ne sont PAS ce sig
 
 🔴 **Ce constat ne sort JAMAIS du scoring.** Ne le reprends pas dans `personalization_hooks`, ne cite pas l'avis, n'y fais aucune allusion. Écrire à un prospect « j'ai vu que tes clients disent que tu ne rappelles pas » lui rapporte le reproche d'un tiers à son sujet : ça ruinerait le courriel en une phrase. Le signal ne sert qu'à décider **qui** on contacte en premier, jamais **ce qu'on lui dit**.
 
-**Ce que le code mesure lui-même** — n'y touche pas, tes valeurs seraient écrasées : le nombre total d'avis, les avis des 30 derniers jours, la fermeture le soir et la fin de semaine (lue sur les horaires Google), la présence d'un outil, la présence d'une prise de rendez-vous en ligne.
+**Ce que le code mesure lui-même** — n'y touche pas, tes valeurs seraient écrasées : le nombre total d'avis, les avis des 30 derniers jours, **la note la plus basse du lot d'avis**, la fermeture le soir et la fin de semaine (lue sur les horaires Google), la présence d'un outil, **le nom des outils vus**, et la présence d'une prise de rendez-vous en ligne.
 
 **Ce que les poids récompensent**, pour que tes constats soient utiles : une PME qui **perd des demandes faute de réponse**. Une boîte fermée le soir et la fin de semaine alors que son site promet l'urgence 24/7, avec un volume d'appels réel et aucun canal automatisé, est le cœur de cible. Un outil déjà en place ou un service de réponse humain font descendre le score sans jamais la disqualifier — elle reste dans la liste, simplement plus bas (et une boîte qui cumule les deux tombe au plancher, donc en fin de file).
 

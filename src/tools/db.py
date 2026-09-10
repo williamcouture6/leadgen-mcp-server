@@ -805,7 +805,13 @@ async def list_contacts_to_personalize(
     # veut dire « la file est majoritairement bouchée » — c'est exactement ce
     # que l'alerte de famine doit dire, et elle se déclenche alors d'elle-même
     # puisque le lot revient court.
-    taille_page = max(limit * FACTEUR_SURRECOLTE, 200)
+    # ⚠️ Borné à 1000 : PostgREST coupe TOUTE réponse à `max-rows=1000`, sans
+    # erreur ni en-tête. À `limit=84`, `limit * FACTEUR_SURRECOLTE` demandait
+    # 1008 lignes, la page en rendait 1000, et `len(lot) < taille_page` faisait
+    # conclure « file épuisée » après une seule lecture. La priorisation
+    # dépendant maintenant d'une lecture complète, cette troncature muette
+    # aurait décidé de l'ordre d'envoi.
+    taille_page = min(max(limit * FACTEUR_SURRECOLTE, 200), 1000)
     contacts: list[dict[str, Any]] = []
     for page in range(MAX_PAGES_SELECTION):
         lot = await db.select(
@@ -851,6 +857,9 @@ async def list_contacts_to_personalize(
 # revient en 414 et le lot se vide en silence.
 TAILLE_TRANCHE_IN = 120
 
+# PostgREST coupe toute reponse a 1000 lignes, sans erreur ni en-tete.
+PLAFOND_POSTGREST = 1000
+
 
 async def _select_par_tranches(
     table: str,
@@ -858,16 +867,36 @@ async def _select_par_tranches(
     params: dict[str, str],
     ids: list[str],
     cle: str = "id",
+    order: str | None = None,
 ) -> list[dict[str, Any]]:
-    """`select` avec un filtre `in.(...)` découpé en tranches, résultats concaténés."""
+    """`select` avec un filtre `in.(...)` découpé en tranches, résultats concaténés.
+
+    `order` non nul → chaque tranche est PAGINÉE et ne se fait donc pas couper
+    au plafond de 1000 lignes. À utiliser dès qu'UNE TRANCHE peut dépasser ce
+    plafond : 120 contacts qui portent chacun une
+    poignée de messages y arrivent, et une réponse tronquée ferait disparaître
+    des contacts de `already_drafted` — donc un deuxième courriel à quelqu'un
+    qui en a déjà reçu un.
+    """
     lignes: list[dict[str, Any]] = []
     for debut in range(0, len(ids), TAILLE_TRANCHE_IN):
         tranche = ids[debut:debut + TAILLE_TRANCHE_IN]
-        if not tranche:
+        filtre = {**params, cle: f"in.({','.join(tranche)})"}
+        if order is None:
+            lignes.extend(await db.select(table, params=filtre))
             continue
-        lignes.extend(await db.select(
-            table, params={**params, cle: f"in.({','.join(tranche)})"}
-        ))
+        # Tranche paginée : on reste sur `select`, mais on redemande tant que
+        # la page revient pleine. Une page courte dit la fin — donc un faux
+        # `select` de test qui ignore `limit`/`offset` sort au premier tour.
+        for page in range(MAX_PAGES_SELECTION):
+            lot = await db.select(table, params={
+                **filtre, "order": order,
+                "limit": str(PLAFOND_POSTGREST),
+                "offset": str(page * PLAFOND_POSTGREST),
+            })
+            lignes.extend(lot)
+            if len(lot) < PLAFOND_POSTGREST:
+                break
     return lignes
 
 
@@ -930,6 +959,8 @@ async def _retenir(
         "messages",
         cle="contact_id",
         ids=[c["id"] for c in contacts],
+        # `order` → `select_all` : voir la docstring de `_select_par_tranches`.
+        order="id",
         params={
             "select": "contact_id",
             "direction": "eq.outbound",
@@ -1236,6 +1267,13 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
         score = 0 if disqualifie else base
     patch: dict[str, Any] = {"lead_potential_score": score}
     reason = lp.get("reasoning") if isinstance(lp.get("reasoning"), str) else ""
+    # 🔴 Sur le chemin des signaux, la raison est TOUJOURS réécrite, même vide.
+    # Sans ça le marqueur ne s'effaçait jamais : une entreprise marquée en août
+    # puis re-recherchée en octobre sans plainte gardait son « ⚑ » — et comme
+    # c'est lui qui ordonne la file d'envoi, elle restait première de tous les
+    # lots, indéfiniment. Tant que la colonne n'était lue par personne le
+    # résidu était inoffensif ; depuis qu'elle trie, il capture la tête de file.
+    ecrire_la_raison = isinstance(signaux, dict) and bool(signaux)
     # La marque de tête de file vit DANS la justification, pas dans le score :
     # le lead garde la note que le barème lui donne (un 8 reste un 8) et cette
     # phrase dit pourquoi il passe quand même devant. Elle est en tête de
@@ -1245,6 +1283,8 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
         reason = f"{MARQUEUR_TETE_DE_FILE} {reason}".strip()
     if reason:
         patch["lead_potential_reason"] = reason[:500]
+    elif ecrire_la_raison:
+        patch["lead_potential_reason"] = None
     return patch
 
 

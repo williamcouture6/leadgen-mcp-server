@@ -169,9 +169,45 @@ def test_le_contraire_de_la_promesse_ne_compte_pas() -> None:
     assert research._outils_detectes(html) == set()
 
 
+def test_un_bouton_qui_compose_un_numero_n_est_pas_un_outil() -> None:
+    # Le faux positif que le conseil du 2026-09-09 a trouvé dans MON correctif :
+    # « Prendre rendez-vous » qui appelle est le CTA le plus courant des PME de
+    # service — c'est-à-dire la preuve que tout repasse par le téléphone.
+    for html in (
+        '<a href="tel:+15145551234">Prendre rendez-vous en ligne</a>',
+        '<a href="mailto:info@x.ca">Réserver en ligne</a>',
+    ):
+        assert research._outils_detectes(html) == set(), html
+
+
+def test_prendre_rendez_vous_sans_en_ligne_ne_compte_pas() -> None:
+    # Un lien « Prendre rendez-vous » vers un formulaire de contact n'est pas
+    # une prise de rendez-vous en ligne.
+    html = '<a href="/contact">Prendre rendez-vous</a>'
+    assert research._outils_detectes(html) == set()
+
+
+def test_un_lien_qui_enveloppe_une_carte_ne_compte_pas() -> None:
+    # `get_text()` descend dans tous les enfants : une carte de blogue
+    # cliquable ramenait son titre entier, négation comprise.
+    html = (
+        '<a href="/blogue/1"><h3>Pourquoi il est impossible de réserver en '
+        "ligne chez nous</h3><p>Appelez-nous, on répond vite et on aime mieux "
+        "se parler de vive voix avant de fixer quoi que ce soit.</p></a>"
+    )
+    assert research._outils_detectes(html) == set()
+
+
 def test_un_aria_label_suffit() -> None:
     html = '<button aria-label="Book online">📅</button>'
     assert research._outils_detectes(html) == {research.RDV_GENERIQUE}
+
+
+def test_un_lien_sortant_ne_fabrique_pas_un_outil() -> None:
+    # `force.com` nu attrapait `workforce.com` : un lien vers un article RH
+    # faisait perdre 20 points au prospect.
+    html = '<a href="https://www.workforce.com/blog">Notre partenaire RH</a>'
+    assert research._outils_detectes(html) == set()
 
 
 def test_un_html_illisible_ne_vaut_pas_un_outil() -> None:
