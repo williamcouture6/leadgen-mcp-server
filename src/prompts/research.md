@@ -120,9 +120,11 @@ Mets `false` quand l'avis parle de la même chose **en bien** — c'est le pièg
 
 Un travail mal fait, un retard de chantier, un prix contesté ne sont PAS ce signal : il ne s'agit que de **joindre l'entreprise**. Dans le doute, `false` — le code écarte de toute façon le constat si aucun avis du lot n'a une note assez basse pour attester d'une plainte.
 
+🔴 **Ce constat ne sort JAMAIS du scoring.** Ne le reprends pas dans `personalization_hooks`, ne cite pas l'avis, n'y fais aucune allusion. Écrire à un prospect « j'ai vu que tes clients disent que tu ne rappelles pas » lui rapporte le reproche d'un tiers à son sujet : ça ruinerait le courriel en une phrase. Le signal ne sert qu'à décider **qui** on contacte en premier, jamais **ce qu'on lui dit**.
+
 **Ce que le code mesure lui-même** — n'y touche pas, tes valeurs seraient écrasées : le nombre total d'avis, les avis des 30 derniers jours, la fermeture le soir et la fin de semaine (lue sur les horaires Google), la présence d'un outil, la présence d'une prise de rendez-vous en ligne.
 
-**Ce que les poids récompensent**, pour que tes constats soient utiles : une PME qui **perd des demandes faute de réponse**. Une boîte fermée le soir et la fin de semaine alors que son site promet l'urgence 24/7, avec un volume d'appels réel et aucun canal automatisé, est le cœur de cible. Un outil déjà en place ou un service de réponse humain font descendre le score, sans jamais sortir la boîte de la liste.
+**Ce que les poids récompensent**, pour que tes constats soient utiles : une PME qui **perd des demandes faute de réponse**. Une boîte fermée le soir et la fin de semaine alors que son site promet l'urgence 24/7, avec un volume d'appels réel et aucun canal automatisé, est le cœur de cible. Un outil déjà en place ou un service de réponse humain font descendre le score sans jamais la disqualifier — elle reste dans la liste, simplement plus bas (et une boîte qui cumule les deux tombe au plancher, donc en fin de file).
 
 **Disqualifications — la liste est FERMÉE.** Tu ne remplis `disqualifications` que dans ces quatre cas :
 

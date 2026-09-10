@@ -33,7 +33,11 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test")
 
 
-def _monde(monkeypatch: pytest.MonkeyPatch, companies: list[dict]) -> None:
+def _monde(
+    monkeypatch: pytest.MonkeyPatch,
+    companies: list[dict],
+    params_vus: dict[str, dict] | None = None,
+) -> None:
     """Un contact par company, tous éligibles, dans l'ordre donné.
 
     ⚠️ `website` est obligatoire dans la fixture : `site_ou_fiche_exploitable`
@@ -50,6 +54,8 @@ def _monde(monkeypatch: pytest.MonkeyPatch, companies: list[dict]) -> None:
     ]
 
     async def fake_select(table, params=None):
+        if params_vus is not None:
+            params_vus[table] = dict(params or {})
         if table == "contacts":
             return contacts
         if table == "companies":
@@ -108,15 +114,49 @@ async def test_un_lead_jamais_score_passe_en_dernier(
 async def test_a_score_egal_l_ordre_d_arrivee_est_preserve(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Tri stable : le comportement historique (created_at.asc) survit partout
-    # où le potentiel ne tranche pas.
+    """Tri stable : le comportement historique survit où le potentiel ne tranche pas.
+
+    ⚠️ Deux moitiés, et le conseil du 2026-09-09 a montré qu'il manquait la
+    seconde : vérifier l'ordre rendu ne prouve que la stabilité de `sort()`,
+    puisque le faux `select` ignore `order`. On vérifie donc AUSSI que la
+    requête demande bien `created_at.asc` — sans quoi « l'ordre d'arrivée »
+    ne voudrait rien dire.
+    """
+    params_vus: dict[str, dict] = {}
     _monde(monkeypatch, [
         {"id": "co-1", "name": "Premiere", "lead_potential_score": 50},
         {"id": "co-2", "name": "Deuxieme", "lead_potential_score": 50},
         {"id": "co-3", "name": "Troisieme", "lead_potential_score": 50},
-    ])
+    ], params_vus=params_vus)
+
     lot = await dbt.list_contacts_to_personalize(limit=10, track="agence-ia")
+
     assert [x["company"]["name"] for x in lot] == ["Premiere", "Deuxieme", "Troisieme"]
+    assert params_vus["contacts"]["order"] == "created_at.asc"
+
+
+async def test_le_rang_d_arrivee_ne_suit_pas_l_ordre_d_envoi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 Le gabarit A/B se tire de `rang_arrivee`, jamais de la position triée.
+
+    C'est le bloquant nº1 du conseil du 2026-09-09 : `bras_du_lot` alterne sur
+    le rang, donc si ce rang suivait le tri par potentiel, le bras A prendrait
+    toujours les meilleurs leads et `v_perf_par_bras` mesurerait leur qualité
+    au lieu de la copie. La faible arrivée en premier doit garder le rang 0.
+    """
+    _monde(monkeypatch, [
+        {"id": "co-faible", "name": "Faible", "lead_potential_score": 8},
+        {"id": "co-haute", "name": "Haute", "lead_potential_score": 82},
+    ])
+
+    lot = await dbt.list_contacts_to_personalize(limit=10, track="agence-ia")
+
+    # Ordre d'ENVOI : le potentiel décide.
+    assert [x["company"]["name"] for x in lot] == ["Haute", "Faible"]
+    # Ordre d'ARRIVÉE : inchangé, et c'est lui qui tire le gabarit.
+    rangs = {x["company"]["name"]: x["rang_arrivee"] for x in lot}
+    assert rangs == {"Faible": 0, "Haute": 1}
 
 
 async def test_un_prioritaire_hors_saison_ne_mange_pas_une_place(

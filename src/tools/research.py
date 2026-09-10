@@ -153,12 +153,23 @@ OUTILS_FINGERPRINTS: dict[str, tuple[str, ...]] = {
     "AnswerConnect": ("answerconnect",),
     "Ruby Receptionists": ("callruby.com", "ruby.com/receptionist"),
     "Agent vocal IA": ("retellai", "bland.ai", "synthflow", "vapi.ai"),
-    # Promesse explicite de réservation en ligne, sans outil nommé
-    "Réservation en ligne (générique)": (
-        "prendre rendez-vous en ligne", "prenez rendez-vous en ligne",
-        "réserver en ligne", "reserver en ligne", "book online",
-    ),
 }
+
+# La même promesse, mais sans outil nommé. Cherchée UNIQUEMENT dans le texte
+# d'un lien ou d'un bouton — jamais dans la page entière.
+#
+# Pourquoi : cherchée à plat dans le HTML, la phrase attrapait son propre
+# contraire. « **Impossible** de réserver en ligne, appelez-nous » posait
+# `outil_en_place` ET `rdv_en_ligne`, soit 28 points de moins (−20 de malus,
+# et +8 de « aucun RDV en ligne » perdus) sur exactement le profil que le
+# barème cherche à remonter. Un vrai bouton de prise de rendez-vous, lui, est
+# un `<a>` ou un `<button>`.
+RDV_GENERIQUE = "Réservation en ligne (générique)"
+PHRASES_RDV = (
+    "prendre rendez-vous en ligne", "prenez rendez-vous en ligne",
+    "réserver en ligne", "reserver en ligne", "book online",
+    "prendre rendez-vous", "réservez maintenant", "book now",
+)
 
 # Email scraping — source unique des courriels du pipeline (site officiel de la PME).
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
@@ -741,10 +752,36 @@ def _outils_detectes(html: str) -> set[str]:
     « Calendly » à qui relit une fiche.
     """
     hay = html.lower()
-    return {
+    trouves = {
         nom for nom, empreintes in OUTILS_FINGERPRINTS.items()
         if any(e in hay for e in empreintes)
     }
+    if _bouton_de_rdv(html):
+        trouves.add(RDV_GENERIQUE)
+    return trouves
+
+
+def _bouton_de_rdv(html: str) -> bool:
+    """Un lien ou un bouton propose-t-il de prendre rendez-vous en ligne ?
+
+    On lit le TEXTE cliquable, plus `aria-label` et `title` — pas la page. Une
+    phrase de paragraphe qui parle de rendez-vous (« impossible de réserver en
+    ligne », « pour un rendez-vous, appelez-nous ») ne doit pas compter comme
+    un outil en place.
+    """
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:  # noqa: BLE001 — un HTML illisible ne vaut pas un outil
+        return False
+    for el in soup.find_all(["a", "button"]):
+        libelle = " ".join(filter(None, (
+            el.get_text(" ", strip=True),
+            el.get("aria-label"),
+            el.get("title"),
+        ))).lower()
+        if any(p in libelle for p in PHRASES_RDV):
+            return True
+    return False
 
 
 def _same_host(base: str, candidate: str) -> bool:
@@ -1268,6 +1305,10 @@ def signaux_mesures(place: dict[str, Any], site: dict[str, Any]) -> dict[str, An
         "ferme_soir_ou_weekend": _ferme_soir_ou_weekend(place),
         "outil_en_place": bool(outils) if site_lu else None,
         "rdv_en_ligne": any(o in OUTILS_AVEC_RDV for o in outils) if site_lu else None,
+        # Ne pèse RIEN dans le barème : c'est la trace, pour qu'on puisse
+        # savoir après coup quel outil a coûté ses points à une boîte. Sans
+        # elle, `outil_en_place: true` est une affirmation invérifiable.
+        "outils_noms": sorted(outils) if site_lu else None,
     }
 
 
@@ -1308,7 +1349,10 @@ def _format_place_for_llm(place: dict[str, Any]) -> str:
 
 def _format_site_for_llm(site: dict[str, Any]) -> str:
     status = site.get("status", "unknown")
-    if str(status).startswith("error") or status == "unknown":
+    # `no_website` rejoint les statuts muets : sans site lu, écrire
+    # « outils_detectes: (none) » affirmerait au modèle qu'on a regardé et
+    # qu'il n'y a rien, alors que la mesure Python rend honnêtement `None`.
+    if str(status).startswith("error") or status in ("unknown", "no_website"):
         return f"website_status: {status}\nwebsite_text: (unavailable)"
     parts = [f"website_status: {status}"]
     hits = site.get("tech_keyword_hits") or []

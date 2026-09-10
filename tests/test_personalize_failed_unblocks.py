@@ -39,7 +39,12 @@ def _fake_select_factory(messages: list[dict], captured: dict):
                 # entreprises sans site ET sans fiche Google exploitable.
                 # Ce test porte sur l'eligibilite par STATUT de message, pas
                 # sur cette garde.
-                {"id": "co-1", "name": "Ex Co", "track": "OPT",
+                # `agence-ia` et pas `OPT` : releve par le conseil du
+                # 2026-09-09. `OPT` est legacy inerte (409 entreprises, zero
+                # contact, jamais prospectees) — la garde etait donc prouvee
+                # sur une piste morte, et rien ne la prouvait sur la seule
+                # piste vivante.
+                {"id": "co-1", "name": "Ex Co", "track": "agence-ia",
                  "website": "https://exco.ca", "research_json": {"x": 1}},
             ]
         if table == "messages":
@@ -63,7 +68,7 @@ async def test_requete_messages_exclut_les_failed(monkeypatch: pytest.MonkeyPatc
     captured: dict = {}
     monkeypatch.setattr(real_db, "select", _fake_select_factory([], captured))
 
-    await dbt.list_contacts_to_personalize()
+    await dbt.list_contacts_to_personalize(track="agence-ia")
 
     assert captured["params"].get("status") == "not.in.(failed)"
 
@@ -76,7 +81,7 @@ async def test_contact_dont_le_seul_message_est_failed_redevient_eligible(
     messages = [{"contact_id": "ct-1", "status": "failed"}]
     monkeypatch.setattr(real_db, "select", _fake_select_factory(messages, {}))
 
-    out = await dbt.list_contacts_to_personalize()
+    out = await dbt.list_contacts_to_personalize(track="agence-ia")
 
     assert [o["contact"]["id"] for o in out] == ["ct-1"]
 
@@ -94,6 +99,6 @@ async def test_les_autres_status_bloquent_toujours(
     messages = [{"contact_id": "ct-1", "status": status}]
     monkeypatch.setattr(real_db, "select", _fake_select_factory(messages, {}))
 
-    out = await dbt.list_contacts_to_personalize()
+    out = await dbt.list_contacts_to_personalize(track="agence-ia")
 
     assert out == []

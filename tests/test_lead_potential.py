@@ -1,4 +1,12 @@
-"""Tests de l'extraction du score de potentiel du lead (research_json -> colonnes flat).
+"""⚠️ FORME HÉRITÉE UNIQUEMENT (relevé par le conseil du 2026-09-09).
+
+Ces sept tests passent tous par `{"lead_potential": {"score": N}}`, c'est-à-dire
+le repli des lignes recherchées AVANT le 2026-09-01, où le modèle rendait le
+chiffre lui-même. Le chemin vivant — des constats dans `signaux`, pondérés par
+`lib/lead_scoring` — est couvert par `test_lead_scoring.py` et
+`test_signal_injoignable.py`.
+
+Tests de l'extraction du score de potentiel du lead (research_json -> colonnes flat).
 
 Pas de network ni de DB : on teste seulement la fonction pure
 `extract_lead_potential_patch`, qui décide quelles colonnes `companies` patcher

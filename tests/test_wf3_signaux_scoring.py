@@ -153,7 +153,61 @@ def test_le_bloc_site_dit_none_quand_aucun_outil() -> None:
     assert "outils_detectes: (none)" in bloc
 
 
-# --- 6. les deux décisions de barème de William -----------------------------
+# --- 6. un bouton de RDV, pas une phrase qui parle de RDV -------------------
+
+def test_un_bouton_de_prise_de_rdv_compte_comme_un_outil() -> None:
+    html = '<a class="cta" href="/rdv">Prendre rendez-vous en ligne</a>'
+    assert research._outils_detectes(html) == {research.RDV_GENERIQUE}
+
+
+def test_le_contraire_de_la_promesse_ne_compte_pas() -> None:
+    # Le faux positif mesuré : cherchée à plat dans le HTML, la phrase
+    # attrapait son propre contraire, et coûtait 28 points (−20 de malus plus
+    # les +8 de « aucun RDV en ligne » perdus) au profil que le barème veut
+    # justement remonter.
+    html = "<p>Impossible de réserver en ligne, appelez-nous au 418-555-0000.</p>"
+    assert research._outils_detectes(html) == set()
+
+
+def test_un_aria_label_suffit() -> None:
+    html = '<button aria-label="Book online">📅</button>'
+    assert research._outils_detectes(html) == {research.RDV_GENERIQUE}
+
+
+def test_un_html_illisible_ne_vaut_pas_un_outil() -> None:
+    assert research._outils_detectes("<<<>>> pas du html") == set()
+
+
+# --- 7. la trace : QUEL outil a coûté les points ---------------------------
+
+def test_les_noms_des_outils_sont_conserves() -> None:
+    mesures = research.signaux_mesures(
+        {"userRatingCount": 40},
+        {"status": "http_200", "outils_detectes": ["Calendly", "Jobber"]},
+    )
+    assert mesures["outils_noms"] == ["Calendly", "Jobber"]
+    # Et ça ne pèse rien dans le calcul.
+    from src.lib.lead_scoring import calculer_score
+    avec = calculer_score({"avis_total": 40, "outils_noms": ["Calendly"]})[0]
+    sans = calculer_score({"avis_total": 40})[0]
+    assert avec == sans
+
+
+def test_sans_site_lu_aucune_trace_inventee() -> None:
+    mesures = research.signaux_mesures({}, {"status": "no_website"})
+    assert mesures["outils_noms"] is None
+    assert mesures["outil_en_place"] is None
+
+
+def test_une_boite_sans_site_ne_s_entend_pas_dire_aucun_outil() -> None:
+    # « (none) » affirmerait qu'on a regardé le site et qu'il n'y a rien. Sans
+    # site lu, on ne dit rien plutôt que de mentir au modèle.
+    bloc = research._format_site_for_llm({"status": "no_website"})
+    assert "outils_detectes: (none)" not in bloc
+    assert "website_status: no_website" in bloc
+
+
+# --- 8. les deux décisions de barème de William -----------------------------
 
 def _prompt() -> str:
     return research._PROMPT_PATH.read_text(encoding="utf-8")
