@@ -782,6 +782,10 @@ _URL_MALUS: tuple[tuple[int, str], ...] = (
     # On prospecte des clients, pas des candidats. /emploi/ prenait la place de
     # la page de services chez Lauzon.
     (-120, r"/(emplois?|carrieres?|careers?|postuler|jobs?|recrutement|stage)"),
+    # Contenu d'exemple laisse par le CMS a l'installation. /hello-world/ a pris
+    # le 4e emplacement chez Entretien GFR : il est encore publie sur quantite de
+    # sites de PME et ne dit rien de personne.
+    (-120, r"/(hello-world|sample-page|exemple-de-page|page-exemple|uncategorized|non-classe)"),
 )
 # Un site bilingue double toutes ses pages. Le doublon ne dit rien de neuf et
 # coûte le même prix : sur BL Vitres, 12 des 25 pages lues étaient des `/en/`.
@@ -829,22 +833,48 @@ def _score_page_url(url: str) -> int:
     return score
 
 
+# Paramètres qui ne désignent JAMAIS une page — seulement d'où vient le visiteur.
+# Les fiches Google Places portent souvent le site avec `?utm_source=google`
+# (Piscines Rive-Nord) : sans les retirer, la home du sitemap passe pour une page
+# interne et se fait charger deux fois.
+# ⚠️ On ne retire QUE ceux-là : `?page_id=75` désigne une vraie page distincte
+# (le menu des Entretiens Gauthier y pointe ses promotions).
+_PARAMS_DE_SUIVI = ("gclid", "fbclid", "msclkid", "gad_source", "mc_cid", "mc_eid", "_ga")
+
+
+def _cle_url(u: str) -> str:
+    """Clé de comparaison d'une URL : sans fragment, sans paramètres de suivi,
+    sans slash final. Deux URL de même clé désignent la même page."""
+    p = urlparse(u.split("#", 1)[0])
+    params = [
+        kv for kv in p.query.split("&")
+        if kv and not kv.split("=", 1)[0].lower().startswith("utm_")
+        and kv.split("=", 1)[0].lower() not in _PARAMS_DE_SUIVI
+    ]
+    requete = ("?" + "&".join(params)) if params else ""
+    return f"{p.scheme}://{p.netloc}{p.path}{requete}".rstrip("/")
+
+
 def _prioriser_urls(base_url: str, urls: list[str], limite: int) -> list[str]:
     """Garde au plus `limite` URL internes, les mieux notées d'abord.
 
     Écarte la home (déjà lue), les hôtes externes et tout ce qui note négatif —
     même s'il reste du budget : une page de blogue lue « parce qu'on pouvait »
     coûte autant qu'une page de contact et ne rapporte rien."""
-    base_no_frag = base_url.split("#", 1)[0].rstrip("/")
+    base_no_frag = _cle_url(base_url)
     vus: set[str] = set()
     notes: list[tuple[int, int, str]] = []
     for ordre, brut in enumerate(urls):
         u = brut.split("#", 1)[0]
-        if not u or u.rstrip("/") == base_no_frag or not _same_host(base_url, u):
+        # Le slash final est cosmetique : un menu porte souvent href="/contacts"
+        # ET href="https://.../contacts/" (vu sur rivenordextermination.com).
+        # Sans normalisation la page est chargee deux fois et mange un emplacement.
+        cle = _cle_url(u)
+        if not u or cle == base_no_frag or not _same_host(base_url, u):
             continue
-        if u in vus:
+        if cle in vus:
             continue
-        vus.add(u)
+        vus.add(cle)
         score = _score_page_url(u)
         if score <= 0:
             continue
@@ -1004,19 +1034,21 @@ def _rank_internal_pages(base_url: str, html: str, max_links: int) -> list[str]:
     valeur (contact > équipe/à-propos > services). Déduplique les fragments
     (#horaire), ignore les hôtes externes, et garde l'ordre DOM à tier égal."""
     soup = BeautifulSoup(html, "html.parser")
-    base_no_frag = base_url.split("#", 1)[0]
+    base_no_frag = _cle_url(base_url)
     seen_urls: set[str] = set()
     scored: list[tuple[int, int, str]] = []  # (tier, ordre_dom, url)
     order = 0
     for a in soup.find_all("a", href=True):
         href = urljoin(base_url, a["href"]).split("#", 1)[0]
-        if not href or href == base_no_frag or not _same_host(base_url, href):
+        if not href or _cle_url(href) == base_no_frag or not _same_host(base_url, href):
             continue
         hay = href.lower() + " " + a.get_text(" ", strip=True).lower()
         tier = next((t for t, hints in _PAGE_HINT_TIERS if any(h in hay for h in hints)), None)
-        if tier is None or href in seen_urls:
+        # Slash final normalise : voir `_prioriser_urls`, meme defaut ici.
+        cle = _cle_url(href)
+        if tier is None or cle in seen_urls:
             continue
-        seen_urls.add(href)
+        seen_urls.add(cle)
         scored.append((tier, order, href))
         order += 1
     scored.sort(key=lambda x: (x[0], x[1]))

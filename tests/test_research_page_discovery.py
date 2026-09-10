@@ -91,6 +91,18 @@ def test_score_ecarte_la_page_de_remerciement_malgre_le_mot_contact() -> None:
     assert research._score_page_url(url) < 0
 
 
+def test_score_ecarte_les_pages_gabarit_du_cms() -> None:
+    # Vu chez Entretien GFR (2026-09-01) : /hello-world/, le billet d'exemple
+    # que WordPress cree a l'installation, a pris le 4e emplacement. Il est
+    # encore publie sur quantite de sites de PME et ne dit rien de personne.
+    for url in (
+        "https://x.ca/hello-world/",
+        "https://x.ca/sample-page/",
+        "https://x.ca/exemple-de-page/",
+    ):
+        assert research._score_page_url(url) < 0, url
+
+
 def test_score_ecarte_les_pages_de_recrutement() -> None:
     # /emploi/ prenait la place de la page de services chez Lauzon. On ne
     # prospecte pas des candidats.
@@ -135,6 +147,43 @@ def test_prioriser_coupe_au_budget_et_classe_par_valeur() -> None:
 def test_prioriser_jette_les_urls_negatives_meme_si_le_budget_reste() -> None:
     urls = ["https://x.ca/blog/cinq-trucs-pour-des-vitres-propres/", "https://x.ca/contact/"]
     assert research._prioriser_urls("https://x.ca/", urls, 5) == ["https://x.ca/contact/"]
+
+
+def test_prioriser_dedupe_au_slash_final() -> None:
+    # Vu en production le 2026-09-01 sur rivenordextermination.com : le menu
+    # porte href="/contacts" ET href="https://.../contacts/". Les deux passaient
+    # la deduplication (chaines differentes), la page etait chargee DEUX fois et
+    # mangeait un des 4 emplacements.
+    urls = ["https://x.ca/contacts", "https://x.ca/contacts/", "https://x.ca/a-propos/"]
+    assert research._prioriser_urls("https://x.ca/", urls, 4) == [
+        "https://x.ca/contacts",
+        "https://x.ca/a-propos/",
+    ]
+
+
+def test_liens_du_menu_dedupes_au_slash_final() -> None:
+    # Meme defaut dans le repli sans sitemap.
+    html = '<a href="/contacts">Contact</a><a href="https://x.ca/contacts/">Nous joindre</a>'
+    assert research._rank_internal_pages("https://x.ca/", html, 5) == ["https://x.ca/contacts"]
+
+
+def test_prioriser_reconnait_la_home_malgre_les_parametres_de_campagne() -> None:
+    # Beaucoup de fiches Google Places portent le site avec des `?utm_source=`
+    # (Piscines Rive-Nord, 2026-09-01). La home du sitemap n'a pas ces
+    # parametres : sans normalisation elle passe pour une page interne et se
+    # fait charger une DEUXIEME fois. Le defaut ne se voit que sur un petit
+    # site, ou elle n'est pas evincee par des pages mieux notees.
+    base = "https://x.ca/?utm_source=google&utm_medium=local"
+    urls = ["https://x.ca/", "https://x.ca/contact/"]
+    assert research._prioriser_urls(base, urls, 4) == ["https://x.ca/contact/"]
+
+
+def test_prioriser_garde_une_page_designee_par_un_parametre() -> None:
+    # La borne du correctif precedent. Le menu des Entretiens Gauthier pointe
+    # ses promotions vers /?page_id=75 : c'est une VRAIE page, distincte de la
+    # home. Retirer les parametres en bloc la ferait disparaitre.
+    urls = ["https://x.ca/?page_id=75"]
+    assert research._prioriser_urls("https://x.ca/", urls, 4) == ["https://x.ca/?page_id=75"]
 
 
 def test_prioriser_ignore_la_home_et_les_hotes_externes() -> None:

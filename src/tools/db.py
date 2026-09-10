@@ -1,5 +1,20 @@
 """Tool `db` — accès Supabase pour le pipeline.
 
+🔴 CONVENTION D'ÉCRITURE — décision William du 2026-09-04.
+
+**Tout chiffre mesuré écrit dans un commentaire porte SA DATE.** « 8 entreprises
+concernées » se lit comme l'état du jour et devient faux sans bruit ; « 8 au
+2026-09-02 » se lit comme ce qu'il est — une mesure passée qui a justifié une
+décision, et qui reste vraie pour toujours.
+
+Le déclencheur : trois jeux de chiffres se contredisaient déjà dans ce fichier,
+et l'ajout d'une seule date de saison a fait passer « 3 fiches » à 2 en une
+heure. La règle qui suit :
+
+  · un chiffre qui JUSTIFIE une décision → on le garde, daté ;
+  · un chiffre qui décrit l'ÉTAT COURANT → il n'a rien à faire ici. Il va dans
+    le résumé quotidien, qui le recalcule.
+
 Phase 1 (sourcing) :
 - next_sourcing_target : trouve le prochain (city, sector) à scraper (cooldown 30j)
 - start_sourcing_run : crée une trace de pass (status=running)
@@ -9,13 +24,14 @@ Phase 1 (sourcing) :
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from .. import supabase_client as db
 from ..lib.lead_scoring import MARQUEUR_TETE_DE_FILE, calculer_score, est_tete_de_file
+from ..lib.metiers import SAISONS, resoudre_metiers
 from ..lib.owner_match import summarize_company_decideur
 from ..lib.pricing import estimated_cost_usd
 
@@ -143,6 +159,28 @@ _CATALOGS: dict[str, dict[str, list[str]]] = {
 }
 
 COOLDOWN_DAYS = 30
+
+# 🔴 Combien de contacts la sélection WF-4 LIT pour en garder `limit`.
+#
+# Exporté parce qu'il est cité ailleurs : `_alerter_famine_wf4` explique la
+# famine en nommant ce chiffre. Il valait 5 dans le code et 5 dans le message ;
+# le code est passé à 12 le 2026-09-02 avec le filtre saisonnier, le message
+# est resté à 5 — l'alerte diagnostiquait donc avec un chiffre faux, et c'est
+# le conseil qui l'a vu. Une constante partagée les empêche de diverger.
+#
+# Porté de 5 à 12 avec le filtre saisonnier, qui écarte plus de la moitié des
+# fiches en septembre. À 5, un lot de 20 lisait 100 contacts, en gardait ~45
+# après la saison, puis perdait encore au dédoublonnage par entreprise.
+#
+# ⚠️ DIMENSIONNÉ SUR `limit=20`. Les deux crons n8n postent `limit: 10`, donc
+# la fenêtre réelle vaut 120 contacts, pas 240. Le conseil du 2026-09-02 a
+# mesuré qu'à 120, 39 des 125 déneigeurs joignables en septembre ont plus de
+# 120 contacts hors saison DEVANT eux dans l'ordre `created_at.asc` : ils ne
+# sont lus aucune fois d'août à décembre. Monter le facteur ne fait que
+# déplacer le seuil — le correctif réel est de faire TOURNER la file
+# (horodater les contacts lus et écartés, trier « jamais tenté d'abord »).
+# Question posée à William le 2026-09-02, en attente de sa réponse.
+FACTEUR_SURRECOLTE = 12
 
 
 def _all_targets(track: str = "OPT") -> list[tuple[str, str, str]]:
@@ -451,7 +489,32 @@ async def _record_consent(
 
 
 async def insert_contact(payload: ContactIn) -> InsertContactOut:
-    """Insert contact, dédup sur (company_id, email)."""
+    """Insert contact, dédup sur le COURRIEL SEUL (insensible à la casse).
+
+    🔴 PAS sur le couple (company_id, email) — c'était le cas jusqu'au
+    2026-09-08, et ça laissait passer les vrais doublons.
+
+    Mesuré la veille du premier envoi : **9 adresses portaient 2 ou 3 contacts**,
+    tous sur des entreprises DIFFÉRENTES. Le gars de cVert aurait reçu TROIS
+    courriels quasi identiques, possiblement sur trois gabarits différents.
+
+    La cause est en amont : les doublons viennent de fiches Google Places en
+    double. « cVert », « cVert - Entretien de Pelouse Ville », « … Laval » sont
+    trois inscriptions du même commerce, donc trois `companies` distinctes — et
+    la dédup par couple les voyait comme trois cas légitimes.
+
+    Le bon critère est l'ADRESSE, parce que c'est elle qui reçoit : une boîte
+    de réception, un courriel. Peu importe combien de fiches Google la
+    désignent.
+
+    ⚠️ `lower()` des deux côtés : `Info@X.ca` et `info@x.ca` sont la même boîte,
+    et les fiches Google ne s'accordent pas sur la casse.
+
+    ⚠️ Cette vérification peut se faire doubler par deux WF-3 concurrents. La
+    garde réelle est l'index `contacts_email_actif_unique` (migration 0049) ;
+    celle-ci évite juste d'aller au bout d'une insertion vouée à l'échec, et
+    rend un `duplicate` propre plutôt qu'une erreur.
+    """
     if not payload.email:
         return InsertContactOut(status="skipped_no_email")
 
@@ -459,8 +522,8 @@ async def insert_contact(payload: ContactIn) -> InsertContactOut:
         "contacts",
         params={
             "select": "id",
-            "company_id": f"eq.{payload.company_id}",
-            "email": f"eq.{payload.email}",
+            "email": f"ilike.{payload.email.strip()}",
+            "status": "neq.disqualified",
             "limit": "1",
         },
     )
@@ -545,21 +608,18 @@ async def mark_company_disqualified(company_id: str, reason: str) -> dict[str, A
     }
 
 
-async def get_company(company_id: str) -> dict[str, Any] | None:
-    rows = await db.select(
-        "companies",
-        params={
-            "select": "id,name,domain,website,city,icp_segment,industry,status,google_place_id",
-            "id": f"eq.{company_id}",
-            "limit": "1",
-        },
-    )
-    return rows[0] if rows else None
-
-
 # ----------------------------------------------------------------------
 # Personalize (Phase 2 — WF-4)
 # ----------------------------------------------------------------------
+
+# Combien de pages la sélection accepte de lire avant d'abandonner.
+#
+# Borne de COÛT, pas de logique : 10 pages de 200 couvrent 2000 contacts, très
+# au-delà de la file actuelle (345 au 2026-09-09). L'atteindre signifie que la
+# file est majoritairement bouchée — l'alerte de famine le dira, puisque le lot
+# reviendra court.
+MAX_PAGES_SELECTION = 10
+
 
 def _contact_priority_score(contact: dict[str, Any]) -> int:
     """Score de priorité (plus bas = meilleur) pour choisir 1 contact par company.
@@ -618,6 +678,86 @@ def _rang_de_priorite(company: dict[str, Any]) -> tuple[int, int]:
     return (tete, rang_score)
 
 
+def fenetre_saisonniere_ouverte(
+    company: dict[str, Any], *, track: str, aujourdhui: date | None = None
+) -> bool:
+    """L'entreprise est-elle joignable CE MOIS-CI ?
+
+    🔴 LA RÈGLE, ET ELLE VIENT DE LOIN. Spec du 2026-08-27 §3, décision William
+    du 2026-08-29 : « La fenêtre d'un métier s'ouvre 3 mois avant le début de sa
+    saison et se ferme 2 mois après », et — mot pour mot — « une entreprise
+    mono-métier hors saison **n'est pas contactée** : elle attend son ouverture,
+    et sera contactée à la bonne période ».
+
+    La règle était implémentée dans `lib/metiers.fenetre_mois` depuis AC1b, mais
+    elle ne servait qu'à choisir DE QUEL MÉTIER le courriel parle. Le morceau
+    qui décide À QUI on écrit avait été différé en AC1c, avec l'avertissement
+    écrit dans le plan AC1b : « rien n'empêche mécaniquement d'écrire à un
+    tondeur en octobre ». Il est posé ici le 2026-09-02, sans attendre le reste
+    d'AC1c (la vue, les colonnes dérivées, les index) : c'est le seul morceau
+    dont le premier envoi a besoin.
+
+    Mesuré le 2026-09-02, jour où il est posé, sur les 403 fiches d'alors :
+    **154 joignables en
+    septembre**, contre 363 sans le filtre. Les 209 écartés sont surtout des
+    paysagistes dont la saison s'est terminée cet été et dont la prochaine
+    fenêtre ouvre le 15 janvier.
+
+    🔴 DÉFAUT INVERSÉ, VOLONTAIRE : une entreprise dont AUCUN métier n'est
+    reconnu reste joignable toute l'année. La spec le dit explicitement (les
+    « 2 manquantes » de sa §3). Se taire faute de savoir reviendrait à ne
+    jamais écrire à une entreprise que la table de métiers ne sait pas classer,
+    et le silence serait invisible — c'est le garde-fou nº2, on inclut dans le
+    doute.
+
+    ⚠️ Ne s'applique QU'À la piste `agence-ia`. OPT est gelée et ses métiers
+    (dentiste, physio) n'ont pas de saison ; y appliquer la fenêtre écarterait
+    tout le monde en silence.
+    """
+    if (track or "").strip() != "agence-ia":
+        return True
+
+    services = ((company.get("research_json") or {}).get("services_offered")) or []
+    resolus = resoudre_metiers(
+        services, aujourdhui or date.today(), industry=company.get("industry")
+    )
+    if not resolus.metiers:
+        return True  # défaut inversé : on inclut dans le doute
+
+    # 🔴 UN MÉTIER 12 MOIS SUR 12 N'ENCLENCHE PAS LA SÉQUENCE — règle William du
+    # 2026-09-02, et c'est la MÊME que celle du choix de la scène.
+    #
+    # Sa formulation : « si les entreprises ont un métier secondaire qui est
+    # 12 mois sur 12, il ne peut pas enclencher la séquence de contact. Il peut
+    # seulement être référencé plus loin dans le courriel. »
+    #
+    # Ce que ça corrigeait, mesuré le 2026-09-02 : 43 leads passaient le
+    # filtre sur `pavage`
+    # ou `excavation` alors que leur vraie saison — paysagement, lavage de
+    # vitres — était fermée jusqu'en janvier. Le courriel leur disait « la
+    # saison approche » quatre mois trop tôt. Vérifié : ce sont 28 paysagistes
+    # et 12 laveurs de vitres, donc la cible exacte, pas du bruit à écarter.
+    #
+    # ⚠️ Ces métiers ne sont PAS retirés de la fiche : ils restent dans
+    # `resolus.metiers` et se font nommer au 2ᵉ temps du courriel (« tu fais
+    # aussi du pavage »). Ils ne peuvent simplement pas OUVRIR.
+    #
+    # 🔴 Une entreprise dont TOUS les métiers sont sans saison est ÉCARTÉE, et
+    # elle ne sera JAMAIS contactée tant que sa fiche ne dit pas mieux.
+    #
+    # ⚠️ Un repli sur `industry` existe (`metiers.metier_depuis_industry`) et
+    # la rendrait joignable en lui rendant son métier depuis son mot-clé de
+    # sourcing. Il est DÉBRANCHÉ, décision William du 2026-09-02 : si la seule
+    # chose qu'on reconnaît d'un paysagiste est « pavage », la donnée est
+    # mauvaise, et on ne devine pas. La correction est en amont, dans WF-3.
+    #
+    # ⚠️ Ce commentaire affirmait l'inverse jusqu'au conseil du 2026-09-02 — il
+    # disait que le repli s'appliquait. Une session future l'aurait lu devant
+    # une fiche écartée, aurait conclu à un bogue, et aurait « réparé » en
+    # rebranchant le repli, c'est-à-dire en annulant la décision.
+    return any(m in SAISONS for m in resolus.fenetre_ouverte)
+
+
 async def list_contacts_to_personalize(
     limit: int = 20,
     *,
@@ -640,22 +780,79 @@ async def list_contacts_to_personalize(
        status sauf 'failed' — voir le commentaire sur la requête messages).
     4) On garde les top-N contacts par company selon priorité.
     """
-    contacts = await db.select(
-        "contacts",
-        params={
-            "select": (
-                "id,first_name,last_name,email,email_verified,title,company_id,"
-                "status,email_verification_source,raw_payload,track,"
-                "owner_confidence,potential_owner"
-            ),
-            "email": "not.is.null",
-            "status": "in.(new,ready)",
-            "track": f"eq.{track}",  # filtre track au niveau DB (sinon les contacts d'un
-            # track minoritaire sont noyés par l'over-fetch oldest-first)
-            "order": "created_at.asc",
-            "limit": str(limit * 5),  # over-fetch, on dédup ensuite par company
-        },
-    )
+    # 🔴 LA FILE SE LIT PAR PAGES, jusqu'à en avoir assez — plus par une fenêtre
+    # fixe. C'est le correctif de la FAMINE, ouverte depuis mai et refermée le
+    # 2026-09-09.
+    #
+    # L'ancienne version lisait `limit * FACTEUR_SURRECOLTE` contacts, une fois,
+    # et filtrait ensuite. La fenêtre était donc proportionnelle au LOT, alors
+    # que ce qu'il faut franchir est proportionnel à la FILE — le bouchon des
+    # contacts déjà rédigés, qui grossit chaque jour.
+    #
+    # Ce que ça donnait, mesuré le 2026-09-09 avec 58 brouillons déjà écrits :
+    #     91 contacts éligibles, mais le premier en 87ᵉ position
+    #     limit=20 → lit 240 → 45 éligibles dedans → rend 20   ✅
+    #     limit=10 → lit 120 →  2 éligibles dedans → rend  2   ❌
+    #
+    # Diviser le lot par deux divisait la fenêtre par deux, et la famine
+    # revenait — le lot serait tombé à 2 dès le lendemain, puis à 0, en silence.
+    #
+    # Monter le facteur ne ferait que déplacer le seuil : le bouchon grandit
+    # avec chaque envoi. Lire par pages jusqu'à avoir son compte supprime la
+    # question, et ne coûte rien quand la file est courte (une page suffit).
+    #
+    # ⚠️ `MAX_PAGES_SELECTION` borne le coût sur une file énorme. L'atteindre
+    # veut dire « la file est majoritairement bouchée » — c'est exactement ce
+    # que l'alerte de famine doit dire, et elle se déclenche alors d'elle-même
+    # puisque le lot revient court.
+    taille_page = max(limit * FACTEUR_SURRECOLTE, 200)
+    contacts: list[dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
+    for page in range(MAX_PAGES_SELECTION):
+        lot = await db.select(
+            "contacts",
+            params={
+                "select": (
+                    "id,first_name,last_name,email,email_verified,title,company_id,"
+                    "status,email_verification_source,raw_payload,track,"
+                    "owner_confidence,potential_owner"
+                ),
+                "email": "not.is.null",
+                "status": "in.(new,ready)",
+                "track": f"eq.{track}",  # filtre track au niveau DB (sinon les
+                # contacts d'un track minoritaire sont noyés par l'over-fetch)
+                "order": "created_at.asc",
+                "limit": str(taille_page),
+                "offset": str(page * taille_page),
+            },
+        )
+        if not lot:
+            break
+        contacts.extend(lot)
+        out = await _retenir(
+            contacts, limit=limit, max_per_company=max_per_company,
+            track=track, require_research=require_research,
+        )
+        if len(out) >= limit or len(lot) < taille_page:
+            break
+    return out
+
+
+async def _retenir(
+    contacts: list[dict[str, Any]],
+    *,
+    limit: int,
+    max_per_company: int,
+    track: str,
+    require_research: bool,
+) -> list[dict[str, Any]]:
+    """Les contacts d'une page qui méritent un courriel, dans l'ordre de la file.
+
+    Séparée de la lecture pour que celle-ci puisse tourner en boucle. Prend la
+    liste ACCUMULÉE et non la dernière page : les déduplications par entreprise
+    et par courriel doivent voir tout ce qui précède, sinon la page 2 pourrait
+    resservir une entreprise déjà retenue en page 1.
+    """
     if not contacts:
         return []
 
@@ -663,10 +860,16 @@ async def list_contacts_to_personalize(
     companies = await db.select(
         "companies",
         params={
+            # google_rating / google_reviews_count : l'ancre factuelle du bloc 2
+            # (AC1b). Sans elles ici, tout le reste du câblage lit None en
+            # silence et le bloc saute 255 fois sur 255.
+            # google_place_id : la garde « sans site » (une entreprise sans
+            # website n'est démarchée que si sa fiche Google est exploitable).
+            # lead_potential_* : SERVENT UNIQUEMENT à ordonner le lot ; ils sont
+            # retirés avant d'être rendus (voir CHAMPS_INTERNES).
             "select": (
                 "id,name,domain,website,city,icp_segment,industry,research_json,track,"
-                # Servent UNIQUEMENT à ordonner le lot ci-dessous : ces deux
-                # champs sont retirés avant d'être rendus (voir CHAMPS_INTERNES).
+                "google_rating,google_reviews_count,google_place_id,"
                 "lead_potential_score,lead_potential_reason"
             ),
             "id": f"in.({','.join(company_ids)})",
@@ -711,9 +914,13 @@ async def list_contacts_to_personalize(
             continue
         if require_research and not company.get("research_json"):
             continue
+        if not site_ou_fiche_exploitable(company):
+            continue
+        if not fenetre_saisonniere_ouverte(company, track=track):
+            continue
         eligible.setdefault(c["company_id"], []).append(c)
 
-    out: list[dict[str, Any]] = []
+    retenus: list[dict[str, Any]] = []
     # Préserve l'ordre d'arrivée des companies (created_at.asc du premier contact).
     seen_companies: list[str] = []
     for c in contacts:
@@ -744,7 +951,7 @@ async def list_contacts_to_personalize(
             if email_key in seen_emails:
                 continue
             seen_emails.add(email_key)
-            out.append({
+            retenus.append({
                 "contact": c,
                 # Le marqueur de tête de file est INTERNE : écrire « j'ai vu que
                 # tes clients disent que tu ne rappelles pas » citerait un tiers
@@ -756,9 +963,40 @@ async def list_contacts_to_personalize(
                     if k not in CHAMPS_INTERNES
                 },
             })
-            if len(out) >= limit:
-                return out
-    return out
+            if len(retenus) >= limit:
+                return retenus
+    return retenus
+
+
+# Seuil de la garde « sans site ». C'est UN BOUTON, pas une vérité : la spec le
+# dit explicitement. En dessous, il n'y a ni matière pour écrire sur eux ni
+# matière pour bâtir un site.
+MIN_AVIS_SANS_SITE = 3
+
+
+def site_ou_fiche_exploitable(company: dict[str, Any]) -> bool:
+    """Une entreprise sans site est-elle démarchable ?
+
+    Les entreprises sans `website` (97 au 2026-08-30) reçoivent la variante
+    « je pourrais te
+    créer un site ». Encore faut-il qu'on ait de quoi écrire : la garde exige
+    une fiche Google exploitable (`google_place_id` renseigné et au moins
+    quelques avis).
+
+    🔴 Sans cette garde, l'implicite produit le mensonge par défaut : les deux
+    gabarits et le repli disent tous « ton site », et le lead sans site ni fiche
+    recevrait un courriel qui parle d'un site inexistant à une entreprise dont
+    on ne sait rien.
+
+    ⚠️ Le motif du saut n'apparaît PAS encore dans `v_pourquoi_pas_de_courriel`
+    — la vue appartient à AC1c, différé. Le lead est donc écarté silencieusement
+    pour l'instant, ce qui est assumé et inscrit au plan.
+    """
+    if (company.get("website") or "").strip():
+        return True
+    if not (company.get("google_place_id") or "").strip():
+        return False
+    return (company.get("google_reviews_count") or 0) >= MIN_AVIS_SANS_SITE
 
 
 class MessageDraftIn(BaseModel):
@@ -773,6 +1011,13 @@ class MessageDraftIn(BaseModel):
     compliance_check_passed: bool | None = None
     compliance_notes: str | None = None
     demo_url: str | None = None
+    # Le bras du test A/B REELLEMENT ecrit (migration 0047). Jamais 'AB' : la
+    # contrainte de la colonne l'interdit, parce que le stocker mettrait la
+    # meme valeur sur 100 % des lignes et il n'y aurait aucun test.
+    template_choice: str | None = None
+    # Les corps des relances, {"relance_1": "...", "relance_2": "..."}
+    # (migration 0046). NULL sur la piste OPT, qui n'a pas de relances.
+    followups: dict[str, Any] | None = None
 
 
 async def insert_message_draft(payload: MessageDraftIn) -> dict[str, Any]:
@@ -809,7 +1054,8 @@ async def list_companies_to_research(
     # Deux portes vers le backlog : jamais researchée, OU researchée sans contact
     # il y a plus de 90 jours (un site peut publier une adresse entre-temps).
     # 90 jours : repasser tout le parc à chaque cron coûterait cher pour peu de
-    # rendement, ne jamais repasser figerait 145 entreprises pour toujours.
+    # rendement, ne jamais repasser figerait 145 entreprises pour toujours
+    # (mesuré le 2026-08-17).
     #
     # ⚠️ `research_json is null` vit DANS la porte 'sourced', jamais en filtre de
     # premier niveau : toute company 'researched_no_contact' a par construction un
@@ -830,7 +1076,8 @@ async def list_companies_to_research(
         # (P4.10 / migration 0028, `last_send_attempt_at.asc.nullsfirst`), et pour la
         # même raison : en `created_at.asc` pur, les 145 'researched_no_contact' —
         # créées AVANT la plupart des 'sourced' — front-runneraient à chaque passe
-        # 225 entreprises jamais recherchées. Une file qui sert les échecs connus
+        # 225 entreprises jamais recherchées au 2026-08-17. Une file qui sert les
+        # échecs connus
         # avant les pistes neuves priorise le mauvais travail. `last_enriched_at`
         # joue ici le rôle de `last_send_attempt_at` : NULL = jamais recherchée.
         "order": "last_enriched_at.asc.nullsfirst,created_at.asc",
@@ -977,7 +1224,8 @@ async def update_company_research(
     `status` passe à 'enriched' s'il y a au moins un contact, sinon à
     'researched_no_contact' (0001_initial_schema.sql définit 'enriched' = « contacts
     trouvés » ; le poser inconditionnellement faisait annoncer des contacts inexistants
-    à 145 entreprises). `last_enriched_at` est horodaté dans les deux cas : il porte la
+    à 145 entreprises au 2026-08-17). `last_enriched_at` est horodaté dans les deux
+    cas : il porte la
     ré-éligibilité à 90 jours de `list_companies_to_research`.
 
     Le filtre `status not.in.(disqualified,suppressed)` protège les boîtes terminales :

@@ -26,11 +26,24 @@ from src.tools import send
 
 # ---------------- 1. _daily_cap ----------------
 
-def test_daily_cap_defaults_to_10_when_env_absent(
+def test_daily_cap_defaults_to_20_when_env_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """🔧 Passé de 10 à 20 le 2026-09-07 — décision William : « on corrige le
+    débit […] 20 envois par jour ».
+
+    Ce que ça corrigeait : WF-4 rédigeait 20/jour 7j/7 pendant que WF-6 en
+    envoyait 10, du lundi au vendredi. Sur la file de 325 contacts, le dernier
+    brouillon écrit attendait 29 jours avant de partir — avec une phrase de
+    saison datée du jour de sa rédaction. À 20, l'attente maximale tombe à
+    ~6 jours.
+
+    ⚠️ Le nom du test porte le chiffre, donc il devra être renommé au prochain
+    changement. C'est voulu : un test nommé `defaults_to_10` qui vérifie 20
+    ment à sa première ligne.
+    """
     monkeypatch.delenv("INSTANTLY_DAILY_CAP", raising=False)
-    assert send._daily_cap() == 10
+    assert send._daily_cap() == 20
 
 
 def test_daily_cap_reads_env_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -42,7 +55,7 @@ def test_daily_cap_falls_back_to_default_on_malformed_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("INSTANTLY_DAILY_CAP", "not-a-number")
-    assert send._daily_cap() == 10
+    assert send._daily_cap() == send.DAILY_CAP_DEFAULT == 20
 
 
 def test_daily_cap_floors_negative_to_zero(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,7 +66,24 @@ def test_daily_cap_floors_negative_to_zero(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_daily_cap_empty_string_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("INSTANTLY_DAILY_CAP", "")
-    assert send._daily_cap() == 10
+    assert send._daily_cap() == send.DAILY_CAP_DEFAULT == 20
+
+
+def test_le_plafond_gouverne_la_limite_du_workflow() -> None:
+    """🔴 LE PIÈGE DU DÉBIT, énoncé plutôt que découvert en production.
+
+    `run_wf6` calcule `effective_limit = min(payload.limit, cap - déjà_poussés)`.
+    Un WF-6 qui demande 20 sous un plafond de 10 en envoie 10 — sans erreur,
+    sans alerte, sans trace. Monter la limite du workflow SEULE n'aurait rien
+    changé, et le manque à envoyer aurait été invisible.
+
+    Ce test ne teste pas un comportement neuf : il inscrit le fait, pour que
+    la prochaine session qui touche au débit sache qu'il y a deux nombres.
+    """
+    assert send.DAILY_CAP_DEFAULT == 20, (
+        "le plafond du code doit suivre la limite demandée par WF-6, sinon "
+        "l'envoi est silencieusement rabattu"
+    )
 
 
 # ---------------- 2. _today_start_utc_iso ----------------

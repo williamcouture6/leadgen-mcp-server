@@ -11,13 +11,23 @@ from __future__ import annotations
 
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from . import supabase_client as sb
+from .lib.avis import bloc_avis_autorise
+from .lib.gabarits import (
+    GABARITS,
+    bras_demandes,
+    bras_du_lot,
+    est_un_gabarit,
+    tete_fixe_servable,
+)
+from .lib.metiers import resoudre_metiers
+from .lib.relances import CLES_RELANCES
 from .tools import booking as booking_tools
 from .tools import compliance as compliance_tools
 from .tools import db as db_tools
@@ -55,6 +65,7 @@ def _require_auth(authorization: str | None = Header(default=None)) -> None:
 
 app = FastAPI(title="leadgen-mcp HTTP API", version="0.1.0")
 
+import asyncio
 import logging
 
 _startup_log = logging.getLogger("leadgen.startup")
@@ -412,7 +423,8 @@ _VERDICT_ORPHELIN = "orphelin"
 
 
 def _ligne_resume_conformite(
-    *, refuses: int, a_relire: int, non_juges: int, orphelins: int = 0
+    *, refuses: int, a_relire: int, non_juges: int, orphelins: int = 0,
+    partis_avec_remarque: int = 0,
 ) -> str:
     """La ligne « conformité » du résumé quotidien, ou la chaîne vide.
 
@@ -436,13 +448,25 @@ def _ligne_resume_conformite(
     jamais : un orphelin sort du lot dès la première passe, donc `/wf5/run` ne
     le criera qu'une fois. Cette ligne-ci est ce qui reste après.
     """
-    if refuses + non_juges + orphelins == 0:
+    if refuses + non_juges + orphelins + partis_avec_remarque == 0:
         return ""
+
+    # Le cas « rien de refusé, mais des remarques » a sa propre phrase : dire
+    # « 0 drafts refusés » pour introduire une remarque serait du bruit qui
+    # ressemble à une alarme.
+    if refuses + non_juges + orphelins == 0:
+        return (
+            f"📝 *Conformité* — {partis_avec_remarque} courriel(s) parti(s) avec "
+            f"une remarque de forme (lire `compliance_notes`)"
+        )
+
     ligne = f"🚫 *Conformité* — {refuses} drafts refusés (dont {a_relire} à relire)"
     if non_juges:
         ligne += f" · ⚠️ {non_juges} jamais inspecté"
     if orphelins:
         ligne += f" · 🧩 {orphelins} sans contact rattaché"
+    if partis_avec_remarque:
+        ligne += f" · 📝 {partis_avec_remarque} parti(s) avec une remarque"
     return ligne
 
 
@@ -883,6 +907,27 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
             "messages",
             params={**vivants, "compliance_verdict": f"eq.{_VERDICT_ORPHELIN}"},
         )
+        # 🔴 Les courriels PARTIS avec une remarque de forme.
+        #
+        # Depuis la décision du 2026-08-31, une faute de forme (registre mêlé,
+        # cinq « pis », mot de vendeur, mise en scène de la recherche) ne tue
+        # plus le brouillon : elle s'écrit dans les notes et le courriel part.
+        #
+        # C'est cette ligne-ci qui empêche la décision de devenir « on a
+        # supprimé les checks ». Sans elle, la remarque existerait dans une
+        # colonne que personne ne lit — donc n'existerait pas.
+        #
+        # ⚠️ On filtre sur `approved` exprès : un brouillon refusé POUR AUTRE
+        # CHOSE peut aussi porter une remarque, mais il n'est jamais parti.
+        # Le compter ici ferait croire à un courriel envoyé qui ne l'est pas.
+        partis_avec_remarque = await sb.count(
+            "messages",
+            params={
+                **vivants,
+                "compliance_verdict": "eq.approved",
+                "compliance_notes": "ilike.*remarque [*",
+            },
+        )
         lecture_conformite_ok = True
     except Exception as e:  # noqa: BLE001
         # Fail-soft, JAMAIS silencieux — même règle que le carnet des leads
@@ -891,12 +936,13 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         # est très exactement le mode d'échec que cette ligne existe pour
         # éteindre.
         print(f"[summary] lecture des verdicts de conformité échouée: {e!r}")
-        refuses = a_relire = non_juges = orphelins = 0
+        refuses = a_relire = non_juges = orphelins = partis_avec_remarque = 0
         lecture_conformite_ok = False
 
     totals["conformite"] = {
         "refuses": refuses, "a_relire": a_relire,
         "non_juges": non_juges, "orphelins": orphelins,
+        "partis_avec_remarque": partis_avec_remarque,
         "lu": lecture_conformite_ok,
     }
     if not lecture_conformite_ok:
@@ -908,7 +954,7 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     else:
         ligne_conformite = _ligne_resume_conformite(
             refuses=refuses, a_relire=a_relire, non_juges=non_juges,
-            orphelins=orphelins,
+            orphelins=orphelins, partis_avec_remarque=partis_avec_remarque,
         )
         if ligne_conformite:
             text += "\n" + ligne_conformite
@@ -1095,6 +1141,19 @@ class RunWf1Out(BaseModel):
 
 @app.post("/wf1/run", dependencies=[Depends(_require_auth)], response_model=RunWf1Out)
 async def run_wf1(payload: RunWf1In) -> RunWf1Out:
+    # Un lot a la fois — voir `_VERROUS_DE_LOT`. Un n8n qui relance sa
+    # requete ne doit pas demarrer un lot NEUF par-dessus celui qui court.
+    _cle = f"wf1:{payload.track}"
+    if _lot_deja_en_cours(_cle):
+        logging.getLogger("run_wf1").warning(
+            "lot refuse : un lot tourne deja (%s)", _cle
+        )
+        return RunWf1Out(target={}, run_id="", total_results=0, new_companies_count=0, duplicates_count=0)
+    async with _verrou_de_lot(_cle):
+        return await _run_wf1(payload)
+
+
+async def _run_wf1(payload: RunWf1In) -> RunWf1Out:
     import asyncio
 
     # 1) Pick target
@@ -1488,6 +1547,19 @@ class RunWf3Out(BaseModel):
 
 @app.post("/wf3/run", dependencies=[Depends(_require_auth)], response_model=RunWf3Out)
 async def run_wf3(payload: RunWf3In) -> RunWf3Out:
+    # Un lot a la fois — voir `_VERROUS_DE_LOT`. Un n8n qui relance sa
+    # requete ne doit pas demarrer un lot NEUF par-dessus celui qui court.
+    _cle = f"wf3:{payload.track}"
+    if _lot_deja_en_cours(_cle):
+        logging.getLogger("run_wf3").warning(
+            "lot refuse : un lot tourne deja (%s)", _cle
+        )
+        return RunWf3Out(processed=0, succeeded=0, failed=0, skipped=0, items=[])
+    async with _verrou_de_lot(_cle):
+        return await _run_wf3(payload)
+
+
+async def _run_wf3(payload: RunWf3In) -> RunWf3Out:
     import asyncio
 
     backlog = await db_tools.list_companies_to_research(
@@ -1891,6 +1963,99 @@ class PersonalizeContactOut(BaseModel):
     error_text: str | None = None
 
 
+def _tombe_sur_le_repli_du_lexique(company_row: dict[str, Any]) -> bool:
+    """Cette entreprise recevra-t-elle le lexique GENERIQUE ?
+
+    Vrai quand aucun metier n'est reconnu dans `services_offered`. Le lead part
+    quand meme -- c'est le defaut inverse, on n'ecarte jamais sur l'optimisation
+    -- mais avec un ouvreur sans metier nomme, donc beaucoup moins ancre.
+
+    ⚠️ Si ce compteur monte, ce n'est pas la copie qui est en cause : c'est WF-3
+    qui n'a pas assez creuse. La spec le dit depuis le debut ; il manquait juste
+    quelqu'un pour compter.
+    """
+
+    research = company_row.get("research_json") or {}
+    return resoudre_metiers(research.get("services_offered"), date.today()).dominant is None
+
+
+# 🔧 `_bras_ab` a déménagé dans `lib/gabarits.bras_du_lot` le 2026-09-01, avec
+# l'arrivée de C et D. Le nom est conservé ici comme alias : il est cité dans
+# des tests et des docstrings, et le renommer n'apprendrait rien à personne.
+# ⚠️ Le paramètre LISTE désormais les bras : « AB » garde son sens exact,
+# « ABCD » ouvre aux quatre. Voir l'en-tête de `lib/gabarits.py`.
+# ----------------------------------------------------------------------
+# UN LOT A LA FOIS
+# ----------------------------------------------------------------------
+# 🔴 POURQUOI CE VERROU EXISTE — incident du 2026-09-08, observe en direct.
+#
+# William lance `[REACTI] WF-4` UNE fois depuis l'editeur n8n. Resultat :
+# **57 brouillons au lieu de 20**, ecrits par trois lots concurrents.
+#
+# Trois faits se combinent, et chacun est normal pris seul :
+#
+#   1. Le noeud HTTP de n8n porte `retryOnFail: true, maxTries: 3`. Quand la
+#      requete parait echouer — trop longue, connexion coupee, execution
+#      annulee — n8n la RELANCE.
+#   2. Une relance n'est pas un rejeu : elle demarre un lot NEUF cote serveur,
+#      qui lit les 20 contacts suivants (les 20 premiers ont deja un draft).
+#   3. **Annuler dans n8n n'arrete rien.** n8n ferme sa connexion ; la coroutine
+#      FastAPI continue jusqu'au bout, sur Railway, en brulant des jetons
+#      Anthropic. William l'a vu : le compteur montait encore apres l'annulation.
+#
+# Cote WF-6 le plafond quotidien couvre deja le cas — une deuxieme passe voit
+# `deja_pousses = 20` et n'envoie rien. WF-4 n'avait aucune borne equivalente.
+#
+# ⚠️ UN VERROU EN MEMOIRE SUFFIT ICI, et seulement parce que le service tourne
+# en UN SEUL processus : `uvicorn src.http_api:app` sans `--workers`
+# (Procfile + railway.json). Le jour ou quelqu'un ajoute des workers, ce verrou
+# devient decoratif — il faudra un verrou consultatif Postgres. C'est ecrit ici
+# pour que ce jour-la, on le sache.
+_VERROUS_DE_LOT: dict[str, asyncio.Lock] = {}
+
+
+def _verrou_de_lot(cle: str) -> asyncio.Lock:
+    """Le verrou de cette (route, piste). Cree a la demande, jamais libere."""
+    verrou = _VERROUS_DE_LOT.get(cle)
+    if verrou is None:
+        verrou = asyncio.Lock()
+        _VERROUS_DE_LOT[cle] = verrou
+    return verrou
+
+
+def _lot_deja_en_cours(cle: str) -> bool:
+    """Un lot tourne-t-il deja pour cette (route, piste) ?
+
+    On REFUSE plutot que d'attendre : attendre ferait exactement ce qu'on veut
+    empecher — la relance de n8n s'executerait apres la premiere, et le double
+    lot arriverait quand meme, juste plus tard. Refuser rend la main tout de
+    suite avec un compte a zero, ce que le noeud IF de n8n lit comme un lot
+    vide, pas comme une erreur.
+    """
+    return _verrou_de_lot(cle).locked()
+
+
+def _tete_fixe_servable(company: dict[str, Any]) -> bool:
+    """C et D peuvent-ils être servis à cette entreprise ?
+
+    Un seul endroit décide, pour le LOT comme pour le REJEU manuel : les deux
+    passaient auparavant par deux expressions recopiées, et la route de rejeu
+    n'en avait aucune. Voir `lib/gabarits.tete_fixe_servable` pour le pourquoi.
+    """
+    research = company.get("research_json") or {}
+    services = research.get("services_offered") or []
+    return tete_fixe_servable(
+        metiers_reconnus=bool(resoudre_metiers(services, date.today()).metiers),
+        citation_autorisee=bloc_avis_autorise(
+            company.get("google_rating"), company.get("google_reviews_count")
+        ),
+        nb_services=len(services),
+    )
+
+
+_bras_ab = bras_du_lot
+
+
 async def _personalize_one(
     contact_row: dict[str, Any],
     company_row: dict[str, Any],
@@ -1926,6 +2091,12 @@ async def _personalize_one(
                     "city": company_row.get("city"),
                     "icp_segment": company_row.get("icp_segment"),
                     "industry": company_row.get("industry"),
+                    # L'ancre factuelle du bloc 2 (AC1b). Absentes ici, le
+                    # redacteur n'a aucun chiffre a citer et le bloc saute
+                    # 255 fois sur 255 -- ou pire, il en invente un.
+                    "google_rating": company_row.get("google_rating"),
+                    "google_reviews_count": company_row.get("google_reviews_count"),
+                    "google_place_id": company_row.get("google_place_id"),
                 },
                 contact=_contact_for_prompt(contact_row),
                 social_proof=social_proof,
@@ -1965,7 +2136,22 @@ async def _personalize_one(
                 contact_id=contact_id,
                 company_id=company_row["id"],
                 input_payload={
-                    "template_choice": template_choice,
+                    # 🔴 La variante RÉSOLUE, pas le paramètre demandé.
+                    #
+                    # La route de conformité lit CE champ en premier pour
+                    # choisir les bornes de longueur. Avec « AB » ici,
+                    # `check_length` cherche les bornes de ('agence-ia', 'AB'),
+                    # ne les trouve pas, et refusait un corps de 217 mots.
+                    # Le repli par piste (compliance_checks) est la deuxième
+                    # ceinture ; celle-ci est la première.
+                    "template_choice": (
+                        out.template_used
+                        if est_un_gabarit(out.template_used)
+                        else template_choice
+                    ),
+                    # Le paramètre d'entrée reste tracé, séparément, pour qu'on
+                    # sache si le choix venait de nous ou du rédacteur.
+                    "template_demande": template_choice,
                     "slots_count": sum(len(s.get("times", [])) for s in available_slots),
                     "social_proof_count": len(social_proof),
                 },
@@ -1997,6 +2183,23 @@ async def _personalize_one(
                     generated_by_agent_run=agent_run_id,
                     compliance_check_passed=None,  # WF-5 le valide
                     compliance_notes=notes,
+                    # La variante RÉELLEMENT écrite (migration 0047). Jamais le
+                    # paramètre : avec `template_choice='AB'`, la colonne
+                    # porterait « AB » sur 100 % des lignes et il n'y aurait
+                    # aucun test A/B — juste deux textes et aucune trace de qui
+                    # a reçu quoi. La contrainte de la colonne refuse 'AB'.
+                    template_choice=(
+                        out.template_used
+                        if est_un_gabarit(out.template_used)
+                        else None
+                    ),
+                    # Les relances (migration 0046). Absentes sur OPT.
+                    # La liste fait foi : `lib/relances.RELANCES`.
+                    followups=(
+                        {cle: email.get(cle) or "" for cle in CLES_RELANCES}
+                        if any(email.get(cle) for cle in CLES_RELANCES)
+                        else None
+                    ),
                 )
             )
             message_id = ins.get("message_id")
@@ -2042,7 +2245,19 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
     companies = await db.select(
         "companies",
         params={
-            "select": "id,name,website,city,icp_segment,industry,research_json,track",
+            # ⚠️ Le CINQUIÈME point du câblage des avis, oublié par la tâche 7
+            # qui n'en nommait que quatre. Cette route appelle le MÊME
+            # `_personalize_one` que /wf4/run, et c'est elle que le plan du
+            # pivot tri désigne comme la façon de créer un draft de test au
+            # go-live. Sans ces colonnes, `bloc_faits_verifies` annonce
+            # « aucune note et aucun avis en base » — faux pour 785 des 816
+            # entreprises — le draft sort en repli, et il PASSE la conformité
+            # (aucun chiffre = rien à vérifier). La dégradation est invisible,
+            # et c'est le test de fumée lui-même qui ment.
+            "select": (
+                "id,name,website,city,icp_segment,industry,research_json,track,"
+                "google_rating,google_reviews_count,google_place_id"
+            ),
             "id": f"eq.{contact['company_id']}",
             "limit": "1",
         },
@@ -2069,7 +2284,28 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
 
     return await _personalize_one(
         contact, company,
-        template_choice=payload.template_choice,
+        # Le rejeu manuel passe par la même garde que le lot — avec UNE
+        # DIFFÉRENCE qu'il faut connaître.
+        #
+        # Quand `template_choice` est une CONSIGNE D'ALTERNANCE (« ABCD »), la
+        # garde s'applique : sans métier reconnu, le tirage évite C et D.
+        # Quand c'est UNE SEULE LETTRE (« C »), la lettre GAGNE et le gabarit
+        # part tel quel.
+        #
+        # ⚠️ Le commentaire d'origine affirmait que la garde s'appliquait dans
+        # les deux cas. C'était faux, et un conseil de vérification l'a relevé
+        # le 2026-09-08. Le comportement, lui, est VOULU : demander « C » pour
+        # un lead précis est un geste délibéré de rejeu, et substituer « A » en
+        # silence donnerait un courriel qu'on n'a pas demandé, sans le dire.
+        # C'est le même principe que partout ici — on ne devine pas à la place
+        # de celui qui a écrit la requête.
+        #
+        # `rang=0` : il n'y a qu'un contact, il n'y a rien à alterner.
+        template_choice=bras_du_lot(
+            payload.template_choice,
+            0,
+            metier_connu=_tete_fixe_servable(company),
+        ),
         model=payload.model,
         persist=payload.persist,
         available_slots=slots,
@@ -2117,6 +2353,15 @@ class RunWf4Out(BaseModel):
     # n'y avait rien à annoncer. Lire le retour évite l'alerte qui se croit
     # partie, comme RunWf5Out.alerte_envoyee.
     alerte_famine_envoyee: bool | None = None
+    # Combien de leads du lot sont tombes sur le LEXIQUE DE REPLI, faute de
+    # metier reconnu. Promis par la tache 5 et par la spec, jamais pose jusqu'au
+    # conseil final : sans lui, un lot peut partir massivement en formulations
+    # generiques -- exactement ce que la section 3 existe pour eviter -- et
+    # /wf4/run rend `drafts_created=10` sans un mot.
+    #
+    # ⚠️ Ce n'est PAS un compteur de la copie : s'il monte, c'est WF-3 qui n'a
+    # pas assez creuse les services de l'entreprise.
+    lexique_de_repli: int = 0
     items: list[RunWf4Item]
 
 
@@ -2206,7 +2451,8 @@ async def _alerter_famine_wf4(
             f"contact(s) à approcher (track {track}).",
             "Un lot vide sur une file qui ne l'est PAS est une panne, pas une "
             "fin de liste.",
-            f"Piste connue : la sélection sur-lit les {limite * 5} plus vieux "
+            f"Piste connue : la sélection sur-lit les "
+            f"{limite * db_tools.FACTEUR_SURRECOLTE} plus vieux "
             "contacts, et si tous ont déjà un draft le lot revient vide alors "
             "que la file est pleine (famine WF-4, correctif à part).",
         ]
@@ -2234,34 +2480,71 @@ async def _alerter_famine_wf4(
 
 @app.post("/wf4/run", dependencies=[Depends(_require_auth)], response_model=RunWf4Out)
 async def run_wf4(payload: RunWf4In) -> RunWf4Out:
+    # Un lot a la fois par piste — voir `_VERROUS_DE_LOT`.
+    cle = f"wf4:{payload.track}"
+    if _lot_deja_en_cours(cle):
+        logging.getLogger("wf4").warning(
+            "lot refuse : un /wf4/run tourne deja pour track=%s", payload.track
+        )
+        return RunWf4Out(
+            processed=0, drafts_created=0, skipped=0, failed=0, slots_available=0,
+            repli_lexique=0, items=[],
+        )
+    async with _verrou_de_lot(cle):
+        return await _run_wf4(payload)
+
+
+async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
     backlog = await db_tools.list_contacts_to_personalize(
         limit=payload.limit, max_per_company=payload.max_per_company, track=payload.track,
     )
 
-    # Fetch Cal.com une seule fois pour tout le batch — évite N appels API et
-    # garantit que tous les emails du batch piochent dans la même liste de créneaux.
-    import asyncio
-    from .lib.calcom import CalcomError, get_available_slots
-    try:
-        # Wrap sync httpx.get dans to_thread pour ne pas bloquer l'event loop
-        # pendant l'appel Cal.com (jusqu'à 10s timeout).
-        slots = await asyncio.to_thread(get_available_slots, days_ahead=7)
-    except CalcomError:
-        slots = []
+    # 🔴 Cal.com ne sert PLUS la piste `agence-ia`, et le retirer du prompt ne
+    # suffisait pas : c'est l'APPEL qu'il faut couper.
+    #
+    # Le courriel de tri ne propose aucun rendez-vous (règle nº11 : le RDV se
+    # propose dans la réponse au oui, jamais dans le froid). Tant que la liste
+    # arrivait quand même, `check_cta_slots_real` restait armé en `block` sur
+    # une piste où aucun créneau ne doit exister : un ouvreur qui nommerait un
+    # jour, une date et une heure serait soit refusé irréversiblement, soit
+    # VALIDÉ comme un créneau légitime si l'heure coïncidait.
+    # Bénéfice au passage : un appel réseau et un mode de panne en moins par
+    # lot, sur un service dont on n'a plus besoin ici.
+    slots: list[dict[str, Any]] = []
+    if payload.track != "agence-ia":
+        # Fetch Cal.com une seule fois pour tout le batch — évite N appels API et
+        # garantit que tous les emails du batch piochent dans la même liste.
+        import asyncio
+        from .lib.calcom import CalcomError, get_available_slots
+        try:
+            slots = await asyncio.to_thread(get_available_slots, days_ahead=7)
+        except CalcomError:
+            slots = []
     total_slots = sum(len(s.get("times", [])) for s in slots)
 
     social_proof = _load_client_references()
 
     items: list[RunWf4Item] = []
-    drafts = skipped = failed = 0
+    drafts = skipped = failed = repli_lexique = 0
 
-    for entry in backlog:
+    for rang, entry in enumerate(backlog):
         contact = entry["contact"]
         company = entry["company"]
+        # Compte AVANT la generation : meme si le draft echoue ensuite, le fait
+        # que WF-3 n'ait pas trouve de metier reste vrai et doit se voir.
+        if _tombe_sur_le_repli_du_lexique(company):
+            repli_lexique += 1
         try:
             res = await _personalize_one(
                 contact, company,
-                template_choice=payload.template_choice,
+                # `metier_connu` : sans metier reconnu, C et D sont ecartes —
+                # leur premier paragraphe est fixe et nomme un metier. Voir
+                # `lib/gabarits.GABARITS_A_TETE_FIXE`.
+                template_choice=_bras_ab(
+                    payload.template_choice,
+                    rang,
+                    metier_connu=_tete_fixe_servable(company),
+                ),
                 model=payload.model,
                 persist=payload.persist,
                 available_slots=slots,
@@ -2293,14 +2576,30 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
     # fin de la liste, soit une panne. On ne paie les deux `count()` que dans ce
     # cas précis — un lot qui tourne n'a rien à demander de plus à la base.
     alerte_famine_envoyee: bool | None = None
-    if len(items) == 0:
+    # 🔴 `drafts == 0`, ET SURTOUT PAS `len(items) == 0`. Corrigé le 2026-09-07,
+    # sur constat d'un conseil de relecture.
+    #
+    # Un item en `status='error'` compte comme du travail fait : un lot de 20
+    # contacts dont les 20 ÉCHOUENT rendait `len(items) == 20`, donc pas de
+    # famine, donc silence. L'alerte ne voyait que la file vide, jamais la
+    # panne.
+    #
+    # Ce n'est pas théorique : le même jour, un import manquant faisait échouer
+    # les 20 contacts d'un lot sur un `NameError` avalé par le `try/except`
+    # ci-dessus. Le pipeline aurait écrit zéro brouillon par jour, indéfiniment,
+    # et CETTE alerte — la seule qui existe pour ça — serait restée muette.
+    #
+    # C'est exactement la panne des cinq semaines de Google Places que la
+    # docstring de `_doit_alerter_famine` raconte. Un pipeline fail-soft doit
+    # crier quand il ne PRODUIT plus rien, pas quand il ne LIT plus rien.
+    if drafts == 0:
         restants, compte_lu = await _compter_envoyables_restants(payload.track)
         # `not compte_lu` d'ABORD : si le compte est illisible, on crie quand
         # même. Sans ça, une panne de lecture ferait rendre 0, donc « fin de
         # liste », donc silence — l'alerte se saborderait elle-même exactement
         # au moment où quelque chose ne va pas.
         if not compte_lu or _doit_alerter_famine(
-            processed=len(items), envoyables_restants=restants
+            processed=drafts, envoyables_restants=restants
         ):
             alerte_famine_envoyee = await _alerter_famine_wf4(
                 track=payload.track, restants=restants,
@@ -2312,6 +2611,7 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
         skipped=skipped, failed=failed,
         slots_available=total_slots, items=items,
         alerte_famine_envoyee=alerte_famine_envoyee,
+        lexique_de_repli=repli_lexique,
     )
 
 
@@ -2335,6 +2635,33 @@ def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dic
     `tentatives_avant` tolère `None` : `compliance_tentatives` absent d'un
     SELECT rend None, et `None + 1` ferait avorter toute la passe.
     """
+    # 🔴 `error` ne laisse AUCUNE trace, et c'est le correctif du conseil final.
+    #
+    # Le layer 0 de conformité (config LCAP incomplète) rend `error` PRÉCISÉMENT
+    # pour ne pas marquer le brouillon — la faute est dans l'environnement, pas
+    # dans le texte. Mais la route persistait ce verdict comme les autres, et
+    # cette fonction écrivait `compliance_check_passed = ("error" == "approved")
+    # = False`. **La garde écrite pour empêcher le gel des contacts était
+    # exactement ce qui les gelait.**
+    #
+    # Reproduit par exécution : avec `LCAP_MENTIONS_REDUITES=true` et
+    # `INSTANTLY_CAMPAIGN_FOOTER` vide — l'état exact du go-live — chaque
+    # brouillon du lot recevait `passed=false`, quittait la requête de
+    # `/wf5/run` (qui ne reprend que `is.null`) et gelait son contact à vie.
+    # 20 par jour, 255 en deux semaines, zéro courriel, et 1153 tests verts.
+    #
+    # Sur `main`, aucun `error` ne sortait de l'INTÉRIEUR de `compliance_check`
+    # (les seuls venaient des `except` de la route, qui retournent AVANT la
+    # persistance). AC1b a introduit le premier, et personne n'avait rouvert la
+    # question de la persistance.
+    #
+    # ⚠️ `compliance_tentatives` ne bouge pas non plus : une configuration
+    # absente n'est pas une tentative de jugement. L'incrémenter ferait
+    # atteindre le plafond anti-boucle en trois passes, et un problème de
+    # variable d'environnement deviendrait un refus définitif.
+    if verdict == "error":
+        return {"compliance_verdict": verdict}
+
     patch: dict[str, Any] = {
         "compliance_verdict": verdict,
         "compliance_tentatives": (tentatives_avant or 0) + 1,
@@ -2345,7 +2672,8 @@ def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dic
 
 
 def _doit_alerter_wf5(
-    *, needs_revision: int, blocked: int, non_juge: int, orphelins: int = 0
+    *, needs_revision: int, blocked: int, non_juge: int, orphelins: int = 0,
+    errors: int = 0,
 ) -> bool:
     """`non_juge` est dans la condition, et ce n'est pas un détail.
 
@@ -2357,8 +2685,17 @@ def _doit_alerter_wf5(
     dont le message ne repassera JAMAIS devant la conformité (il en sort avec
     `passed = false`). Hors de cette condition, l'unique occasion de le nommer
     serait manquée et l'anomalie deviendrait invisible.
+
+    🔴 `errors` s'y ajoute le 2026-08-30, sur trouvaille du conseil final, et
+    pour la même raison que les deux précédents : depuis le layer 0 de
+    conformité, une CONFIGURATION LCAP incomplète rend `error` sur TOUT le lot.
+    Hors de cette condition, la seule panne qui arrête l'envoi en entier serait
+    aussi la seule totalement muette — le lot rendrait `processed=20,
+    approved=0` sans un mot sur `#alertes`, et le résumé du soir n'aurait rien
+    à dire non plus. Vérifié : le workflow n8n WF-5 ne porte aucun nœud
+    d'alerte, donc le silence serait total, pas seulement côté serveur.
     """
-    return (needs_revision + blocked + non_juge + orphelins) > 0
+    return (needs_revision + blocked + non_juge + orphelins + errors) > 0
 
 
 def _regle_qui_a_tranche(out: compliance_tools.ComplianceCheckOut) -> str:
@@ -2487,7 +2824,7 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             # n'arrive jamais (voir migration 0045).
             "select": (
                 "id,subject,body_text,contact_id,generated_by_agent_run,"
-                "compliance_check_passed,compliance_tentatives"
+                "compliance_check_passed,compliance_tentatives,followups"
             ),
             "id": f"eq.{payload.message_id}",
             "limit": "1",
@@ -2557,7 +2894,12 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
     company_rows = await db.select(
         "companies",
         params={
-            "select": "research_json,track",
+            # google_rating / google_reviews_count : le juge et
+            # `check_avis_conformes` en ont besoin pour savoir si un chiffre
+            # annonce dans le corps est vrai. Sans elles ici, ils arrivent a
+            # None et TOUT corps portant une note est bloque -- fail-closed,
+            # mais aucun courriel ne part.
+            "select": "research_json,track,google_rating,google_reviews_count",
             "id": f"eq.{company_id}",
             "limit": "1",
         },
@@ -2569,6 +2911,10 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
     # registre que le corps n'a peut-être pas. `None` laisse `check_registre`
     # sur son défaut historique (`vous`), ce qui est fail-closed.
     track = (company_rows[0].get("track") if company_rows else None)
+    google_rating = (company_rows[0].get("google_rating") if company_rows else None)
+    google_reviews_count = (
+        company_rows[0].get("google_reviews_count") if company_rows else None
+    )
 
     # 2) Charger le contexte du draft (template + slots) depuis agent_runs
     template_used: str | None = None
@@ -2587,13 +2933,38 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
         if runs:
             inp = runs[0].get("input_payload") or {}
             outp = runs[0].get("output_payload") or {}
-            template_used = (inp.get("template_choice")
-                             or outp.get("template_used"))
+            # 🔴 La SORTIE d'abord, l'entrée seulement en repli.
+            #
+            # L'ordre inverse était une mine : `input_payload.template_choice`
+            # peut valoir « AB » (le paramètre qui demande au rédacteur de
+            # choisir), et `check_length` retombait alors sur les bornes de la
+            # piste OPT — 60 à 95 mots — pour refuser un corps de 217. Mesuré :
+            #   template=A  → passed=True   217 mots (cible 180-270)
+            #   template=AB → passed=False  217 mots (cible 60-95)
+            # Soit 100 % des brouillons en `needs_revision`, sortis du lot pour
+            # toujours, contacts gelés à vie.
+            template_used = (outp.get("template_used")
+                             or inp.get("template_choice"))
+            if not est_un_gabarit(template_used):
+                # Ceinture de sécurité pour les agent_runs ÉCRITS AVANT le
+                # correctif du 2026-08-30 : ils portent « AB » des deux côtés.
+                # On préfère un gabarit approximatif de la bonne piste à un
+                # refus certain.
+                # 🔧 Le test porte sur « est-ce UN gabarit » et non sur « est-ce
+                # la chaîne AB » : depuis l'arrivée de C et D le paramètre peut
+                # valoir « ABCD » ou « CD », qui auraient traversé l'ancienne
+                # condition et fait retomber `check_length` sur les bornes OPT
+                # — 60 à 95 mots pour un corps de 228, donc 100 % de refus.
+                bras = bras_demandes(template_used) or GABARITS
+                template_used = bras[0]
             # available_slots peut être stocké dans input_payload mais on a juste un count
             # → on re-fetch Cal.com pour avoir la liste actuelle (acceptable car compliance
             # se fait peu après personalize, slots quasi identiques).
 
-    if not available_slots:
+    # Même raison qu'à la génération : sur `agence-ia`, aucun créneau ne doit
+    # exister dans le corps, donc en fournir une liste n'arme qu'un faux
+    # positif possible. `check_cta_slots_real` passe sur liste vide.
+    if not available_slots and track != "agence-ia":
         try:
             import asyncio
             from .lib.calcom import CalcomError, get_available_slots
@@ -2619,6 +2990,11 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             model=payload.model,
             track=track,
             tentatives=msg.get("compliance_tentatives"),
+            google_rating=google_rating,
+            google_reviews_count=google_reviews_count,
+            # Le TRIPLET, pas le seul corps de tri. Sans ca, deux tiers du
+            # contenu partent sans avoir ete inspectes par personne.
+            followups=msg.get("followups") or None,
         )
     except Exception as e:  # noqa: BLE001
         return compliance_tools.ComplianceCheckOut(
@@ -2720,9 +3096,23 @@ async def _alerter_wf5(
     """
     from .lib import slack as slack_lib
 
+    # 🔧 `error` ajouté le 2026-09-01. Il manquait, et c'est le verdict du
+    # LOT ENTIER quand une variable d'environnement exigée est absente : la
+    # garde de couche 0 refuse de juger avant de regarder le moindre corps.
+    #
+    # Sans lui, le pire cas était muet. 20 brouillons en `error`, aucun envoi,
+    # et le ping annonçait « 0 draft(s) non envoyable(s) » — un silence qui se
+    # lit comme un succès. C'est le mode d'échec que ce ping existe pour
+    # empêcher, reproduit sur le seul verdict qui frappe tout le monde en même
+    # temps.
+    #
+    # ⚠️ `error` n'écrit RIEN en base : `compliance_check_passed` reste NULL et
+    # le lot revient intact le lendemain. Aucun contact n'est gelé — d'où
+    # l'importance d'alerter, parce que la situation se répare toute seule dès
+    # la variable posée, mais seulement si quelqu'un l'apprend.
     fautifs = [
         i for i in items
-        if i.verdict in ("needs_revision", "blocked", "non_juge", _VERDICT_ORPHELIN)
+        if i.verdict in ("needs_revision", "blocked", "non_juge", "error", _VERDICT_ORPHELIN)
     ]
     lignes = [
         f"• `{i.message_id}` — {i.verdict} [{i.regle or '?'}]"
@@ -2771,6 +3161,19 @@ async def _alerter_wf5(
 
 @app.post("/wf5/run", dependencies=[Depends(_require_auth)], response_model=RunWf5Out)
 async def run_wf5(payload: RunWf5In) -> RunWf5Out:
+    # Un lot a la fois — voir `_VERROUS_DE_LOT`. Un n8n qui relance sa
+    # requete ne doit pas demarrer un lot NEUF par-dessus celui qui court.
+    _cle = "wf5"
+    if _lot_deja_en_cours(_cle):
+        logging.getLogger("run_wf5").warning(
+            "lot refuse : un lot tourne deja (%s)", _cle
+        )
+        return RunWf5Out(processed=0, approved=0, needs_revision=0, blocked=0, errors=0, items=[])
+    async with _verrou_de_lot(_cle):
+        return await _run_wf5(payload)
+
+
+async def _run_wf5(payload: RunWf5In) -> RunWf5Out:
     """Batch compliance sur tous les drafts non encore checked."""
     import asyncio
     from . import supabase_client as db
@@ -2852,7 +3255,7 @@ async def run_wf5(payload: RunWf5In) -> RunWf5Out:
     alerte_envoyee: bool | None = None
     if _doit_alerter_wf5(
         needs_revision=needs_revision, blocked=blocked, non_juge=non_juge,
-        orphelins=orphelins,
+        orphelins=orphelins, errors=errors,
     ):
         alerte_envoyee = await _alerter_wf5(
             processed=len(items), needs_revision=needs_revision,
@@ -2893,24 +3296,98 @@ async def run_wf6(payload: send_tools.RunWf6In) -> send_tools.RunWf6Out:
 
     `dry_run=true` : simule le push sans appel Instantly (pour tester la
     sélection des drafts pendant le warmup).
+
+    🔴 UN LOT A LA FOIS — voir `_VERROUS_DE_LOT`. C'est ICI que le verrou compte
+    le plus : un n8n qui relance sa requête d'envoi ne doit pas pousser un lot
+    NEUF par-dessus celui qui court.
+
+    ⚠️ Le plafond quotidien couvrait déjà l'essentiel — une deuxième passe voit
+    `deja_pousses = 20` et n'envoie rien — mais il ne protège que le TOTAL du
+    jour. Deux lots lancés à la même seconde lisent tous les deux
+    `deja_pousses = 0` et poussent 20 chacun. Le verrou ferme cette fenêtre-là.
     """
-    return await send_tools.run_wf6(payload)
+    cle = f"wf6:{payload.track}"
+    if _lot_deja_en_cours(cle):
+        logging.getLogger("wf6").warning(
+            "lot refuse : un /wf6/run tourne deja pour track=%s", payload.track
+        )
+        return send_tools.RunWf6Out(
+            processed=0, pushed=0, skipped_cap=0, skipped_warmup=0,
+            skipped_suppressed=0, skipped_platform_domain=0, skipped_other=0,
+            errors=0, daily_cap=0, already_pushed_today=0, items=[],
+        )
+    async with _verrou_de_lot(cle):
+        return await send_tools.run_wf6(payload)
 
 
 @app.get("/send/healthcheck", dependencies=[Depends(_require_auth)])
-async def send_healthcheck() -> dict[str, Any]:
-    """Vérifie que l'API Instantly est joignable et que la campagne existe.
+async def send_healthcheck(track: str = "agence-ia") -> dict[str, Any]:
+    """Vérifie que l'API Instantly est joignable et que la campagne du TRACK existe.
     Utilisable comme smoke test avant d'activer le cron WF-6.
+
+    🔴 `track` A ÉTÉ AJOUTÉ LE 2026-09-08, et son absence rendait ce
+    healthcheck trompeur — il vérifiait la MAUVAISE campagne.
+
+    Il appelait `get_campaign()` sans argument, donc `INSTANTLY_CAMPAIGN_ID` :
+    « Cold outreach PME QC OPTI », la campagne de la piste OPT, en pause depuis
+    le pivot. Or `agence-ia` pousse vers `INSTANTLY_CAMPAIGN_ID_REACTI` (nom
+    d'env legacy), une campagne différente. Le test de fumée d'avant-envoi
+    rendait donc un `ok: true` rassurant sur une campagne que personne
+    n'utilisera — et serait resté vert même avec la variable d'agence-ia vide.
+
+    Le défaut est `agence-ia` parce que c'est la seule piste vivante. Passer
+    `?track=OPT` retrouve l'ancien comportement.
 
     Retourne toujours 200 — `ok=false` + `error=<msg>` si problème. Évite
     qu'un 500 cache le vrai diagnostic (env var manquante, réseau, etc.).
     """
+    import os
+
     from .lib import instantly as instantly_lib
+    from .tools.send import DAILY_CAP_DEFAULT, DAILY_CAP_ENV, _daily_cap
+
+    # 🔴 LE PLAFOND EST EXPOSÉ ICI PARCE QU'IL PEUT MENTIR EN SILENCE.
+    #
+    # `run_wf6` envoie `min(limit_du_workflow, plafond - déjà_poussés)`. Un WF-6
+    # qui demande 20 sous un plafond de 10 en envoie 10, sans erreur, sans
+    # alerte, sans trace. Et le plafond vit dans une variable d'environnement
+    # Railway qu'on ne peut pas lire d'ici : la seule façon de le CONNAÎTRE est
+    # de le demander au service qui l'applique.
+    #
+    # `source` distingue les deux cas que le nombre seul confond : « 20 parce
+    # que la variable dit 20 » et « 20 parce qu'elle est absente et que c'est le
+    # défaut ». La deuxième est celle qu'on veut, la variable n'ayant plus de
+    # raison d'exister — mais un 10 venu de l'environnement se lit pareil qu'un
+    # 10 voulu.
+    brut = os.environ.get(DAILY_CAP_ENV, "").strip()
+    cadence = {
+        "daily_cap": _daily_cap(),
+        "daily_cap_source": (
+            f"env {DAILY_CAP_ENV}={brut!r}" if brut else "défaut du code"
+        ),
+        "daily_cap_defaut_du_code": DAILY_CAP_DEFAULT,
+    }
+    from .tools.send import _campaign_for_track
+
+    cid = _campaign_for_track(track)
+    if track.strip().lower() == "agence-ia" and not cid:
+        # ⚠️ Le cas que l'ancien healthcheck ne pouvait PAS voir : la variable
+        # d'agence-ia vide, et un `ok: true` rendu sur la campagne OPT.
+        return {
+            "ok": False,
+            "track": track,
+            "error_type": "CampagneManquante",
+            "error": "INSTANTLY_CAMPAIGN_ID_REACTI est vide : agence-ia n'a pas "
+                     "de campagne. WF-6 refusera d'envoyer.",
+            **cadence,
+        }
     try:
-        camp = await instantly_lib.get_campaign()
-        return {"ok": True, "campaign_id": camp.get("id"), "name": camp.get("name")}
+        camp = await instantly_lib.get_campaign(cid)
+        return {"ok": True, "track": track, "campaign_id": camp.get("id"),
+                "name": camp.get("name"), **cadence}
     except Exception as e:  # noqa: BLE001 — endpoint diag, on veut tout voir
-        return {"ok": False, "error_type": type(e).__name__, "error": str(e)[:500]}
+        return {"ok": False, "track": track, "error_type": type(e).__name__,
+                "error": str(e)[:500], **cadence}
 
 
 @app.post(

@@ -34,7 +34,15 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _monde(monkeypatch: pytest.MonkeyPatch, companies: list[dict]) -> None:
-    """Un contact par company, tous éligibles, dans l'ordre donné."""
+    """Un contact par company, tous éligibles, dans l'ordre donné.
+
+    ⚠️ `website` est obligatoire dans la fixture : `site_ou_fiche_exploitable`
+    (AC1b) écarte une entreprise sans site ET sans fiche Google exploitable.
+    Et `research_json` reste sans `services_offered`, donc aucun métier n'est
+    reconnu — l'entreprise est alors joignable toute l'année et la fenêtre
+    saisonnière ne filtre rien. Ces deux gardes tournent AVANT le tri : ces
+    tests portent sur l'ORDRE, il faut donc que tout le monde les franchisse.
+    """
     contacts = [
         {"id": f"ct-{c['id']}", "company_id": c["id"], "email": f"{c['id']}@ex.ca",
          "status": "new"}
@@ -45,7 +53,11 @@ def _monde(monkeypatch: pytest.MonkeyPatch, companies: list[dict]) -> None:
         if table == "contacts":
             return contacts
         if table == "companies":
-            return [{"research_json": {"x": 1}, "track": "agence-ia", **c} for c in companies]
+            return [
+                {"research_json": {"x": 1}, "track": "agence-ia",
+                 "website": f"https://{c['id']}.ca", **c}
+                for c in companies
+            ]
         if table == "messages":
             return []
         return []
@@ -105,6 +117,39 @@ async def test_a_score_egal_l_ordre_d_arrivee_est_preserve(
     ])
     lot = await dbt.list_contacts_to_personalize(limit=10, track="agence-ia")
     assert [x["company"]["name"] for x in lot] == ["Premiere", "Deuxieme", "Troisieme"]
+
+
+async def test_un_prioritaire_hors_saison_ne_mange_pas_une_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L'exclusion est souveraine ; le tri n'ordonne que les éligibles.
+
+    C'est la couture entre les deux règles, et le seul endroit où elles
+    pouvaient se nuire. Si l'exclusion saisonnière tournait APRÈS le tri et la
+    coupe, un déneigeur prioritaire démarché en juillet occuperait une place du
+    lot avant d'être jeté : le lot rendrait moins de brouillons que demandé et
+    l'alerte de famine crierait sans raison. Ici l'ordre tient — exclure, puis
+    trier, puis couper.
+
+    On force la garde plutôt que de dépendre du mois courant : la logique
+    saisonnière a ses propres tests, celui-ci porte sur l'enchaînement.
+    """
+    _monde(monkeypatch, [
+        {"id": "co-neige", "name": "Deneigeur", "lead_potential_score": 8,
+         "lead_potential_reason": f"{MARQUEUR_TETE_DE_FILE} jamais eu de retour d'appel"},
+        {"id": "co-haute", "name": "Haute", "lead_potential_score": 78},
+        {"id": "co-faible", "name": "Faible", "lead_potential_score": 25},
+    ])
+    monkeypatch.setattr(
+        dbt, "fenetre_saisonniere_ouverte",
+        lambda company, **kw: company["name"] != "Deneigeur",
+    )
+
+    lot = await dbt.list_contacts_to_personalize(limit=2, track="agence-ia")
+
+    noms = [x["company"]["name"] for x in lot]
+    assert "Deneigeur" not in noms, "hors saison : il ne devait pas entrer dans la file"
+    assert noms == ["Haute", "Faible"], "le lot reste plein malgré l'exclusion"
 
 
 async def test_le_marqueur_ne_descend_jamais_vers_la_copie(

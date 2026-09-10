@@ -32,6 +32,7 @@ sur le 1er vrai bounce (cf `classify_lead_outcome` + docs/go-live-checklist.md).
 """
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -42,9 +43,33 @@ from pydantic import BaseModel
 from .. import supabase_client as db
 from ..lib import instantly as instantly_lib
 from ..lib.compliance_checks import check_warmup_window
+from ..lib.relances import CLES_RELANCES
 from ..lib.platform_domains import is_email_on_blocked_domain
 
-DAILY_CAP_DEFAULT = 10
+# 🔴 20, ET C'EST CE NOMBRE QUI GOUVERNE, pas la `limit` du workflow.
+#
+# `run_wf6` calcule `effective_limit = min(payload.limit, daily_cap - deja_pousses)` :
+# un WF-6 qui demande 20 avec un plafond à 10 en envoie 10, SANS ERREUR et sans
+# trace. C'est le piège qu'il faut connaître avant de toucher au débit — monter
+# la limite du workflow seule n'aurait rien changé.
+#
+# Décision William du 2026-09-07 : « on corrige le débit […] 20 envois par
+# jour ». Ce qu'elle corrige, mesuré le même jour sur la file de 325 contacts :
+#
+#     WF-4 rédigeait 20/jour, 7 jours sur 7    → la file se remplit en 17 jours
+#     WF-6 envoyait  10/jour, du lundi au vendredi → il lui fallait 46 jours
+#
+# Le dernier brouillon écrit attendait donc **29 jours** avant de partir, avec
+# une phrase de saison datée du jour de sa rédaction (le moment est calculé au
+# JUGEMENT, pas à l'envoi). À 20/jour l'écoulement tombe à ~23 jours civils et
+# l'attente maximale à **6 jours** — assez court pour qu'une phrase de saison
+# reste vraie, sauf à tomber pile sur une bascule.
+#
+# ⚠️ La variable `INSTANTLY_DAILY_CAP` reste le levier : ce défaut ne fait que
+# déplacer le point de départ, il ne retire aucun contrôle. ⚠️ Et il ne dit rien
+# de la limite propre à la CAMPAGNE Instantly, qui se règle chez eux — la plus
+# basse des deux gagne, en silence.
+DAILY_CAP_DEFAULT = 20
 DAILY_CAP_ENV = "INSTANTLY_DAILY_CAP"
 SEND_TIMEZONE = "America/Toronto"
 # Sur-récolte : un draft sauté (warmup, skip transitoire) reste 'draft' et la
@@ -103,7 +128,7 @@ def _today_start_utc_iso() -> str:
     return start_local.astimezone(timezone.utc).isoformat()
 
 
-async def count_pushed_today() -> int:
+async def count_pushed_today(track: str | None = None) -> int:
     """Combien de drafts on a déjà handé off à Instantly aujourd'hui (Toronto).
 
     On compte les messages outbound dont scheduled_at >= today_start_local.
@@ -112,15 +137,29 @@ async def count_pushed_today() -> int:
     été plus efficace, mais ici N quotidien est petit (~10), SELECT suffit.
     """
     today_start = _today_start_utc_iso()
-    rows = await db.select(
-        "messages",
-        params={
-            "select": "id",
-            "direction": "eq.outbound",
-            "scheduled_at": f"gte.{today_start}",
-            "status": "neq.draft",
-        },
-    )
+    params: dict[str, str] = {
+        "select": "id",
+        "direction": "eq.outbound",
+        "scheduled_at": f"gte.{today_start}",
+        "status": "neq.draft",
+    }
+    # 🔴 `track` AJOUTÉ le 2026-09-08, sur constat d'un conseil de vérification.
+    #
+    # Sans lui, le plafond quotidien était un budget COMMUN aux deux pistes. Tout
+    # le reste de `run_wf6` est scopé — les drafts, la campagne, le refus si la
+    # campagne du track manque — mais ce compteur additionnait les deux. Un lot
+    # OPT aurait mangé le quota d'`agence-ia`, et l'inverse.
+    #
+    # L'effet est nul tant qu'OPT est en pause ; il ne l'aurait plus été le jour
+    # où quelqu'un rallume ce cron, et il aurait été INVISIBLE : l'envoi se
+    # serait simplement arrêté plus tôt, sans erreur ni alerte.
+    #
+    # ⚠️ Le défaut reste `None` = « toutes pistes confondues ». C'est ce que veut
+    # un appelant qui surveille la charge globale de la boîte d'envoi ; ce n'est
+    # PAS ce que veut `run_wf6`, qui gère un budget par piste.
+    if track:
+        params["track"] = f"eq.{track}"
+    rows = await db.select("messages", params=params)
     return len(rows)
 
 
@@ -159,7 +198,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     msgs = await db.select(
         "messages",
         params={
-            "select": "id,subject,body_text,to_email,status,direction,compliance_check_passed,contact_id,track,compliance_notes",
+            "select": "id,subject,body_text,to_email,status,direction,compliance_check_passed,contact_id,track,compliance_notes,followups",
             "id": f"eq.{payload.message_id}",
             "limit": "1",
         },
@@ -275,6 +314,31 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
             skipped_reason=reason,
         )
 
+    # 3bis) Le TRIPLET, ou rien.
+    #
+    # 🔴 Le refus est TOTAL, jamais partiel. Un lead poussé sans ses relances
+    # recevrait un seul courriel et personne ne le saurait : la campagne
+    # tournerait, les compteurs seraient verts, et 68 % des réponses positives
+    # (celles qui arrivent après la 2ᵉ touche) ne viendraient simplement jamais.
+    #
+    # ⚠️ C'est ICI que le refus appartient, et pas dans une contrainte de base :
+    # le message garde sa ligne, son statut reste `draft`, et il repartira dès
+    # que ses relances existeront. Un `check` en base aurait fait échouer
+    # l'insert du courriel entier — la même erreur de couche que le pied de
+    # page vide.
+    followups = msg.get("followups") or None
+    if (msg.get("track") or "") == "agence-ia":
+        manquantes = [
+            cle for cle in CLES_RELANCES
+            if not ((followups or {}).get(cle) or "").strip()
+        ]
+        if manquantes:
+            return SendMessageOut(
+                message_id=payload.message_id,
+                status="skipped_followups_manquants",
+                skipped_reason=f"relances absentes ou vides : {', '.join(manquantes)}",
+            )
+
     # 4) Push à Instantly (ou simule si dry_run)
     provider_message_id: str | None = None
     if payload.dry_run:
@@ -285,6 +349,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
                 email=msg["to_email"],
                 subject=msg["subject"],
                 body_text=msg["body_text"],
+                followups=followups,
                 first_name=contact.get("first_name"),
                 last_name=contact.get("last_name"),
                 company_name=company.get("name"),
@@ -355,7 +420,10 @@ class RunWf6In(BaseModel):
     limit: int = 10
     campaign_id: str | None = None
     dry_run: bool = False
-    # Override le daily cap (défaut: env INSTANTLY_DAILY_CAP ou 10).
+    # Override le daily cap (défaut : env INSTANTLY_DAILY_CAP, sinon
+    # `DAILY_CAP_DEFAULT`). ⚠️ Ne pas recopier le chiffre ici : il a
+    # déjà menti une journée entière en disant « 10 » après le passage
+    # à 20. La constante est la seule source.
     daily_cap: int | None = None
     track: str = "OPT"  # OPT (legacy) | agence-ia — filtre les drafts + choisit la campagne Instantly
 
@@ -405,19 +473,145 @@ async def _horodater_tentative(message_id: str) -> None:
         pass
 
 
+async def _alerter_campagne_absente(track: str) -> bool:
+    """Crie quand WF-6 refuse de pousser faute de campagne configurée.
+
+    Distinct de `_alerter_file_bloquee` À DESSEIN : ici la file peut être
+    pleine de brouillons APPROUVÉS, et chercher des `is.null` rendrait un
+    diagnostic faux. Deux silences différents méritent deux messages
+    différents — une alerte qui se trompe de cause coûte plus qu'une alerte
+    absente, parce qu'on la suit.
+
+    Rend `True` si une alerte est partie. Ne lève jamais.
+    """
+    from ..lib import slack as slack_lib
+
+    corps = "\n".join([
+        f"🚨 WF-6 — refus de pousser : aucune campagne Instantly configurée "
+        f"pour le track {track}.",
+        "Le cron a rendu `processed=0, errors=0` : sans cette alerte, ça se lit "
+        "comme « rien à envoyer ».",
+        f"À vérifier sur Railway : `INSTANTLY_CAMPAIGN_ID_{track.upper().replace('-', '_')}` "
+        "(ou la variable équivalente du track).",
+        "⚠️ Une espace de trop dans la valeur suffit : elle est nettoyée puis "
+        "traitée comme absente.",
+        "Aucun brouillon n'a été touché — tout repart dès la variable posée.",
+    ])
+    try:
+        envoyee = await slack_lib.notify(
+            text=corps, context="wf6_campagne_absente", category="alerts",
+        )
+    except Exception:  # noqa: BLE001 — un filet ne casse pas ce qu'il surveille
+        envoyee = False
+    if not envoyee:
+        logging.getLogger("wf6").error(
+            "alerte campagne absente #alertes NON partie — track=%s", track,
+        )
+    return envoyee
+
+
+async def _alerter_file_bloquee(track: str) -> bool:
+    """Crie sur #alertes quand WF-6 repart les mains vides SANS que la file
+    le soit.
+
+    Rend `True` si une alerte est partie. Ne lève jamais : une alerte est un
+    filet, elle n'a pas le droit de faire tomber l'envoi qu'elle surveille.
+
+    ⚠️ Le silence qu'on répare ici est le pire de tous, parce qu'il ressemble
+    à un succès. `processed=0, errors=0` fait partir le nœud IF de n8n sur
+    « Log OK ». Rien dans les journaux ne distingue « la campagne est finie »
+    de « WF-5 n'a jamais été activé ».
+    """
+    from ..lib import slack as slack_lib
+
+    try:
+        en_attente = await db.select(
+            "messages",
+            params={
+                "select": "id",
+                "direction": "eq.outbound",
+                "status": "eq.draft",
+                "compliance_check_passed": "is.null",
+                "track": f"eq.{track}",
+                "limit": "1000",
+            },
+        )
+    except Exception:  # noqa: BLE001 — un filet ne casse pas ce qu'il surveille
+        return False
+
+    if not en_attente:
+        # File réellement vide : rien à signaler, c'est une fin de liste.
+        return False
+
+    corps = "\n".join([
+        f"🚨 WF-6 — 0 courriel poussé, mais {len(en_attente)} brouillon(s) "
+        f"attendent encore un verdict de conformité (track {track}).",
+        "La file n'est PAS vide : quelque chose en amont ne tourne pas.",
+        "Piste nº1 : **WF-5 conformité n'est pas activé.** WF-4 écrit "
+        "`compliance_check_passed = NULL` et WF-6 n'accepte que `true` — "
+        "sans WF-5 entre les deux, aucun brouillon ne devient envoyable.",
+        "⚠️ Sans cette alerte, ce cas rend `processed=0, errors=0` et se lit "
+        "comme un succès.",
+    ])
+    try:
+        envoyee = await slack_lib.notify(
+            text=corps, context="wf6_file_bloquee", category="alerts",
+        )
+    except Exception:  # noqa: BLE001
+        envoyee = False
+    if not envoyee:
+        # Même réflexe que `_alerter_famine_wf4` : une alerte perdue qui se
+        # croit partie est le pire des deux mondes.
+        logging.getLogger("wf6").error(
+            "alerte file bloquée #alertes NON partie — track=%s en_attente=%s",
+            track, len(en_attente),
+        )
+    return envoyee
+
+
 async def run_wf6(payload: RunWf6In) -> RunWf6Out:
     """Pass complet WF-6 : pousse jusqu'à `limit` drafts approuvés à Instantly,
     en respectant le daily cap (compté sur fenêtre Toronto)."""
     daily_cap = payload.daily_cap if payload.daily_cap is not None else _daily_cap()
-    already = await count_pushed_today()
+    # 🔴 SCOPÉ AU TRACK. Sans ça, le plafond de 20 est un budget COMMUN aux
+    # deux pistes : tout le reste de `run_wf6` filtre par track — les drafts,
+    # la campagne, le refus si la campagne du track manque — mais le compteur
+    # du jour, lui, additionnait les deux. Un lot OPT aurait donc mangé le
+    # quota d'`agence-ia`, et l'inverse.
+    #
+    # OPT est en pause, donc l'effet est nul aujourd'hui ; il ne l'était plus
+    # le jour où quelqu'un rallume le cron OPT, et il aurait été invisible —
+    # l'envoi se serait simplement arrêté plus tôt, sans erreur.
+    track = (payload.track or "OPT").strip() or "OPT"
+    # ⚠️ `track` NORMALISÉ, pas `payload.track` brut. Le compteur était appelé
+    # AVANT la normalisation faite quelques lignes plus bas pour les drafts :
+    # un track avec une espace parasite donnait `eq. agence-ia `, zéro ligne, et
+    # le plafond repartait à neuf à chaque appel pendant que les drafts, eux,
+    # étaient bien lus. Le cron n8n poste une valeur propre, donc l'effet est nul
+    # aujourd'hui — mais la panne aurait été silencieuse.
+    already = await count_pushed_today(track=track)
     remaining = max(0, daily_cap - already)
     effective_limit = min(payload.limit, remaining)
 
-    track = (payload.track or "OPT").strip() or "OPT"
     campaign = payload.campaign_id or _campaign_for_track(track)
     # Garde : un track non-OPT DOIT avoir sa campagne dédiée, sinon on refuse —
     # ne JAMAIS pousser des drafts REACTI vers la campagne OPT par défaut.
     if track.upper() != "OPT" and not campaign:
+        # 🔴 CE REFUS ETAIT MUET, et c'est le même silence que la file bloquée,
+        # atteint par la porte d'à côté. Ajouté le 2026-09-02 (conseil).
+        #
+        # Si `INSTANTLY_CAMPAIGN_ID_REACTI` manque sur Railway — ou porte une
+        # espace de trop, que `_campaign_for_track` transforme en `None` — le
+        # cron quotidien rend `processed=0, pushed=0, errors=0`. Le nœud IF de
+        # n8n part sur « Log OK ». Aucun brouillon n'est touché, donc rien ne
+        # se répare et rien ne se signale : la campagne est simplement à
+        # l'arrêt, tous les jours, en silence.
+        #
+        # ⚠️ On n'appelle SURTOUT PAS `_alerter_file_bloquee` ici : elle
+        # cherche des brouillons `is.null` (jamais jugés) et n'en trouverait
+        # aucun — la file peut être pleine de brouillons APPROUVÉS. Le
+        # diagnostic serait faux et l'alerte muette.
+        await _alerter_campagne_absente(track)
         return RunWf6Out(
             processed=0, pushed=0, skipped_cap=0, skipped_warmup=0,
             skipped_suppressed=0, skipped_other=0, errors=0,
@@ -452,6 +646,26 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         },
     )
 
+    # 🔴 UN LOT VIDE N'EST PAS FORCÉMENT UNE FILE VIDE. Ajouté le 2026-09-01
+    # après l'audit de bout en bout.
+    #
+    # Le scénario, entièrement muet : on active WF-6 sans avoir activé WF-5.
+    # WF-4 écrit des brouillons avec `compliance_check_passed = NULL` ; le
+    # filtre ci-dessus exige `is.true` ; le lot revient vide. `run_wf6` rend
+    # `processed=0, errors=0`, le nœud IF de n8n part sur « Log OK », et la
+    # checklist se coche entièrement pendant que RIEN ne part.
+    #
+    # Le même silence couvre une file pleine de brouillons refusés en
+    # `needs_revision` — cas où il n'y a rien à attendre non plus.
+    #
+    # On distingue donc « plus rien à envoyer » de « quelque chose est cassé
+    # en amont », et on crie dans le second cas. Calqué sur
+    # `_alerter_famine_wf4` : l'alerte NOMME ce qui attend, parce que « 0 push »
+    # ne distingue pas une panne d'une fin de liste, et une alerte qu'on ne
+    # peut pas interpréter finit ignorée.
+    if not drafts:
+        await _alerter_file_bloquee(track)
+
     for d in drafts:
         # La sur-récolte regarde plus loin dans la file ; elle n'envoie pas
         # plus. Le daily cap reste la limite dure.
@@ -485,7 +699,12 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             sk_supp += 1
         elif res.status == "skipped_platform_domain":
             sk_plat += 1
-        elif res.status == "skipped_not_eligible":
+        elif res.status in ("skipped_not_eligible", "skipped_followups_manquants"):
+            # 🔧 `skipped_followups_manquants` est un refus VOLONTAIRE et
+            # fail-closed, pas une panne. Le compter en `errors` le faisait
+            # remonter comme une erreur d'envoi alors que le nœud n8n filtre
+            # sur `status === 'error'` et affichait `Failures: []` : le lot
+            # rapportait des erreurs que personne ne pouvait nommer.
             sk_other += 1
         else:
             errors += 1

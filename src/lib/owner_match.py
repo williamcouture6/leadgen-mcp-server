@@ -36,6 +36,9 @@ def email_matches_name(local: str, nom_complet: str) -> bool:
     Patterns acceptés (accents ignorés, ordre libre) : prénom+nom comme tokens
     séparés (jean.tremblay), collés (jeantremblay / tremblayjean), ou
     initiale+nom (j.tremblay / jtremblay) et prénom+initiale (jeant).
+
+    Le prénom seul ne suffit PAS ici (`jean@` peut être n'importe quel Jean) —
+    voir `_match_prenom_seul`, qui l'accepte dans le seul cas où il est décisif.
     """
     nt = _name_tokens(nom_complet)
     if len(nt) < 2:
@@ -58,6 +61,27 @@ def _match_nominative(local: str, decideurs: list[dict[str, Any]]) -> dict[str, 
         if nom and email_matches_name(local, nom):
             return d
     return None
+
+
+def _match_prenom_seul(local: str, decideurs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Le local est EXACTEMENT le prénom (ou le nom) de l'unique décideur `high`.
+
+    `email_matches_name` refuse le prénom seul, et elle a raison en général :
+    `jean@` peut être n'importe quel Jean. Mais quand la boîte n'a QU'UN décideur
+    identifié avec certitude et que le local est exactement son prénom, sur son
+    propre domaine, c'est lui : `manuel@pelchatgestionparasitaire.ca`,
+    `patrick@signepatrickdufour.com`, `claude@maconneriedepot.com`.
+
+    Ce qui rend la règle sûre est sa contrepartie : `maggie@` ne correspond à
+    aucun des deux tokens de « Claude Hamel », donc elle n'hérite de rien.
+    """
+    high = _single_high_confidence(decideurs)
+    if not high:
+        return None
+    nt = _name_tokens(high.get("nom_complet", ""))
+    if len(nt) < 2:
+        return None
+    return high if "".join(_local_tokens(local)) in (nt[0], nt[-1]) else None
 
 
 def _single_high_confidence(decideurs: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -102,25 +126,47 @@ def classify_scraped_contact(
 
     Ordre des règles (du plus sûr au moins sûr) :
       (a) email nominatif matché à un décideur          -> confirmed (nom attaché)
-      (b) un seul décideur confidence=high              -> confirmed (même email générique)
-      (c) un décideur existe (basse/moyenne confiance)  -> potential (nom dans potential_owner)
-      (d) nominatif non matché, nom dérivable du local  -> potential (nom dérivé)
+      (b) un seul décideur high ET adresse GÉNÉRIQUE    -> confirmed (info@ = le proprio)
+      (c) nominatif non matché, nom dérivable du local  -> potential (nom dérivé)
+      (d) un décideur existe                            -> potential (nom dans potential_owner)
       (e) sinon                                          -> unknown
+
+    🔴 **La règle (b) ne vaut QUE pour une adresse générique.** Elle repose sur
+    « chez une petite PME, le proprio lit lui-même le info@ ». Appliquée à une
+    adresse nominative, elle devient fausse dès que le site publie un
+    trombinoscope : le 2026-09-02, Maçonnerie Dépôt a fait entrer 13 adresses
+    (maggie@, luc@, sebastien@…) toutes marquées `confirmed` au nom de Claude
+    Hamel, le seul décideur identifié. Comme `personalize.md` écrit
+    « Bonjour {first_name}, » dès que c'est `confirmed`, Maggie aurait reçu
+    « Bonjour Claude ». 67 contacts en base étaient dans cet état.
+
+    Une adresse nominative qui ne corrobore pas le décideur connu appartient à
+    quelqu'un d'autre : son propre local en dit plus que le nom du proprio, d'où
+    (c) qui passe maintenant AVANT (d).
     """
     decideurs = decideur_candidats or []
     kind = email_obj.get("kind")
     local = email_obj.get("local", "")
 
-    if kind == "nominative":
-        matched = _match_nominative(local, decideurs)
+    if kind in ("nominative", "other"):
+        matched = _match_nominative(local, decideurs) or _match_prenom_seul(local, decideurs)
         if matched:
             fn, ln = _split_name(matched.get("nom_complet", ""))
             return ScrapedContactDecision("confirmed", fn, ln, matched.get("titre"))
 
-    high = _single_high_confidence(decideurs)
-    if high:
-        fn, ln = _split_name(high.get("nom_complet", ""))
-        return ScrapedContactDecision("confirmed", fn, ln, high.get("titre"))
+    if kind == "generic":
+        high = _single_high_confidence(decideurs)
+        if high:
+            fn, ln = _split_name(high.get("nom_complet", ""))
+            return ScrapedContactDecision("confirmed", fn, ln, high.get("titre"))
+
+    if kind == "nominative":
+        derived = _name_from_local(local)
+        if derived:
+            return ScrapedContactDecision(
+                "potential",
+                potential_owner={"nom_complet": derived, "titre": None, "source_url": None},
+            )
 
     if decideurs:
         d = decideurs[0]
@@ -132,14 +178,6 @@ def classify_scraped_contact(
                 "source_url": d.get("source_url"),
             },
         )
-
-    if kind == "nominative":
-        derived = _name_from_local(local)
-        if derived:
-            return ScrapedContactDecision(
-                "potential",
-                potential_owner={"nom_complet": derived, "titre": None, "source_url": None},
-            )
 
     return ScrapedContactDecision("unknown")
 

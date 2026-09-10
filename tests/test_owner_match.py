@@ -87,6 +87,66 @@ def test_potential_from_unmatched_nominative_local():
     assert d.potential_owner["source_url"] is None
 
 
+def _seul_high(nom="Claude Hamel"):
+    return [{"nom_complet": nom, "titre": "Propriétaire", "confidence": "high"}]
+
+
+def test_prenom_seul_du_decideur_unique_est_confirme():
+    # claude@maconneriedepot.com quand l'UNIQUE décideur sûr est « Claude
+    # Hamel » : c'est lui. Local très courant chez les PME (manuel@, patrick@,
+    # serge@) — le refuser perdrait de vrais décideurs.
+    d = classify_scraped_contact(_email("claude", "nominative"), _seul_high())
+    assert d.owner_confidence == "confirmed"
+    assert (d.first_name, d.last_name) == ("Claude", "Hamel")
+
+
+def test_prenom_d_un_autre_n_est_pas_confirme():
+    # La contrepartie, et tout l'intérêt de la règle : maggie@ n'est PAS Claude.
+    for local, kind in (("maggie", "nominative"), ("luc", "other")):
+        d = classify_scraped_contact(_email(local, kind), _seul_high())
+        assert d.owner_confidence != "confirmed", local
+        assert d.first_name is None, local
+
+
+def test_prenom_seul_ne_confirme_pas_si_deux_decideurs_high():
+    # Ambiguïté : la règle ne vaut que pour un décideur unique.
+    deux = _seul_high() + [{"nom_complet": "Claude Roy", "titre": "Associé", "confidence": "high"}]
+    d = classify_scraped_contact(_email("claude", "nominative"), deux)
+    assert d.owner_confidence != "confirmed"
+
+
+def test_nominatif_non_matche_n_herite_jamais_du_decideur_unique():
+    """Trombinoscope : 13 adresses, un seul proprio nommé.
+
+    Relevé en production le 2026-09-02 sur Maçonnerie Dépôt. Le site publie une
+    page équipe avec 13 adresses ; le Research Agent identifie UN décideur en
+    confiance haute (Claude Hamel). La règle (b) s'appliquait à TOUTES les
+    adresses : maggie@, luc@, sebastien@ recevaient `confirmed` + « Claude
+    Hamel » + `is_decision_maker=true`. Or `personalize.md` écrit
+    « Bonjour {first_name}, » dès que c'est `confirmed` — Maggie recevait donc
+    « Bonjour Claude ».
+
+    Une adresse nominative qui ne corrobore PAS le décideur connu appartient à
+    quelqu'un d'autre. Jamais `confirmed`, et surtout jamais son nom.
+    """
+    decideurs = [{"nom_complet": "Jean Tremblay", "titre": "Propriétaire", "confidence": "high"}]
+    d = classify_scraped_contact(_email("sophie.lavoie", "nominative"), decideurs)
+    assert d.owner_confidence != "confirmed"
+    assert d.first_name is None
+    assert d.last_name is None
+    # Le local en dit plus sur le titulaire de l'adresse que le proprio de la boîte.
+    assert d.potential_owner["nom_complet"] == "Sophie Lavoie"
+
+
+def test_local_court_n_herite_pas_non_plus_du_decideur_unique():
+    # `luc` est classé 'other' (trop court pour être nominatif), mais c'est
+    # quand même une personne — pas la boîte générique que la règle (b) vise.
+    decideurs = [{"nom_complet": "Jean Tremblay", "titre": "Propriétaire", "confidence": "high"}]
+    d = classify_scraped_contact(_email("luc", "other"), decideurs)
+    assert d.owner_confidence != "confirmed"
+    assert d.first_name is None
+
+
 def test_unknown_generic_no_decideur():
     d = classify_scraped_contact(_email("contact", "generic"), [])
     assert d.owner_confidence == "unknown"

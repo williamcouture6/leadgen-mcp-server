@@ -88,8 +88,12 @@ async def test_personalize_isole_par_track_company(monkeypatch: pytest.MonkeyPat
             ]
         if table == "companies":
             return [
-                {"id": "co-opt", "name": "OPT Co", "track": "OPT", "research_json": {"x": 1}},
-                {"id": "co-rea", "name": "REA Co", "track": "agence-ia", "research_json": {"x": 1}},
+                # `website` renseigne des deux cotes : ce test porte sur l'isolation
+                # PAR TRACK, pas sur la garde sans-site d'AC1b.
+                {"id": "co-opt", "name": "OPT Co", "track": "OPT",
+                 "website": "https://opt.ca", "research_json": {"x": 1}},
+                {"id": "co-rea", "name": "REA Co", "track": "agence-ia",
+                 "website": "https://rea.ca", "research_json": {"x": 1}},
             ]
         return []  # messages
 
@@ -105,14 +109,22 @@ async def test_personalize_isole_par_track_company(monkeypatch: pytest.MonkeyPat
 # ----------------------------------------------- Prompt personalize par track
 
 def test_reacti_personalize_prompt_wired() -> None:
-    """Le track REACTI charge prompts/reacti/personalize.md, pas le prompt OPT."""
+    """La piste `agence-ia` charge prompts/reacti/personalize.md, pas le prompt OPT.
+
+    ⚠️ Le chemin garde son nom legacy `reacti/` : `reacti_* ≡ agence-ia`, on
+    renomme paresseusement. C'est le CÂBLAGE qui est testé ici, pas le contenu.
+
+    MAJ 2026-08-30 (AC1b) : les deux assertions de contenu portaient sur
+    « REACTI » et « réactivation » — l'offre à la commission, dissoute par le
+    pivot du 2026-06-07. Le prompt vendait donc encore la mauvaise offre, et ce
+    test le CERTIFIAIT. Le contenu se vérifie maintenant dans
+    `test_prompt_personalize.py`, contre les corps réellement mesurés.
+    """
     import src.tools.personalize as pz
 
     assert pz._PROMPT_PATHS["OPT"] != pz._PROMPT_PATHS["agence-ia"]
     assert pz._PROMPT_PATHS["agence-ia"].exists()
     txt = pz._PROMPT_PATHS["agence-ia"].read_text(encoding="utf-8")
-    assert "REACTI" in txt
-    assert "réactivation" in txt.lower()
-    # garde-fous critiques présents dans le prompt REACTI
-    assert "Loi 25" in txt
+    # Garde-fous qui doivent survivre à toute réécriture du prompt.
     assert "preuve sociale" in txt.lower()
+    assert "60 secondes" in txt

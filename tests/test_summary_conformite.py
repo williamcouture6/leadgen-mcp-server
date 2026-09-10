@@ -87,7 +87,7 @@ def test_un_non_juge_seul_parle_quand_meme():
 # =====================================================================
 
 def _socle(monkeypatch, *, refuses=0, a_relire=0, non_juges=0, orphelins=0,
-           lecture_leve=False, appels=None):
+           partis_avec_remarque=0, lecture_leve=False, appels=None):
     """Les compteurs de conformité sont les SEULS que ce socle sert : tout le
     reste du résumé rend 0 pour que le texte reste lisible."""
     from src import http_api
@@ -111,6 +111,15 @@ def _socle(monkeypatch, *, refuses=0, a_relire=0, non_juges=0, orphelins=0,
             return non_juges
         if verdict == "eq.orphelin":
             return orphelins
+        if verdict == "eq.approved":
+            # Les courriels PARTIS avec une remarque de forme (2026-08-31).
+            # Le filtre porte aussi sur `compliance_notes`, parce qu'une
+            # remarque ne change pas le verdict : elle vit dans les notes.
+            assert "compliance_notes" in p, (
+                "compter les approuvés SANS filtrer sur les notes compterait "
+                "tous les courriels partis, pas ceux qui portent une remarque"
+            )
+            return partis_avec_remarque
         raise AssertionError(f"filtre de verdict inattendu: {verdict}")
 
     async def fake_select_all(table, order=None, params=None, schema=None, **kw):
@@ -143,7 +152,11 @@ async def test_la_ligne_apparait_dans_le_resume(monkeypatch):
         in out["text"]
     )
     assert out["totals"]["conformite"] == {
-        "refuses": 4, "a_relire": 3, "non_juges": 1, "orphelins": 0, "lu": True,
+        "refuses": 4, "a_relire": 3, "non_juges": 1, "orphelins": 0,
+        # Cinquieme compteur depuis le 2026-08-31 : les courriels PARTIS avec
+        # une remarque de forme. Ils ne sont ni refuses ni a relire -- ils sont
+        # partis -- donc ils ont leur propre case.
+        "partis_avec_remarque": 0, "lu": True,
     }
 
 
@@ -178,7 +191,11 @@ async def test_le_compte_passe_par_count_et_jamais_par_len_select(monkeypatch):
     monkeypatch.setattr(sb, "select", espion_select)
     await _resume(http_api)
 
-    assert len(appels) == 4, "quatre compteurs, quatre count() exacts"
+    # Cinq depuis le 2026-08-31 : le compteur des courriels partis avec une
+    # remarque de forme s'ajoute aux quatre verdicts. Ce que ce test protege
+    # reste le meme -- on compte avec count() et jamais avec len(select()),
+    # parce qu'un select est plafonne a 1000 lignes par PostgREST.
+    assert len(appels) == 5, "cinq compteurs, cinq count() exacts"
     assert all(a["table"] == "messages" for a in appels)
     assert not any(t == "messages" for t in selects), (
         "aucun select sur messages : le compte se fait côté serveur"
@@ -225,3 +242,40 @@ async def test_lecture_en_echec_le_dit_au_lieu_de_faire_une_journee_calme(monkey
     assert out["totals"]["conformite"]["lu"] is False
     # Le fail-soft protège le RESTE du résumé : il ne doit pas l'emporter.
     assert "📅 RDV bookés" in out["text"]
+
+
+# ---------------- Les remarques de forme, au resume du soir ----------------
+
+async def test_les_courriels_partis_avec_une_remarque_sont_comptes(monkeypatch):
+    """🔴 C'est cette ligne qui empêche la décision du 2026-08-31 de devenir
+    « on a supprimé les checks ».
+
+    Une faute de forme ne tue plus le brouillon : elle s'écrit dans les notes
+    et le courriel part. Sans cette ligne au résumé, la remarque existerait
+    dans une colonne que personne ne lit — donc n'existerait pas.
+    """
+    out = await _resume(_socle(monkeypatch, partis_avec_remarque=3))
+
+    assert out["totals"]["conformite"]["partis_avec_remarque"] == 3
+    assert "3 courriel(s) parti(s) avec une remarque" in out["text"]
+
+
+async def test_une_remarque_sappuie_a_un_refus_sans_le_masquer(monkeypatch):
+    """Quand il y a AUSSI des refus, la remarque s'ajoute à la ligne existante
+    au lieu d'en créer une deuxième : deux lignes « Conformité » dans le même
+    résumé se liraient comme deux problèmes distincts."""
+    out = await _resume(
+        _socle(monkeypatch, refuses=2, a_relire=1, partis_avec_remarque=3)
+    )
+
+    assert "2 drafts refusés (dont 1 à relire)" in out["text"]
+    assert "3 parti(s) avec une remarque" in out["text"]
+    assert out["text"].count("*Conformité*") == 1
+
+
+async def test_aucune_remarque_aucune_ligne(monkeypatch):
+    """Un « 0 remarque » quotidien serait du bruit, et le bruit finit par
+    cacher la ligne qui compte."""
+    out = await _resume(_socle(monkeypatch))
+
+    assert "remarque" not in out["text"]
