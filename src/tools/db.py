@@ -807,7 +807,6 @@ async def list_contacts_to_personalize(
     # puisque le lot revient court.
     taille_page = max(limit * FACTEUR_SURRECOLTE, 200)
     contacts: list[dict[str, Any]] = []
-    out: list[dict[str, Any]] = []
     for page in range(MAX_PAGES_SELECTION):
         lot = await db.select(
             "contacts",
@@ -829,13 +828,47 @@ async def list_contacts_to_personalize(
         if not lot:
             break
         contacts.extend(lot)
-        out = await _retenir(
-            contacts, limit=limit, max_per_company=max_per_company,
-            track=track, require_research=require_research,
-        )
-        if len(out) >= limit or len(lot) < taille_page:
+        if len(lot) < taille_page:
             break
-    return out
+
+    # 🔴 On lit TOUTE la file avant de retenir, décision William du 2026-09-09.
+    # Avant, la lecture s'arrêtait dès que le lot était plein : le tri par
+    # potentiel n'ordonnait alors que la première page, et une entreprise
+    # marquée « tête de file » assise en page 2 ne remontait jamais — elle
+    # attendait que la file devant elle se vide. À 345 contacts en file (mesuré
+    # le 2026-09-09), tout lire coûte 2 pages au lieu d'une : la priorisation
+    # devient vraie partout pour une lecture de plus.
+    return await _retenir(
+        contacts, limit=limit, max_per_company=max_per_company,
+        track=track, require_research=require_research,
+    )
+
+
+# Un filtre PostgREST `in.(...)` voyage dans l'URL : 345 identifiants font déjà
+# ~13 ko, et la file grossit. Depuis qu'on lit la file ENTIÈRE avant de retenir
+# (décision du 2026-09-09), le filtre porte sur tout d'un coup — donc on le
+# découpe. Sans ça, le jour où la file passe le seuil du serveur, la requête
+# revient en 414 et le lot se vide en silence.
+TAILLE_TRANCHE_IN = 120
+
+
+async def _select_par_tranches(
+    table: str,
+    *,
+    params: dict[str, str],
+    ids: list[str],
+    cle: str = "id",
+) -> list[dict[str, Any]]:
+    """`select` avec un filtre `in.(...)` découpé en tranches, résultats concaténés."""
+    lignes: list[dict[str, Any]] = []
+    for debut in range(0, len(ids), TAILLE_TRANCHE_IN):
+        tranche = ids[debut:debut + TAILLE_TRANCHE_IN]
+        if not tranche:
+            continue
+        lignes.extend(await db.select(
+            table, params={**params, cle: f"in.({','.join(tranche)})"}
+        ))
+    return lignes
 
 
 async def _retenir(
@@ -857,7 +890,7 @@ async def _retenir(
         return []
 
     company_ids = list({c["company_id"] for c in contacts})
-    companies = await db.select(
+    companies = await _select_par_tranches(
         "companies",
         params={
             # google_rating / google_reviews_count : l'ancre factuelle du bloc 2
@@ -872,8 +905,8 @@ async def _retenir(
                 "google_rating,google_reviews_count,google_place_id,"
                 "lead_potential_score,lead_potential_reason"
             ),
-            "id": f"in.({','.join(company_ids)})",
         },
+        ids=company_ids,
     )
     # by_id restreint au `track` demandé → un contact dont la company est d'un autre
     # track est ignoré (company=None dans la boucle). Isolation OPT/REACTI.
@@ -893,11 +926,12 @@ async def _retenir(
     # re-bouncer (jetons brûlés + réputation d'envoi) — ça se règle au niveau
     # contact, pas en régénérant un draft.
     # (messages.status est NOT NULL DEFAULT 'draft' → pas de piège NULL avec not.in.)
-    existing_msgs = await db.select(
+    existing_msgs = await _select_par_tranches(
         "messages",
+        cle="contact_id",
+        ids=[c["id"] for c in contacts],
         params={
             "select": "contact_id",
-            "contact_id": f"in.({','.join(c['id'] for c in contacts)})",
             "direction": "eq.outbound",
             "status": "not.in.(failed)",
         },
@@ -933,10 +967,11 @@ async def _retenir(
     # avis dit qu'on n'arrive pas à joindre l'entreprise passent devant, puis
     # le potentiel décroissant, puis l'ordre d'arrivée (le tri est stable).
     #
-    # ⚠️ Portée : ce tri ordonne les contacts DÉJÀ récupérés — l'over-fetch
-    # ci-dessus lit les plus vieux. Un lead prioritaire créé hier n'entrera
-    # donc pas dans le lot tant que la file des anciens n'a pas défilé. C'est
-    # la famine WF-4 connue, et elle appartient à son propre lot.
+    # 🔴 CE TRI NE DOIT JAMAIS SERVIR À TIRER LE GABARIT A/B/C/D. L'alternance
+    # se fait au RANG D'ARRIVÉE (`rang_arrivee`, posé plus bas) : le rang de
+    # priorité est une fonction du score, donc le bras A recevrait toujours les
+    # meilleurs leads et D les plus faibles, et `v_perf_par_bras` mesurerait la
+    # qualité des leads au lieu de la copie. Voir `lib/gabarits.bras_du_lot`.
     seen_companies.sort(key=lambda cid: _rang_de_priorite(by_id[cid]))
 
     # Dédup global sur email : si plusieurs companies pointent vers le même email
@@ -953,6 +988,8 @@ async def _retenir(
             seen_emails.add(email_key)
             retenus.append({
                 "contact": c,
+                # Rempli juste avant le retour — voir `_poser_rang_arrivee`.
+                "rang_arrivee": 0,
                 # Le marqueur de tête de file est INTERNE : écrire « j'ai vu que
                 # tes clients disent que tu ne rappelles pas » citerait un tiers
                 # au prospect à son sujet et ruinerait le courriel. Il ordonne,
@@ -964,7 +1001,33 @@ async def _retenir(
                 },
             })
             if len(retenus) >= limit:
-                return retenus
+                return _poser_rang_arrivee(retenus, contacts)
+    return _poser_rang_arrivee(retenus, contacts)
+
+
+def _poser_rang_arrivee(
+    retenus: list[dict[str, Any]], contacts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Numérote les retenus dans leur ordre d'ARRIVÉE, sans changer leur ordre d'envoi.
+
+    🔴 C'est ce rang, et lui seul, qui tire le gabarit du test A/B — jamais la
+    position dans la file triée. `lib/gabarits.bras_du_lot` porte l'invariant :
+    « l'alternance se fait par rang dans le lot, jamais par une propriété du
+    contact », parce qu'un bras corrélé à autre chose mesure cette autre chose.
+    Le tri par potentiel a précisément créé cette corrélation : sans ce
+    découplage, le bras A prendrait les rangs 0, 4, 8… soit les meilleurs
+    potentiels du lot, à chaque envoi, dans le même sens.
+
+    La liste rendue garde l'ordre de priorité (l'ordre d'ENVOI) ; seule
+    l'étiquette `rang_arrivee` change.
+    """
+    position = {c["id"]: i for i, c in enumerate(contacts)}
+    par_arrivee = sorted(
+        range(len(retenus)),
+        key=lambda i: position.get(retenus[i]["contact"]["id"], 0),
+    )
+    for rang, i in enumerate(par_arrivee):
+        retenus[i]["rang_arrivee"] = rang
     return retenus
 
 
@@ -1160,13 +1223,17 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
         # Forme héritée (les 283 lignes recherchées avant le 2026-09-01) : le
         # modèle rendait le chiffre lui-même. On le recopie tel quel — le
         # recalculer est impossible, les signaux n'ont jamais été relevés.
-        base = lp.get("score_base", lp.get("score"))
+        base = lp.get("score")
         # bool est une sous-classe d'int — on l'exclut explicitement.
         if not isinstance(base, int) or isinstance(base, bool):
             return {}
         if not (0 <= base <= 100):
             return {}
-        score = base
+        # La disqualification vaut sur les DEUX formes. Elle ne s'appliquait
+        # qu'à la forme actuelle jusqu'au 2026-09-09 : une municipalité déjà
+        # en base, notée 72 par l'ancien modèle et disqualifiée par le même
+        # research, ressortait à 72 et repassait devant un vrai prospect.
+        score = 0 if disqualifie else base
     patch: dict[str, Any] = {"lead_potential_score": score}
     reason = lp.get("reasoning") if isinstance(lp.get("reasoning"), str) else ""
     # La marque de tête de file vit DANS la justification, pas dans le score :

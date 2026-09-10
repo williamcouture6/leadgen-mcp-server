@@ -2542,7 +2542,15 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
                 # `lib/gabarits.GABARITS_A_TETE_FIXE`.
                 template_choice=_bras_ab(
                     payload.template_choice,
-                    rang,
+                    # 🔴 Le rang d'ARRIVÉE, pas la position dans la file. Depuis
+                    # que le lot sort trié par potentiel (2026-09-09), la
+                    # position est une fonction du score : le bras A prendrait
+                    # les rangs 0, 4, 8… donc toujours les meilleurs leads, et
+                    # `v_perf_par_bras` mesurerait leur qualité au lieu de la
+                    # copie. `rang_arrivee` est posé par `db._poser_rang_arrivee`.
+                    # Repli sur `rang` pour les appelants qui bâtissent un
+                    # backlog à la main (rejeu, tests).
+                    entry.get("rang_arrivee", rang),
                     metier_connu=_tete_fixe_servable(company),
                 ),
                 model=payload.model,

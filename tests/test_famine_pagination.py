@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from src.lib.lead_scoring import MARQUEUR_TETE_DE_FILE
 from src.tools import db as db_tools
 
 
@@ -37,8 +38,15 @@ class _FausseBase:
     plus récent, et ce sont les plus anciens qui ont été rédigés en premier.
     """
 
-    def __init__(self, total: int, bouches: int) -> None:
+    def __init__(
+        self, total: int, bouches: int, marques: set[str] | None = None
+    ) -> None:
         self.total, self.bouches = total, bouches
+        # Entreprises portant le marqueur « tête de file » (un avis dit qu'on
+        # n'arrive pas à les joindre). Ajouté le 2026-09-09 : sans ça, toutes
+        # les companies étaient à égalité et la suite n'exerçait que la branche
+        # dégénérée du tri par potentiel.
+        self.marques = marques or set()
         self.pages_lues = 0
         self.contacts = [
             {
@@ -68,6 +76,11 @@ class _FausseBase:
                     "research_json": {"services_offered": ["Déneigement résidentiel"]},
                     "track": "agence-ia", "google_rating": 4.8,
                     "google_reviews_count": 40, "google_place_id": "p",
+                    "lead_potential_score": 50,
+                    "lead_potential_reason": (
+                        f"{MARQUEUR_TETE_DE_FILE} jamais eu de retour d'appel"
+                        if i in self.marques else "ferme le soir"
+                    ),
                 }
                 for i in ids
             ]
@@ -114,16 +127,54 @@ async def test_le_lot_est_plein_malgre_le_bouchon(
 
 
 @pytest.mark.asyncio
-async def test_une_file_courte_ne_coute_qu_une_page(
+async def test_le_cout_suit_la_taille_de_la_file(
     monkeypatch: pytest.MonkeyPatch, _decembre
 ) -> None:
-    """Contrôle négatif du coût : lire par pages ne doit pas se transformer en
-    lecture systématique de toute la base. Sans bouchon, une page suffit."""
+    """Contrôle du coût. ⚠️ CETTE GARDE A CHANGÉ DE SENS le 2026-09-09.
+
+    Elle exigeait « une page suffit quand la file est facile » : la lecture
+    s'arrêtait dès que le lot était plein. Décision William du 2026-09-09 : on
+    lit désormais la file ENTIÈRE avant de retenir, parce que le tri par
+    potentiel ne pouvait sinon ordonner que la première page — une entreprise
+    marquée « tête de file » assise plus loin ne remontait jamais (voir le test
+    suivant).
+
+    Ce qui reste garanti, et c'est ce qu'on mesure ici : le coût suit la taille
+    de la FILE, jamais `MAX_PAGES_SELECTION`. Sur la vraie file — 345 contacts
+    au 2026-09-09 — ça fait deux lectures au lieu d'une.
+    """
     faux = _FausseBase(total=400, bouches=0)
     monkeypatch.setattr(db_tools, "db", faux)
 
     await db_tools.list_contacts_to_personalize(limit=10, track="agence-ia")
-    assert faux.pages_lues == 1, f"{faux.pages_lues} pages lues pour un lot facile"
+
+    taille_page = max(10 * db_tools.FACTEUR_SURRECOLTE, 200)
+    # 2 pages pleines, plus la lecture vide qui dit que la file est épuisée.
+    attendu = 400 // taille_page + 1
+    assert faux.pages_lues == attendu, f"{faux.pages_lues} pages lues"
+    assert faux.pages_lues < db_tools.MAX_PAGES_SELECTION
+
+
+@pytest.mark.asyncio
+async def test_une_tete_de_file_au_dela_de_la_premiere_page_entre_dans_le_lot(
+    monkeypatch: pytest.MonkeyPatch, _decembre
+) -> None:
+    """Le trou relevé par le conseil du 2026-09-09, et la raison de tout lire.
+
+    `co350` est en deuxième page. Tant que la lecture s'arrêtait à la première
+    page pleine, cette entreprise — dont un avis Google dit qu'on n'arrive pas
+    à la joindre — n'était jamais vue, et « tête de file » ne voulait dire que
+    « tête des 200 premiers lus ». Elle doit maintenant sortir première.
+    """
+    faux = _FausseBase(total=400, bouches=0, marques={"co350"})
+    monkeypatch.setattr(db_tools, "db", faux)
+
+    lot = await db_tools.list_contacts_to_personalize(limit=10, track="agence-ia")
+
+    assert lot, "le lot ne doit pas être vide"
+    assert lot[0]["company"]["id"] == "co350", (
+        f"tête de file attendue en premier, obtenu {lot[0]['company']['id']}"
+    )
 
 
 @pytest.mark.asyncio

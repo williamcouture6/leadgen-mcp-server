@@ -90,10 +90,15 @@ USER_AGENT = "Mozilla/5.0 (compatible; CoutureIA-Research/0.1; +https://couture-
 # est un simple `in` sur du texte français, donc « j'ai », « un délai », « un
 # essai » et « vrai » allumaient tous le drapeau. Pour savoir ce qui TOURNE
 # vraiment sur le site, c'est OUTILS_FINGERPRINTS qui répond.
+# ⚠️ Les noms d'outils (hubspot, salesforce, intercom, drift, zendesk) ont été
+# RETIRÉS d'ici le 2026-09-09 : ils vivent dans OUTILS_FINGERPRINTS, qui les
+# cherche dans le HTML. Les garder aux deux endroits présentait la même preuve
+# deux fois au modèle (`tech_keyword_hits: hubspot` PUIS
+# `outils_detectes: HubSpot`), ce qui poussait mécaniquement son
+# `tech_savvy_score` vers `high` — et `high` déclenchait une disqualification.
 TECH_KEYWORDS = (
     "chatbot", "intelligence artificielle", " ia ", "automatisation",
     "agence numérique", "agence numerique", "powered by", "built with",
-    "hubspot", "salesforce", "intercom", "drift", "zendesk",
 )
 
 # Parmi les outils ci-dessous, ceux qui offrent une PRISE DE RENDEZ-VOUS en
@@ -113,8 +118,9 @@ OUTILS_AVEC_RDV = frozenset({
 # Jobber, chat Podium, « powered by » du pied de page). Une PME déjà équipée
 # ressortait donc « manuelle » et se faisait noter comme un prospect en douleur.
 #
-# Ces empreintes pilotent l'ajustement −30 du barème (prompts/research.md) :
-# un outil en place réduit la douleur, il ne l'annule pas.
+# Ces empreintes alimentent le signal `outil_en_place`, pondéré dans
+# `lib/lead_scoring.POIDS` : un outil en place réduit la douleur, il ne
+# l'annule pas — la boîte descend, elle ne sort pas de la liste.
 OUTILS_FINGERPRINTS: dict[str, tuple[str, ...]] = {
     # Logiciels de gestion terrain (planification + prise de RDV intégrée)
     "Jobber": ("getjobber.com", "jobber.com", "clienthub.getjobber"),
@@ -731,8 +737,8 @@ def _outils_detectes(html: str) -> set[str]:
     """Outils nommés reconnus dans le HTML brut d'UNE page.
 
     Rend les noms canoniques (« Calendly »), pas les empreintes : c'est ce que
-    le prompt lit pour appliquer le −30, et « assets.calendly.com » ne lui
-    apprend rien de plus que « Calendly ».
+    le barème pondère, et « assets.calendly.com » n'apprend rien de plus que
+    « Calendly » à qui relit une fiche.
     """
     hay = html.lower()
     return {
@@ -1308,7 +1314,7 @@ def _format_site_for_llm(site: dict[str, Any]) -> str:
     hits = site.get("tech_keyword_hits") or []
     parts.append(f"tech_keyword_hits: {', '.join(hits) if hits else '(none)'}")
     # Séparé de `tech_keyword_hits` à dessein : ici ce sont des outils NOMMÉS,
-    # vus dans le HTML. C'est cette ligne, et elle seule, qui déclenche le −30.
+    # vus dans le HTML. Le poids, lui, est appliqué par `lib/lead_scoring`.
     outils = site.get("outils_detectes") or []
     parts.append(f"outils_detectes: {', '.join(outils) if outils else '(none)'}")
     # Liste explicite, « (none) » compris : le prompt doit pouvoir conclure
@@ -1619,8 +1625,16 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
     # Les signaux comptables sont mesurés ici et priment sur ce que le modèle
     # aurait avancé : un compte d'avis n'est pas matière à interprétation. Une
     # mesure inconnue (`None`) ne recouvre jamais une observation du modèle.
-    lead_potential = dict(research_json.get("lead_potential") or {})
-    signaux = dict(lead_potential.get("signaux") or {})
+    # `isinstance` et pas `or {}` : le repli texte de `_call_llm` ne passe par
+    # aucun schéma, donc `lead_potential` peut revenir en chaîne ou en liste.
+    # `dict("high")` lève, l'exception remonte jusqu'à l'appelant, le research
+    # payé est jeté — et au bout de `_RESEARCH_MAX_FAILURES` la company est
+    # disqualifiée pour de bon. Une forme inattendue doit coûter le scoring,
+    # jamais la fiche.
+    lp_brut = research_json.get("lead_potential")
+    lead_potential = dict(lp_brut) if isinstance(lp_brut, dict) else {}
+    signaux_bruts = lead_potential.get("signaux")
+    signaux = dict(signaux_bruts) if isinstance(signaux_bruts, dict) else {}
     for cle, valeur in signaux_mesures(place, site).items():
         if valeur is not None or cle not in signaux:
             signaux[cle] = valeur

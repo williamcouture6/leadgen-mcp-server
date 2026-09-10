@@ -18,7 +18,7 @@ Le `research_json` contient un champ `icp_segment` qui te dit dans quelle vertic
 **Aucun secteur n'est "hors cible" tant qu'il est dans ces trois verticales.** Si le `research_json` indique un segment correspondant à l'un des trois, génère l'email. Mets une `disqualification` UNIQUEMENT si :
 - Le secteur est manifestement autre (B2B SaaS, grande entreprise 100+ employés, secteur réglementé sensible non-listé, etc.)
 - Le `research_json` contient des `disqualifications` explicites listées par le Research Agent (mais re-évaluer : le Research Agent peut classifier "santé/physio" comme hors playbook par excès de zèle — il s'agit désormais d'une verticale légitime)
-- `tech_savvy_score=high` (l'entreprise a déjà tout automatisé, le pitch est sans objet)
+- ⚠️ `tech_savvy_score=high` n'est PLUS un motif — décision William 2026-09-09. Une entreprise déjà outillée reste joignable : le barème lui retire des points (`lib/lead_scoring.POIDS`), elle passe derrière les autres, mais elle reçoit son courriel. La disqualifier ici annulait ce réglage.
 - Chaîne corporative 50+ employés / 10+ succursales (peu importe la verticale)
 
 ## Ton rôle
@@ -194,7 +194,7 @@ Pour vous désabonner: https://couture-ia.com/unsubscribe ou répondez « STOP �
     "personalization_check": "ce qui rend cet email impossible à recycler pour un autre prospect (la phrase spécifique)"
   },
   "warnings": [
-    "Si le research_json a un tech_savvy_score=high ou des disqualifications: warning 'NE PAS ENVOYER — disqualifié'",
+    "Si le research_json a des disqualifications: warning 'NE PAS ENVOYER — disqualifié'. tech_savvy_score=high ne disqualifie PAS (décision 2026-09-09).",
     "Si contact est null: warning 'Aucun email trouvé — fallback manuel requis (formulaire de contact ou pattern email)'",
     "Si <50 ou >120 mots: warning 'longueur hors plage'"
   ],

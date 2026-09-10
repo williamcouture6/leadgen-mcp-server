@@ -57,7 +57,7 @@ Tu n'écris pas l'email. Tu extrais des **faits vérifiables et des signaux** �
   },
   "tech_savvy_score": {
     "score": "low | medium | high",
-    "reasoning": "low = aucune mention tech, formulaires basiques. high = chatbot existant, IA mentionnée, agence numérique partenaire visible. Disqualifie si high."
+    "reasoning": "low = aucune mention tech, formulaires basiques. high = chatbot existant, IA mentionnée, agence numérique partenaire visible. ⚠️ NE disqualifie PAS — décision William 2026-09-09 : un outil en place fait descendre le score (le code s'en charge), la boîte reste joignable et reste dans la liste."
   },
   "form_test_hint": {
     "has_quote_form": true/false,
@@ -73,6 +73,7 @@ Tu n'écris pas l'email. Tu extrais des **faits vérifiables et des signaux** �
   ],
   "lead_potential": {
     "signaux": {
+      "avis_disent_injoignable": true/false/null,
       "promet_urgence_24_7": true/false/null,
       "service_reponse_humain_24_7": true/false/null,
       "saisonnier": true/false/null,
@@ -92,7 +93,7 @@ Tu n'écris pas l'email. Tu extrais des **faits vérifiables et des signaux** �
 
 **Si Track = AGENCE-IA** (≡ ancien REACTI, même moteur — l'offre = abonnement mensuel d'automatisation pour PME de **services à domicile / contracteurs au Québec**. Tier Essentiel (497 $/mois): **réceptionniste IA** qui prend les rendez-vous et répond aux appels manqués, réponse automatique aux **formulaires web et messages Facebook**, site web pro, rappels de soumissions, rappels de paiement sortants. Tier Croissance (797 $/mois): + suivi de projet, **réactivation de la base de clients dormants**, factures entrantes (extraction PDF/photo), campagnes de renouvellement saisonnier, rappels de visite, collecte d'avis Google. Tier Élite (1297 $/mois): + rapports mensuels et optimisation continue. Cibles typiques: plombier, électricien, CVAC, paysagiste, déneigement, toiture, rénovation, extermination, lavage de vitres, etc.):
 
-**Ce que TU rends** — cinq constats, rien d'autre :
+**Ce que TU rends** — six constats, rien d'autre :
 
 | champ | ce que tu réponds |
 |---|---|
