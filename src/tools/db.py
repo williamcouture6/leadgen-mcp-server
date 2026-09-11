@@ -24,15 +24,18 @@ Phase 1 (sourcing) :
 """
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from .. import supabase_client as db
-from ..lib.metiers import SAISONS, resoudre_metiers
+from ..lib.metiers import SAISONS, colonnes_metiers, resoudre_metiers
 from ..lib.owner_match import summarize_company_decideur
 from ..lib.pricing import estimated_cost_usd
+
+logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------
@@ -1153,6 +1156,23 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     return patch
 
 
+def extract_metiers_patch(research_json: Any) -> dict[str, Any]:
+    """Les colonnes de métiers à écrire, depuis le research_json.
+
+    Calquée sur `extract_lead_potential_patch` pour la forme — mais elle rend
+    TOUJOURS un patch, là où sa jumelle rend `{}` quand la donnée manque. C'est
+    voulu : « aucun métier reconnu » est une information (le défaut inversé, qui
+    ouvre les douze mois), pas une absence. Rendre `{}` laisserait la colonne à
+    NULL, ce qu'un prédicat `fenetre_mois @> array[9]` écarte EN SILENCE.
+    """
+    services = None
+    if isinstance(research_json, dict):
+        services = research_json.get("services_offered")
+    patch = dict(colonnes_metiers(services if isinstance(services, list) else None))
+    patch["metiers_calcules_le"] = datetime.now(timezone.utc).isoformat()
+    return patch
+
+
 async def _statut_apres_recherche(
     company_id: str,
     emails_found: list[dict[str, Any]] | None,
@@ -1224,7 +1244,34 @@ async def update_company_research(
             "status": "not.in.(disqualified,suppressed)",
         },
     )
-    return {"updated": len(rows)}
+
+    # ── Second UPDATE : les colonnes de métiers, et lui seul ────────────────
+    # 🔴 SÉPARÉ, ET DANS CET ORDRE, POUR UNE RAISON MESURÉE. L'anti-clobber ne
+    # peut pas vivre dans le filtre du patch ci-dessus : il y sauterait l'UPDATE
+    # ENTIER, donc research_json, status et last_enriched_at — et cette dernière
+    # porte la ré-éligibilité à 90 jours du backlog de recherche. 41 fiches en
+    # sortiraient pour trois mois, en silence (mesuré le 2026-09-10).
+    #
+    # 🔴 ET IL NE LÈVE JAMAIS. L'appelant (`/research/company`) n'est pas sous
+    # `try` : une exception ici perdrait research_json APRÈS un appel LLM de
+    # ~35 s, et la boucle qui insère les contacts scrapés ne tournerait pas non
+    # plus. Une fiche sans colonnes, elle, est VISIBLE (metiers_calcules_le nul)
+    # et rattrapable par scripts/backfill_metiers.py.
+    metiers_ecrits = False
+    try:
+        touchees = await db.update(
+            "companies",
+            extract_metiers_patch(research_json),
+            filters={
+                "id": f"eq.{company_id}",
+                "metiers_verifies_a_la_main": "eq.false",
+            },
+        )
+        metiers_ecrits = bool(touchees)
+    except Exception as exc:  # noqa: BLE001 — voir le bloc ci-dessus
+        logger.warning("colonnes de metiers non ecrites pour %s : %s", company_id, exc)
+
+    return {"updated": len(rows), "metiers_ecrits": metiers_ecrits}
 
 
 class AgentRunIn(BaseModel):

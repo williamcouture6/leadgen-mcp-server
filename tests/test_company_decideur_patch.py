@@ -32,11 +32,13 @@ def _fake_env(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_update_company_research_sets_confirme(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.tools.db as dbt
 
-    captured: dict = {}
+    patches: list[dict] = []
 
     async def fake_update(table, patch, filters=None):
-        captured["table"] = table
-        captured["patch"] = patch
+        # ⚠️ ACCUMULER, ne pas écraser : depuis AC1c·A, update_company_research
+        # fait DEUX updates et le second ne porte que les colonnes de métiers.
+        # Un `captured["patch"] = patch` lirait le second.
+        patches.append({"table": table, "patch": patch, "filters": filters})
         return [{"id": "co-1"}]
 
     monkeypatch.setattr(dbt.db, "update", fake_update)
@@ -50,7 +52,7 @@ async def test_update_company_research_sets_confirme(monkeypatch: pytest.MonkeyP
 
     await dbt.update_company_research("co-1", research, emails_found=emails)
 
-    patch = captured["patch"]
+    patch = patches[0]["patch"]
     assert patch["decideur_confirme"] == {
         "nom_complet": "Jean Tremblay", "titre": "Propriétaire", "source_url": "https://x.com",
     }
@@ -61,10 +63,13 @@ async def test_update_company_research_sets_confirme(monkeypatch: pytest.MonkeyP
 async def test_update_company_research_sets_potentiel(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.tools.db as dbt
 
-    captured: dict = {}
+    patches: list[dict] = []
 
     async def fake_update(table, patch, filters=None):
-        captured["patch"] = patch
+        # ⚠️ ACCUMULER, ne pas écraser : depuis AC1c·A, update_company_research
+        # fait DEUX updates et le second ne porte que les colonnes de métiers.
+        # Un `captured["patch"] = patch` lirait le second.
+        patches.append({"table": table, "patch": patch, "filters": filters})
         return [{"id": "co-2"}]
 
     monkeypatch.setattr(dbt.db, "update", fake_update)
@@ -76,7 +81,7 @@ async def test_update_company_research_sets_potentiel(monkeypatch: pytest.Monkey
     # Email générique -> pas de match nominatif, pas de high -> potentiel.
     await dbt.update_company_research("co-2", research, emails_found=[{"local": "info", "kind": "generic"}])
 
-    patch = captured["patch"]
+    patch = patches[0]["patch"]
     assert patch["decideur_confirme"] is None
     assert patch["decideur_potentiel"]["nom_complet"] == "Luc Roy"
     assert patch["decideur_potentiel"]["confidence"] == "medium"
@@ -94,11 +99,15 @@ async def test_update_company_research_promotes_status_enriched(
     """
     import src.tools.db as dbt
 
-    captured: dict = {}
+    patches: list[dict] = []
 
+    # ⚠️ Signature à `filters` keyword-only — conservée telle quelle : elle
+    # vérifie au passage que l'appelant passe bien `filters=` par mot-clé.
     async def fake_update(table, patch, *, filters):
-        captured["patch"] = patch
-        captured["filters"] = filters
+        # ⚠️ ACCUMULER, ne pas écraser : depuis AC1c·A, update_company_research
+        # fait DEUX updates et le second ne porte que les colonnes de métiers.
+        # Un `captured["patch"] = patch` lirait le second.
+        patches.append({"table": table, "patch": patch, "filters": filters})
         return [{"id": "co-3"}]
 
     monkeypatch.setattr(dbt.db, "update", fake_update)
@@ -106,7 +115,7 @@ async def test_update_company_research_promotes_status_enriched(
 
     await dbt.update_company_research("co-3", {"company_summary": "x"}, emails_found=[])
 
-    assert captured["patch"]["status"] == "enriched"
+    assert patches[0]["patch"]["status"] == "enriched"
     # Le filtre protège les boîtes écartées : on ne re-promeut pas un statut terminal.
-    assert captured["filters"]["status"] == "not.in.(disqualified,suppressed)"
-    assert captured["filters"]["id"] == "eq.co-3"
+    assert patches[0]["filters"]["status"] == "not.in.(disqualified,suppressed)"
+    assert patches[0]["filters"]["id"] == "eq.co-3"

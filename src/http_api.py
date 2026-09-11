@@ -1609,6 +1609,10 @@ class ResearchCompanyByIdOut(BaseModel):
     error_text: str | None = None
     emails_scraped_inserted: int = 0
     emails_scraped_duplicate: int = 0
+    # None = la passe n'est pas allee jusqu'a l'ecriture (skipped/error).
+    # False = la fiche est recherchee mais SANS colonnes de metiers : elle est
+    # invisible aux fenetres saisonnieres tant que le backfill n'est pas rejoue.
+    metiers_ecrits: bool | None = None
 
 
 @app.post(
@@ -1693,9 +1697,15 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
             error_text=repr(e),
         )
 
-    await db_tools.update_company_research(
+    resultat_maj = await db_tools.update_company_research(
         payload.company_id, out.research_json, emails_found=out.emails_found
     )
+    if not resultat_maj.get("metiers_ecrits"):
+        # Le second UPDATE de `update_company_research` ne lève jamais (il ne doit
+        # pas faire perdre research_json). Sans ce journal, son échec serait MUET.
+        logging.getLogger("wf3").warning(
+            "fiche %s recherchee SANS colonnes de metiers", payload.company_id
+        )
     try:
         await db_tools.record_agent_run(
             db_tools.AgentRunIn(
@@ -1761,6 +1771,7 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
         duration_ms=out.duration_ms,
         emails_scraped_inserted=inserted_scraped,
         emails_scraped_duplicate=duplicate_scraped,
+        metiers_ecrits=bool(resultat_maj.get("metiers_ecrits")),
     )
 
 
@@ -1854,6 +1865,10 @@ class RunWf3Out(BaseModel):
     failed: int
     skipped: int
     items: list[RunWf3Item]
+    # Fiches recherchees avec succes MAIS dont les colonnes de metiers n'ont pas
+    # ete ecrites (second UPDATE en echec, ou fiche verrouillee a la main). Non
+    # nul = a rattraper par scripts/backfill_metiers.py. Doit rester a 0.
+    sans_colonnes_metiers: int = 0
 
 
 @app.post("/wf3/run", dependencies=[Depends(_require_auth)], response_model=RunWf3Out)
@@ -1898,7 +1913,7 @@ async def _run_wf3(payload: RunWf3In) -> RunWf3Out:
     results = await asyncio.gather(*(_research_one(co) for co in backlog))
 
     items: list[RunWf3Item] = []
-    succeeded = failed = skipped = 0
+    succeeded = failed = skipped = sans_colonnes_metiers = 0
     for co, res, err in results:
         if res is None:
             failed += 1
@@ -1909,6 +1924,9 @@ async def _run_wf3(payload: RunWf3In) -> RunWf3Out:
             continue
         if res.status == "ok":
             succeeded += 1
+            # `is False` et pas `not …` : None = la passe n'a pas atteint l'ecriture.
+            if res.metiers_ecrits is False:
+                sans_colonnes_metiers += 1
         elif res.status.startswith("skipped"):
             skipped += 1
         else:
@@ -1922,6 +1940,7 @@ async def _run_wf3(payload: RunWf3In) -> RunWf3Out:
     return RunWf3Out(
         processed=len(items), succeeded=succeeded, failed=failed,
         skipped=skipped, items=items,
+        sans_colonnes_metiers=sans_colonnes_metiers,
     )
 
 
