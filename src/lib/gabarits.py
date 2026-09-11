@@ -103,6 +103,49 @@ def tete_fixe_servable(
     return citation_autorisee or nb_services >= 2
 
 
+def bras_eligibles(
+    template_choice: str | None, *, metier_connu: bool = True
+) -> tuple[str, ...]:
+    """Les bras qui pouvaient RÉELLEMENT être servis à ce contact.
+
+    🔴 CE N'EST PAS LE PARAMÈTRE DU LOT, et la nuance est tout l'intérêt de la
+    fonction. Un lot tiré en « ABCD » sur une entreprise dont aucun métier n'est
+    reconnu n'a que A et B en jeu : C et D exigent un métier à nommer en
+    première ligne. Enregistrer « ABCD » sur ce lead laisserait croire qu'il
+    était un témoin pour C et D — le biais resterait, en ayant l'air corrigé,
+    ce qui est pire que de le laisser visible.
+
+    ⚠️ `bras_du_lot` en dérive : c'est la MÊME liste qui décide et qui se range
+    en base. Deux fonctions parallèles auraient fini par diverger, et elles
+    auraient divergé exactement sur les cas limites — le rejeu forcé, le métier
+    absent — que la trace existe pour éclairer.
+    """
+    bras = bras_demandes(template_choice)
+    if not bras:
+        return ()
+    if not metier_connu:
+        sans_tete_fixe = tuple(b for b in bras if b not in GABARITS_A_TETE_FIXE)
+        # Si l'appelant n'a demandé QUE des gabarits à tête fixe, il ne reste
+        # rien vers quoi basculer : ils restent éligibles, et la trace le dit.
+        # C'est ce qui rend le trou de « CD » seul MESURABLE plutôt que caché.
+        if sans_tete_fixe:
+            return sans_tete_fixe
+    return bras
+
+
+def bras_eligibles_texte(
+    template_choice: str | None, *, metier_connu: bool = True
+) -> str | None:
+    """La forme rangée dans `messages.bras_eligibles` : « ABCD », « AB », « C ».
+
+    NULL — et non une chaîne vide — quand la consigne est inintelligible : une
+    chaîne vide se lirait comme « aucun bras éligible », qui est une réponse ;
+    NULL dit « on ne sait pas », qui est la vérité.
+    """
+    eligibles = bras_eligibles(template_choice, metier_connu=metier_connu)
+    return "".join(eligibles) or None
+
+
 def bras_du_lot(template_choice: str, rang: int, *, metier_connu: bool = True) -> str:
     """Le bras du n-ième contact du lot.
 
@@ -112,33 +155,26 @@ def bras_du_lot(template_choice: str, rang: int, *, metier_connu: bool = True) -
     file au lieu du courriel ». La file est triée `created_at.asc`, donc toute
     répartition dérivée du contact serait corrélée à son ancienneté.
 
-    ⚠️ Le rang est celui du lot, pas un compteur global : deux lots consécutifs
-    recommencent tous les deux par le premier bras. Sur des lots de 10 à 20
-    c'est sans effet sur l'équilibre ; ça le deviendrait sur des lots de 1, cas
-    qui n'existe qu'en rejeu manuel — où le bras se force de toute façon.
-    Avec quatre bras, l'écart maximal sur un lot de 10 est de 1 courriel entre
-    le bras le plus servi et le moins servi.
+    ⚠️ LE RANG EST UN COMPTEUR GLOBAL, plus celui du lot (corrigé le
+    2026-09-10). L'appelant le lit en base — le nombre de brouillons portant un
+    bras déjà écrits sur cette piste — et le fait avancer d'une unité PAR
+    BROUILLON ÉCRIT. Deux raisons, toutes deux mesurées :
+
+      · un lot de 10 ne se divise pas par 4 (A=3, B=3, C=2, D=2), donc deux
+        lots quotidiens repartant de zéro servaient 30/30/20/20 à perpétuité ;
+      · un reste de fin de journée retombe toujours sur les premiers bras si le
+        compteur se remet à zéro à minuit. En comptant depuis toujours, l'écart
+        maximal entre bras reste borné à 1 sur toute la durée du test.
+
+    Cette fonction, elle, ne sait rien de tout ça : elle applique un modulo au
+    rang qu'on lui donne. C'est l'appelant qui décide ce que « rang » veut dire.
     """
-    bras = bras_demandes(template_choice)
-    if not bras:
+    eligibles = bras_eligibles(template_choice, metier_connu=metier_connu)
+    if not eligibles:
         # Valeur inconnue : on la rend telle quelle. Elle sera visible dans
         # `template_demande` et refusée plus loin plutôt que devinée ici.
         return template_choice
-    if not metier_connu:
-        # Trouvé par un conseil de relecture le 2026-09-07. Ces entreprises
-        # restent joignables toute l'année — c'est le garde-fou nº2, « on
-        # inclut dans le doute » — et le bras se tirait au RANG dans le lot,
-        # sans jamais regarder si un métier avait été reconnu. Une sur deux
-        # tombait donc sur un gabarit dont la tête EXIGE un métier.
-        sans_tete_fixe = tuple(b for b in bras if b not in GABARITS_A_TETE_FIXE)
-        # Si l'appelant n'a demandé QUE des gabarits à tête fixe, on ne peut
-        # rien inventer : on rend le tirage normal plutôt que de renvoyer un
-        # bras qu'il n'a pas demandé. Le cas n'existe pas en production
-        # (`template_choice="ABCD"`), et le masquer serait pire que le laisser
-        # visible.
-        if sans_tete_fixe:
-            return sans_tete_fixe[rang % len(sans_tete_fixe)]
-    return bras[rang % len(bras)]
+    return eligibles[rang % len(eligibles)]
 
 
 def est_un_gabarit(valeur: str | None) -> bool:

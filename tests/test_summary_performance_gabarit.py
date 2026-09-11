@@ -425,3 +425,138 @@ async def test_une_panne_du_classement_nemporte_pas_les_compteurs(monkeypatch) -
     assert out["totals"]["performance_gabarit"]["lu"] is False
     # Les chiffres déjà lus ne sont PAS détruits par la panne de l'autre vue.
     assert out["totals"]["performance_gabarit"]["bras"][0]["livres"] == 500
+
+
+# ------------------------------------------- les constats du second conseil
+
+def test_une_colonne_absente_se_dit_au_lieu_de_compter_zero() -> None:
+    """🔴 PostgREST ne signale pas une colonne absente d'un `select=` : il rend
+    les autres. Sans garde, raccourcir la chaîne — un geste qui a l'air d'un
+    ménage — faisait lire 0 sur `partis`, et le bloc annonçait « aucun courriel
+    parti » le soir où 500 étaient partis. Un résumé confiant et faux."""
+    from src import http_api
+
+    ampute = _perf(bras="A", leads=500, partis=500, livres=500,
+                   livres_reponse=500, reponses_brutes=100, taux_reponse=20.0)
+    del ampute["partis"]
+
+    bloc = http_api._bloc_performance_gabarit([ampute], [])
+
+    assert "colonnes absentes" in bloc
+    assert "partis" in bloc
+    assert "aucun courriel parti" not in bloc
+    assert "500 livrés" not in bloc, "aucun chiffre ne doit être affiché sur des colonnes amputées"
+
+
+async def test_la_chaine_select_demande_bien_ce_que_le_rendu_lit(monkeypatch) -> None:
+    from src import http_api
+
+    vues: dict[str, str] = {}
+
+    async def _select_all(table, *, order, params=None, page_size=1000, schema=None):
+        vues[table] = (params or {}).get("select", "")
+        return []
+
+    _stubs(monkeypatch, _select_all)
+    await http_api.summary_daily(http_api.DailySummaryIn(tracks=["agence-ia"], post=False))
+
+    demandees = set(vues["v_perf_par_bras"].split(","))
+    for colonne in http_api._COLONNES_PERF_LUES:
+        assert colonne in demandees, f"{colonne} est lue par le rendu mais absente du select="
+
+
+def test_le_pluriel_de_murs(monkeypatch) -> None:
+    """L'accord oublié par le correctif précédent — et c'est l'état exact des
+    jours qui suivent le franchissement de la fenêtre de maturité."""
+    from src import http_api
+
+    zero = http_api._bloc_performance_gabarit(
+        [_perf(bras="A", leads=40, partis=40, livres=40, livres_reponse=0)], [])
+    assert "(0 mûr)" in zero and "0 mûrs" not in zero
+
+    un = http_api._bloc_performance_gabarit(
+        [_perf(bras="A", leads=40, partis=40, livres=40, livres_reponse=1)], [])
+    assert "(1 mûr)" in un and "1 mûrs" not in un
+
+    deux = http_api._bloc_performance_gabarit(
+        [_perf(bras="A", leads=40, partis=40, livres=40, livres_reponse=2)], [])
+    assert "(2 mûrs)" in deux
+
+
+def test_les_libelles_correspondent_aux_valeurs_du_sql() -> None:
+    """🔴 Les deux tests de boucle précédents lisaient l'attendu DANS la table
+    qu'ils vérifiaient : renommer une clé les gardait verts pendant que Slack
+    affichait « verdict inconnu » tous les soirs. Les valeurs sont donc
+    recopiées ici EN DUR depuis le `case` de la migration 0053."""
+    from src import http_api
+
+    assert set(http_api._LIBELLES_VERDICTS) == {
+        "incoherent", "aucune donnee", "pas de comparaison",
+        "trop tot", "non concluant", "ecart net",
+    }
+    assert set(http_api._LIBELLES_CATEGORIES) == {
+        "taux_reponse", "taux_oui", "taux_rdv", "taux_vente",
+        "part_oui_dans_reponses",
+    }
+
+
+async def test_une_exception_de_rendu_ne_se_maquille_pas_en_panne_de_lecture(monkeypatch) -> None:
+    """🔴 C'est LE contrat du découpage en deux `try` : le rendu vit dehors. Un
+    refactor bien intentionné qui le remettrait dedans ferait réapparaître les
+    trois défauts d'un coup, et les autres tests resteraient verts."""
+    import pytest as _pytest
+    from src import http_api
+
+    async def _select_all(table, *, order, params=None, page_size=1000, schema=None):
+        if table == "v_perf_par_bras":
+            return [_perf(bras="A", leads=1, partis=1, livres=1, livres_reponse=1)]
+        return []
+
+    def _explose(perf, tete):
+        raise RuntimeError("defaut de rendu")
+
+    _stubs(monkeypatch, _select_all)
+    monkeypatch.setattr(http_api, "_bloc_performance_gabarit", _explose)
+
+    with _pytest.raises(RuntimeError, match="defaut de rendu"):
+        await http_api.summary_daily(
+            http_api.DailySummaryIn(tracks=["agence-ia"], post=False)
+        )
+
+
+def test_la_cohorte_comparee_est_nommee() -> None:
+    """🔴 Le classement ne porte QUE sur les leads dont les mêmes bras étaient
+    en jeu (0055). Sans le dire, un lecteur croit qu'il porte sur tout le
+    tableau au-dessus — or celui-ci mélange des lots qui n'ont pas couru
+    l'un contre l'autre."""
+    from src import http_api
+
+    bloc = http_api._bloc_performance_gabarit(
+        [_perf(bras="A", leads=500, partis=500, livres=500, livres_reponse=500,
+               reponses_brutes=100, taux_reponse=20.0),
+         _perf(bras="B", leads=500, partis=500, livres=500, livres_reponse=500,
+               reponses_brutes=150, taux_reponse=30.0)],
+        [{**_tete(categorie="taux_reponse", bras_en_tete="B", valeur_en_tete=30.0,
+                  succes_en_tete=150, base_en_tete=500, bras_suivant="A",
+                  valeur_suivant=20.0, succes_suivant=100, base_suivant=500,
+                  verdict="ecart net"), "cohorte": "ABCD"}],
+    )
+
+    assert "ABCD" in bloc
+    assert "classement restreint" in bloc
+    # La mention précède les lignes de tête, sinon elle se lit comme une note
+    # de bas de bloc que personne ne rattache au classement.
+    assert bloc.index("classement restreint") < bloc.index("🥇")
+
+
+def test_sans_ligne_de_tete_la_cohorte_ne_sencombre_pas() -> None:
+    """Rien à classer : pas de mention de cohorte non plus, sinon c'est du bruit."""
+    from src import http_api
+
+    bloc = http_api._bloc_performance_gabarit(
+        [_perf(bras="A", leads=500, partis=500, livres=500, livres_reponse=500)],
+        [{**_tete(categorie="taux_reponse", bras_en_tete="A", succes_en_tete=0,
+                  base_en_tete=500, verdict="trop tot"), "cohorte": "ABCD"}],
+    )
+
+    assert "classement restreint" not in bloc

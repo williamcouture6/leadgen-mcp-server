@@ -870,21 +870,60 @@ async def _retenir(
     # re-bouncer (jetons brûlés + réputation d'envoi) — ça se règle au niveau
     # contact, pas en régénérant un draft.
     # (messages.status est NOT NULL DEFAULT 'draft' → pas de piège NULL avec not.in.)
+    # 🔴 L'EXCLUSION PORTE SUR L'ENTREPRISE, PAS SEULEMENT SUR LE CONTACT.
+    #
+    # Mesuré le 2026-09-10 : 85 leads pour 78 entreprises, et PROGAZON avait
+    # reçu QUATRE courriels froids, sur les bras A, C et D. `max_per_company`
+    # ne vaut qu'à l'intérieur d'un lot : celui de 12 h retenait le contact 1 et
+    # écartait le contact 2, celui de 12 h 30 revoyait le contact 2, ne le
+    # trouvait dans aucun message, et le servait.
+    #
+    # C'est d'abord un problème d'ENVOI — quatre courriels froids à la même
+    # boîte, c'est ce qui fait dire « c'est du spam », et ça se voit chez le
+    # prospect avant de se voir chez nous. Accessoirement, le bras du deuxième
+    # courriel est confondu avec « cette entreprise nous a déjà vus ».
+    #
+    # ⚠️ ON REMONTE DES ENTREPRISES VERS TOUS LEURS CONTACTS, et pas seulement
+    # ceux de la page. `send.py` passe le contact à `status='contacted'` au
+    # push : le frère DÉJÀ SERVI a donc quitté le `status in (new, ready)` que
+    # lit la sélection. Déduire l'exclusion des contacts de la page raterait
+    # exactement le cas dangereux — celui où l'entreprise a déjà reçu son
+    # courriel.
+    freres = await db.select(
+        "contacts",
+        params={
+            "select": "id,company_id",
+            "company_id": f"in.({','.join(company_ids)})",
+        },
+    )
+    company_par_contact = {f["id"]: f["company_id"] for f in freres}
+
+    # `status=not.in.(failed)` : un message ABANDONNÉ ne gèle ni son contact ni
+    # son entreprise. 'failed' est la façon PRÉVUE de retirer un brouillon à la
+    # main ; bloquer dessus gèlerait toute la boîte au lieu de la libérer.
     existing_msgs = await db.select(
         "messages",
         params={
             "select": "contact_id",
-            "contact_id": f"in.({','.join(c['id'] for c in contacts)})",
+            "contact_id": f"in.({','.join(company_par_contact) or 'null'})",
             "direction": "eq.outbound",
             "status": "not.in.(failed)",
         },
-    )
+    ) if company_par_contact else []
     already_drafted = {m["contact_id"] for m in existing_msgs}
+    entreprises_engagees = {
+        company_par_contact[cid]
+        for cid in already_drafted
+        if cid in company_par_contact
+    }
 
     # Filtre + groupe par company
     eligible: dict[str, list[dict[str, Any]]] = {}
     for c in contacts:
         if c["id"] in already_drafted:
+            continue
+        # Une entreprise déjà servie ne revient pas, quel que soit le contact.
+        if c["company_id"] in entreprises_engagees:
             continue
         company = by_id.get(c["company_id"])
         if not company:
@@ -972,6 +1011,10 @@ class MessageDraftIn(BaseModel):
     # Les corps des relances, {"relance_1": "...", "relance_2": "..."}
     # (migration 0046). NULL sur la piste OPT, qui n'a pas de relances.
     followups: dict[str, Any] | None = None
+    # Les bras qui pouvaient REELLEMENT etre servis a ce contact (migration
+    # 0055). PAS le parametre du lot : l'ensemble APRES la garde des tetes
+    # fixes. Sans lui, comparer A/B a C/D revient a comparer deux lots.
+    bras_eligibles: str | None = None
 
 
 async def insert_message_draft(payload: MessageDraftIn) -> dict[str, Any]:

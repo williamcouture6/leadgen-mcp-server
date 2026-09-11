@@ -53,6 +53,16 @@ class _FausseBase:
         ]
 
     async def select(self, table: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        if table == "contacts" and "company_id" in params:
+            # La lecture des FRERES : tous les contacts des entreprises
+            # candidates, y compris ceux qui ont quitte la file au push
+            # (status contacted). Elle ne compte pas comme une page de file.
+            ids = params["company_id"].removeprefix("in.(").rstrip(")").split(",")
+            return [
+                {"id": c["id"], "company_id": c["company_id"]}
+                for c in self.contacts
+                if c["company_id"] in ids
+            ]
         if table == "contacts":
             self.pages_lues += 1
             deb = int(params.get("offset", 0))
