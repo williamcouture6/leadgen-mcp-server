@@ -657,8 +657,12 @@ def classer_services(
     """
     libelles = [s for s in (services_offered or []) if isinstance(s, str) and s.strip()]
 
+    # Comptage des libellés par métier. Un libellé peut compter pour plusieurs
+    # métiers (« déneigement et aménagement paysager ») : c'est voulu, garde-fou
+    # nº2 — on inclut dans le doute.
     compte: dict[str, int] = {}
     ordre_apparition: dict[str, int] = {}
+    # Les métiers de `EXIGE` dont au moins un libellé porte le signal.
     exigence_satisfaite: set[str] = set()
     for rang, libelle in enumerate(libelles):
         plat = _sans_accents(libelle)
@@ -667,24 +671,41 @@ def classer_services(
             for metier, motifs in _RACINES_RE.items()
             if any(m.search(plat) for m in motifs)
         }
-        # 🔴 L'ORDRE DES TROIS BLOCS EST DÉLIBÉRÉ. Les exclusions AVANT `ECRASE` :
-        # un libellé faussement apparié ne doit pas non plus servir à écraser un
-        # métier légitime. Les exigences ensuite : elles NOTENT le signal, elles
-        # n'écartent rien.
+        # 🔴 L'ORDRE DES TROIS BLOCS EST DÉLIBÉRÉ. Les exclusions AVANT
+        # `ECRASE` : un libellé faussement apparié ne doit pas non plus servir à
+        # écraser un métier légitime. « Installation de clôtures de piscine » ne
+        # doit ni ajouter `piscine`, ni faire disparaître `excavation` par la
+        # règle piscine→excavation.
         for metier, phrases in EXCLUSIONS.items():
             if metier in apparies and any(p in plat for p in phrases):
                 apparies.discard(metier)
+        # Puis les EXIGENCES. 🔴 Elles n'écartent PAS le métier : elles notent
+        # si le signal a été vu au moins une fois. Voir `EXIGE`.
         for metier, signaux in EXIGE.items():
             if metier in apparies and any(sig in plat for sig in signaux):
                 exigence_satisfaite.add(metier)
         for gagnant, perdants in ECRASE.items():
             if gagnant in apparies:
                 apparies -= set(perdants)
-        # 🔴 ON RÉORDONNE SELON `_RACINES_RE` AVANT D'INSÉRER. `apparies` est un
-        # SET, dont l'ordre d'itération dépend de la randomisation du hash, qui
-        # change à CHAQUE processus. Il déciderait l'ordre d'insertion, donc
-        # l'ordre d'apparition, donc la rupture d'égalité — donc le dominant,
-        # qui gouverne le lexique. Mesuré : deux graines, deux dominants.
+        # 🔴 ON RÉORDONNE SELON `_RACINES_RE` AVANT D'INSÉRER, et ce n'est PAS
+        # cosmétique. `apparies` est un SET de chaînes : son ordre d'itération
+        # dépend de la randomisation du hash de Python, qui change à CHAQUE
+        # processus. Il décidait donc l'ordre d'insertion dans `compte`, donc
+        # l'ordre d'apparition, donc la rupture d'égalité du tri stable plus
+        # bas — donc le dominant, qui gouverne le LEXIQUE.
+        #
+        # Mesuré avant correctif, même entreprise, seeds différents :
+        #   PYTHONHASHSEED=1 → Piscines Élégance dominant='piscine'
+        #   PYTHONHASHSEED=0 → la même, dominant='excavation'
+        # L'installateur de piscines se faisait demander « l'accès au terrain,
+        # ce qu'il y a à creuser » un envoi sur deux.
+        #
+        # ⚠️ Un test de rejouabilité DANS UN SEUL PROCESSUS ne peut pas voir
+        # ça : le hash est tiré une fois au démarrage. Il faut des processus
+        # séparés — voir `test_le_dominant_est_stable_entre_processus`
+        # (`tests/test_metiers.py`, sur `resoudre_metiers`) et
+        # `test_le_classement_est_stable_entre_processus`
+        # (`tests/test_classer_services.py`, sur cette fonction-ci).
         for metier in _RACINES_RE:
             if metier not in apparies:
                 continue

@@ -49,9 +49,22 @@ def test_resoudre_metiers_APPELLE_vraiment_classer_services():
         "resoudre_metiers ne référence pas classer_services : le corps d'origine "
         "est resté en place, il existe maintenant DEUX classifications"
     )
-    assert "_RACINES_RE" not in noms, (
-        "resoudre_metiers apparie encore les libellés lui-même"
-    )
+    # 🔴 LE CONTRÔLE NÉGATIF DOIT COUVRIR LES QUATRE OUTILS D'APPARIEMENT.
+    # N'interdire que `_RACINES_RE` laisse passer une `resoudre_metiers` qui
+    # appelle `classer_services` ET garde une seconde passe sur `EXCLUSIONS`,
+    # `ECRASE` ou `_sans_accents` : la classification serait de nouveau double,
+    # et le test resterait vert. C'est exactement le trou que ce test existe
+    # pour fermer.
+    #
+    # ⚠️ `EXIGE` n'est PAS dans la liste, et c'est voulu : `resoudre_metiers` a
+    # le droit de le lire, elle s'en sert pour décider quel métier peut OUVRIR
+    # une fenêtre (`m not in EXIGE or m in exigence_satisfaite`). L'y ajouter
+    # ferait rougir le test sur du code correct.
+    for interdit in ("_RACINES_RE", "EXCLUSIONS", "ECRASE", "_sans_accents"):
+        assert interdit not in noms, (
+            f"resoudre_metiers touche encore `{interdit}` : elle apparie les "
+            "libellés elle-même, en plus d'appeler classer_services"
+        )
 
 
 def test_le_classement_est_celui_de_resoudre_metiers():
@@ -90,17 +103,35 @@ def test_lexigence_de_la_piscine_est_rendue():
 @pytest.mark.parametrize(
     "services",
     [
-        # 🔴 CHAQUE CAS PORTE DEUX MÉTIERS DANS LE MÊME LIBELLÉ, À ÉGALITÉ.
-        # Une version antérieure de ce plan utilisait
+        # 🔴 CHAQUE CAS PORTE DEUX MÉTIERS DANS UN SEUL LIBELLÉ, DONC À ÉGALITÉ
+        # PARFAITE — c'est la seule configuration où l'ordre d'itération du set
+        # décide, faute de quoi `ordre_apparition` tranche avant lui et le bug
+        # devient invisible.
+        #
+        # ⚠️ UN CORPUS NE SE CHOISIT PAS À L'INTUITION, IL SE MESURE. Chaque cas
+        # ci-dessous a été validé en réimplémentant la boucle buggée
+        # (`for metier in apparies:`) et en la rejouant sur 25 graines de hash.
+        # Nombre de sorties distinctes AVEC le bug, et répartition :
+        #   déneigement + paysagement       → 2 sorties, 13/12
+        #   piscine + paysagement           → 2 sorties, 16/9
+        #   lavage de vitres + déneigement  → 2 sorties, 14/11
+        # SANS le bug : 1 seule sortie pour les trois, sur les 25 graines.
+        # Et vérifié sur les 5 graines que ce test utilise réellement (1 à 5) :
+        # les trois s'y scindent, donc les trois mordent pour de vrai.
+        #
+        # 🔴 DEUX CORPUS ÉCARTÉS, POUR MÉMOIRE — tous deux passaient au vert
+        # AVEC le bug dedans, ce qui est le pire défaut possible ici :
         #   ['Excavation','Installation de piscine creusée','Terrassement',
-        #    'Entretien de piscine']
-        # Un conseil a réimplémenté le bug (boucle sur `apparies`) et l'a rejoué
-        # sur 25 graines : les 25 rendaient le MÊME dominant. Le bug y est
-        # invisible, parce que `excavation` est seule dans le libellé nº0 et que
-        # `ordre_apparition` tranche l'égalité avant l'ordre du set.
-        # Les cas ci-dessous, eux, se scindent 13/12 AVEC le bug.
+        #    'Entretien de piscine'] : 25 graines, 25 fois le même dominant.
+        #    `excavation` est seule dans le libellé nº0, donc `ordre_apparition`
+        #    tranche l'égalité avant l'ordre du set.
+        #   ['Installation de piscines creusées'] : 25 graines, 25 fois
+        #    `('piscine',)`. Il n'apparie qu'UN métier — « creusées » ne
+        #    déclenche pas `excavation`. Un seul métier, aucune égalité, rien à
+        #    départager. Il a vécu un commit dans ce fichier en affirmant le
+        #    contraire ; remplacé ici par le cas vitres+déneigement, mesuré.
         ["déneigement et aménagement paysager"],
-        ["Installation de piscines creusées"],
+        ["lavage de vitres et déneigement de toiture"],
         ["entretien de piscine et aménagement paysager"],
     ],
 )
