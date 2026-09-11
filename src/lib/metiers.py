@@ -616,6 +616,97 @@ def metier_depuis_industry(industry: str | None) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class Classement:
+    """Le classement des libellés, SANS le calendrier.
+
+    🔴 Aucune date n'entre ici, et c'est la raison d'être de la classe. Les
+    colonnes dérivées de `companies` se calculent une fois, à l'écriture de la
+    recherche ; si le calcul dépendait du jour, la colonne serait fausse le
+    lendemain sans que rien ne le dise.
+    """
+
+    metiers: tuple[str, ...]
+    """Ordonnés par nombre de libellés décroissant ; à égalité, l'ordre
+    d'apparition. `metiers[0]` est le dominant."""
+
+    compte: dict[str, int]
+    """Combien de libellés ont apparié chaque métier."""
+
+    exigence_satisfaite: frozenset[str]
+    """Les métiers de `EXIGE` dont le signal a été vu au moins une fois.
+    ⚠️ À n'utiliser qu'en test d'appartenance, jamais à itérer."""
+
+    source: str
+    """`services_offered` ou `inconnu`."""
+
+
+def classer_services(
+    services_offered: list[str] | None, industry: str | None = None
+) -> Classement:
+    """Apparie les libellés aux métiers. Déterministe, rejouable, sans date.
+
+    Extraite de `resoudre_metiers` le 2026-09-10 (AC1c·A) pour que le calcul des
+    colonnes et le choix de la scène du courriel partagent EXACTEMENT le même
+    dictionnaire. Deux classifications concurrentes divergeraient, et le courriel
+    parlerait d'un métier pendant que la file en croirait un autre.
+
+    ⚠️ `industry` est ACCEPTÉ MAIS IGNORÉ, comme dans `resoudre_metiers` : le
+    repli existe (`metier_depuis_industry`) et n'est appelé par personne —
+    décision William du 2026-09-02.
+    """
+    libelles = [s for s in (services_offered or []) if isinstance(s, str) and s.strip()]
+
+    compte: dict[str, int] = {}
+    ordre_apparition: dict[str, int] = {}
+    exigence_satisfaite: set[str] = set()
+    for rang, libelle in enumerate(libelles):
+        plat = _sans_accents(libelle)
+        apparies = {
+            metier
+            for metier, motifs in _RACINES_RE.items()
+            if any(m.search(plat) for m in motifs)
+        }
+        # 🔴 L'ORDRE DES TROIS BLOCS EST DÉLIBÉRÉ. Les exclusions AVANT `ECRASE` :
+        # un libellé faussement apparié ne doit pas non plus servir à écraser un
+        # métier légitime. Les exigences ensuite : elles NOTENT le signal, elles
+        # n'écartent rien.
+        for metier, phrases in EXCLUSIONS.items():
+            if metier in apparies and any(p in plat for p in phrases):
+                apparies.discard(metier)
+        for metier, signaux in EXIGE.items():
+            if metier in apparies and any(sig in plat for sig in signaux):
+                exigence_satisfaite.add(metier)
+        for gagnant, perdants in ECRASE.items():
+            if gagnant in apparies:
+                apparies -= set(perdants)
+        # 🔴 ON RÉORDONNE SELON `_RACINES_RE` AVANT D'INSÉRER. `apparies` est un
+        # SET, dont l'ordre d'itération dépend de la randomisation du hash, qui
+        # change à CHAQUE processus. Il déciderait l'ordre d'insertion, donc
+        # l'ordre d'apparition, donc la rupture d'égalité — donc le dominant,
+        # qui gouverne le lexique. Mesuré : deux graines, deux dominants.
+        for metier in _RACINES_RE:
+            if metier not in apparies:
+                continue
+            compte[metier] = compte.get(metier, 0) + 1
+            ordre_apparition.setdefault(metier, rang)
+
+    if not compte:
+        # Défaut inversé (garde-fou nº2) : aucun métier RECONNU. Ce n'est pas la
+        # même chose que « services_offered vide ».
+        return Classement(
+            metiers=(), compte={}, exigence_satisfaite=frozenset(), source="inconnu"
+        )
+
+    metiers = tuple(sorted(compte, key=lambda m: (-compte[m], ordre_apparition[m])))
+    return Classement(
+        metiers=metiers,
+        compte=dict(compte),
+        exigence_satisfaite=frozenset(exigence_satisfaite),
+        source="services_offered",
+    )
+
+
 def resoudre_metiers(
     services_offered: list[str] | None,
     aujourdhui: date,
@@ -632,58 +723,9 @@ def resoudre_metiers(
     débranchement soit vérifiable par un test plutôt que constaté par une
     absence. Voir le bloc de commentaires avant le calcul des fenêtres.
     """
-    libelles = [s for s in (services_offered or []) if isinstance(s, str) and s.strip()]
-
-    # Comptage des libellés par métier. Un libellé peut compter pour plusieurs
-    # métiers (« déneigement et aménagement paysager ») : c'est voulu, garde-fou
-    # nº2 — on inclut dans le doute.
-    compte: dict[str, int] = {}
-    ordre_apparition: dict[str, int] = {}
-    # Les métiers de `EXIGE` dont au moins un libellé porte le signal.
-    exigence_satisfaite: set[str] = set()
-    for rang, libelle in enumerate(libelles):
-        plat = _sans_accents(libelle)
-        apparies = {
-            metier
-            for metier, motifs in _RACINES_RE.items()
-            if any(m.search(plat) for m in motifs)
-        }
-        # Les exclusions AVANT `ECRASE` : un libellé faussement apparié ne doit
-        # pas non plus servir à écraser un métier légitime. « Installation de
-        # clôtures de piscine » ne doit ni ajouter `piscine`, ni faire
-        # disparaître `excavation` par la règle piscine→excavation.
-        for metier, phrases in EXCLUSIONS.items():
-            if metier in apparies and any(p in plat for p in phrases):
-                apparies.discard(metier)
-        # Puis les EXIGENCES. 🔴 Elles n'écartent PAS le métier : elles notent
-        # si le signal a été vu au moins une fois. Voir `EXIGE`.
-        for metier, signaux in EXIGE.items():
-            if metier in apparies and any(sig in plat for sig in signaux):
-                exigence_satisfaite.add(metier)
-        for gagnant, perdants in ECRASE.items():
-            if gagnant in apparies:
-                apparies -= set(perdants)
-        # 🔴 On réordonne selon RACINES avant d'insérer, et ce n'est PAS
-        # cosmétique. `apparies` est un SET de chaînes : son ordre d'itération
-        # dépend de la randomisation du hash de Python, qui change à CHAQUE
-        # processus. Il décidait donc l'ordre d'insertion dans `compte`, donc
-        # l'ordre d'apparition, donc la rupture d'égalité du tri stable plus
-        # bas — donc `dominant`, qui gouverne le LEXIQUE.
-        #
-        # Mesuré avant correctif, même entreprise, seeds différents :
-        #   PYTHONHASHSEED=1 → Piscines Élégance dominant='piscine'
-        #   PYTHONHASHSEED=0 → la même, dominant='excavation'
-        # L'installateur de piscines se faisait demander « l'accès au terrain,
-        # ce qu'il y a à creuser » un envoi sur deux.
-        #
-        # ⚠️ Un test de rejouabilité DANS UN SEUL PROCESSUS ne peut pas voir
-        # ça : le hash est tiré une fois au démarrage. Il faut des processus
-        # séparés — voir `test_le_dominant_est_stable_entre_processus`.
-        for metier in _RACINES_RE:
-            if metier not in apparies:
-                continue
-            compte[metier] = compte.get(metier, 0) + 1
-            ordre_apparition.setdefault(metier, rang)
+    classement = classer_services(services_offered, industry)
+    compte = classement.compte
+    exigence_satisfaite = classement.exigence_satisfaite
 
     if not compte:
         # Défaut inversé : aucun métier reconnu ne veut pas dire « aucun mois ».
@@ -695,13 +737,9 @@ def resoudre_metiers(
             scene_moment_saison=None,
         )
 
-    # Décroissant par nombre de libellés ; à égalité, l'ordre d'apparition dans
-    # `services_offered` (stable, donc rejouable).
-    metiers = tuple(
-        sorted(compte, key=lambda m: (-compte[m], ordre_apparition[m]))
-    )
+    metiers = classement.metiers
     dominant = metiers[0]
-    source = "services_offered"
+    source = classement.source
 
     # 🔴 LE REPLI SUR `industry` EXISTE MAIS N'EST PAS BRANCHÉ — décision
     # William du 2026-09-02. NE PAS LE REBRANCHER SANS LUI DEMANDER.
