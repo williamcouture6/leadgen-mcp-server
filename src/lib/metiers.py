@@ -728,6 +728,58 @@ def classer_services(
     )
 
 
+def colonnes_metiers(
+    services_offered: list[str] | None, industry: str | None = None
+) -> dict[str, object]:
+    """Les trois valeurs que `companies` portera, prêtes à écrire.
+
+    🔴 `fenetre_mois` porte LE RÉSULTAT de la règle, pas l'union brute des
+    fenêtres. Trois cas, tous résolus ici :
+
+      · au moins un métier saisonnier DONT LA FENÊTRE A LE DROIT DE S'OUVRIR
+        → l'union de ces fenêtres ;
+      · aucun métier reconnu → les douze mois (défaut inversé, garde-fou nº2) ;
+      · aucune fenêtre ouvrable → vide, l'entreprise n'est jamais démarchée.
+
+    « A le droit de s'ouvrir » recouvre DEUX conditions, et oublier la seconde
+    est le défaut que trois relectures ont mis à jour :
+      1. le métier a une saison documentée (`SAISONS`) — un métier 12 mois sur
+         12 ne peut pas enclencher une séquence (règle du 2026-09-02) ;
+      2. si le métier figure dans `EXIGE`, son signal a été vu au moins une fois
+         (« entretien de piscine » ouvre ; « installation de piscine creusée »
+         non). Le signal dépend du LIBELLÉ : il ne se reconstitue pas depuis la
+         liste des métiers, d'où le calcul ici et pas ailleurs.
+
+    ⚠️ CETTE VALEUR EST UN CACHE, ET RIEN NE L'INVALIDE. Toute modification de
+    `RACINES`, `EXIGE`, `EXCLUSIONS` ou `ECRASE` impose de rejouer
+    `scripts/backfill_metiers.py` : la scène du courriel se recalcule à chaque
+    brouillon, la colonne non. Corriger un trou de dictionnaire sans rejouer le
+    backfill ne reclasse RIEN.
+    """
+    classement = classer_services(services_offered, industry)
+
+    if not classement.metiers:
+        return {
+            "metiers": [],
+            "fenetre_mois": list(range(1, 13)),
+            "metier_source": "inconnu",
+        }
+
+    mois: set[int] = set()
+    for metier in classement.metiers:
+        if metier not in SAISONS:
+            continue
+        if metier in EXIGE and metier not in classement.exigence_satisfaite:
+            continue
+        mois |= fenetre_mois(metier)
+
+    return {
+        "metiers": list(classement.metiers),
+        "fenetre_mois": sorted(mois),
+        "metier_source": classement.source,
+    }
+
+
 def resoudre_metiers(
     services_offered: list[str] | None,
     aujourdhui: date,
