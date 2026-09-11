@@ -765,6 +765,22 @@ def colonnes_metiers(
             "metier_source": "inconnu",
         }
 
+    # 🔴 CE CALCUL DIVERGE DE `resoudre_metiers`, ET C'EST VOULU. NE PAS
+    # « RÉPARER » L'UN POUR LE FAIRE RESSEMBLER À L'AUTRE.
+    #
+    # Les deux répondent à des questions différentes :
+    #   · `resoudre_metiers.joignable` / `.fenetre_ouverte` = le DIAGNOSTIC et
+    #     le choix de la scène du courriel — « ce métier a-t-il une fenêtre
+    #     ouverte ce mois-ci ? ». Un métier sans saison a une fenêtre ouverte
+    #     tous les mois (garde-fou nº2), donc il y compte.
+    #   · `fenetre_mois` ci-dessous = la SÉLECTION — « a-t-on le droit
+    #     d'enclencher une séquence de contact ? ». La règle du 2026-09-02
+    #     l'interdit à un métier 12 mois sur 12.
+    #
+    # Le cas concret qui rend l'écart visible : un paveur pur ressort avec
+    # `joignable=True` chez `resoudre_metiers` et `fenetre_mois=[]` ici. Ce
+    # n'est pas une incohérence, c'est la règle — on ne lui écrit jamais, mais
+    # si on lui écrivait on saurait quoi lui dire.
     mois: set[int] = set()
     for metier in classement.metiers:
         if metier not in SAISONS:

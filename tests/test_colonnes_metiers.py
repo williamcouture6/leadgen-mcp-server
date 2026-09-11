@@ -67,6 +67,28 @@ def test_la_piscine_sans_verbe_dentretien_n_ouvre_RIEN():
     assert avec["fenetre_mois"] == [1, 2, 3, 4, 5, 6, 7]
 
 
+def test_industry_ne_rebranche_PAS_le_repli():
+    """🔴 GÈLE UN DÉBRANCHEMENT VOLONTAIRE — décision William du 2026-09-02.
+
+    `metier_depuis_industry` existe et résout bien « déneigement » depuis ce
+    secteur, mais `classer_services` l'IGNORE, et donc la colonne aussi. La
+    raison, mot pour mot : si la seule chose qu'on reconnaît d'un paysagiste
+    est « pavage », notre donnée sur lui est mauvaise — et on ne devine pas son
+    métier depuis le mot-clé de sourcing, puisque tout le courriel repose sur
+    le fait qu'on parle de ce qu'il fait vraiment.
+
+    ⚠️ Sans ce test, quelqu'un qui rebranche le repli dans `classer_services`
+    changerait le comportement de la COLONNE sans s'en apercevoir : le
+    paramètre traverse `colonnes_metiers` sans que rien ne l'exerce. Une fiche
+    non reconnue doit rester `inconnu` + les douze mois (défaut inversé), et
+    surtout PAS devenir un déneigeur joignable d'août à décembre.
+    """
+    c = colonnes_metiers(["Consultation"], industry="entrepreneur en déneigement")
+    assert c["metiers"] == []
+    assert c["metier_source"] == "inconnu"
+    assert c["fenetre_mois"] == list(range(1, 13))
+
+
 def test_le_patch_survit_a_un_aller_retour_json():
     """🔴 `fenetre_mois()` rend un frozenset : non sérialisable. Le patch doit
     porter des listes triées, sinon l'écriture lève.
