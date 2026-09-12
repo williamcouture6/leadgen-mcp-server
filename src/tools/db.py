@@ -661,6 +661,20 @@ def _contact_priority_score(contact: dict[str, Any]) -> int:
     return 9
 
 
+# Les entreprises dont la colonne `fenetre_mois` a été comparée au calcul, et
+# celles où les deux divergent.
+#
+# 🔴 OBSERVATION SEULE — AC1c·A. Le verdict rendu reste TOUJOURS celui du calcul :
+# la colonne est neuve, le backfill peut avoir été rattrapé par WF-3, et 119 tests
+# du dépôt construisent des fiches sans cette clé.
+#
+# 🔴 DEUX compteurs, pas un. `divergences=0` seul est ambigu : il vaut 0 quand
+# tout concorde ET quand il n'y avait rien à comparer (colonne NULL parce que
+# l'écrivain a échoué en silence). `comparaisons=0` distingue les deux.
+DIVERGENCES_FENETRE: set[str] = set()
+COMPARAISONS_FENETRE: set[str] = set()
+
+
 def fenetre_saisonniere_ouverte(
     company: dict[str, Any], *, track: str, aujourdhui: date | None = None
 ) -> bool:
@@ -738,7 +752,23 @@ def fenetre_saisonniere_ouverte(
     # disait que le repli s'appliquait. Une session future l'aurait lu devant
     # une fiche écartée, aurait conclu à un bogue, et aurait « réparé » en
     # rebranchant le repli, c'est-à-dire en annulant la décision.
-    return any(m in SAISONS for m in resolus.fenetre_ouverte)
+    verdict = any(m in SAISONS for m in resolus.fenetre_ouverte)
+
+    # Observation : la colonne dit-elle la même chose ? On ne change rien au
+    # verdict — voir le commentaire des deux compteurs.
+    #
+    # ⚠️ Les DEUX `return True` plus haut court-circuitent l'observation, et
+    # c'est ASSUMÉ, pas un oubli : la piste ≠ `agence-ia` n'est pas filtrée du
+    # tout, et une fiche dont aucun métier n'est reconnu porte `[1..12]` en
+    # colonne (défaut inversé des deux côtés) — elle ne PEUT pas diverger.
+    colonne = company.get("fenetre_mois")
+    if colonne is not None:
+        COMPARAISONS_FENETRE.add(str(company.get("id")))
+        mois = (aujourdhui or date.today()).month
+        if (mois in colonne) != verdict:
+            DIVERGENCES_FENETRE.add(str(company.get("id")))
+
+    return verdict
 
 
 async def list_contacts_to_personalize(

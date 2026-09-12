@@ -2719,6 +2719,16 @@ class RunWf4Out(BaseModel):
     # ⚠️ Ce n'est PAS un compteur de la copie : s'il monte, c'est WF-3 qui n'a
     # pas assez creuse les services de l'entreprise.
     lexique_de_repli: int = 0
+    # 🔴 OBSERVATION SEULE (AC1c·A) : la colonne `companies.fenetre_mois`
+    # comparée au calcul de `fenetre_saisonniere_ouverte`, PENDANT la sélection
+    # réelle. Aucun des deux ne refuse quoi que ce soit ici.
+    #
+    # 🔴 DEUX compteurs, pas un. `divergences_fenetre=0` seul est ambigu : il
+    # vaut 0 quand tout concorde ET quand il n'y avait rien à comparer.
+    # `comparaisons_fenetre=0` dit « rien comparé » — donc une panne de
+    # l'écrivain de la colonne, pas une parité.
+    divergences_fenetre: int = 0
+    comparaisons_fenetre: int = 0
     items: list[RunWf4Item]
 
 
@@ -2891,13 +2901,28 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
         )
         return RunWf4Out(
             processed=0, drafts_created=0, skipped=0, failed=0, slots_available=0,
-            repli_lexique=0, items=[],
+            # ⚠️ `repli_lexique=0` jusqu'au 2026-09-12 : ce nom n'existe PAS dans
+            # le modèle, et Pydantic l'avalait sans un mot. C'est le retour qu'un
+            # humain lit quand il diagnostique un lot refusé.
+            lexique_de_repli=0, divergences_fenetre=0, comparaisons_fenetre=0,
+            items=[],
         )
     async with _verrou_de_lot(cle):
         return await _run_wf4(payload)
 
 
 async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
+    # Le compte remonté ne vaut que pour CE lot — sinon il cumule sur toute la
+    # vie du processus et ne veut plus rien dire.
+    #
+    # ⚠️ `GET /contacts/to-personalize` (route de diagnostic) appelle la MÊME
+    # sélection et alimente donc ces compteurs sans jamais les vider. Ce n'est
+    # pas bloquant — le vidage ci-dessous a lieu au début de chaque lot — mais
+    # un compteur lu AILLEURS qu'au retour de `/wf4/run` peut porter les restes
+    # d'un appel de diagnostic.
+    db_tools.DIVERGENCES_FENETRE.clear()
+    db_tools.COMPARAISONS_FENETRE.clear()
+
     backlog = await db_tools.list_contacts_to_personalize(
         limit=payload.limit, max_per_company=payload.max_per_company, track=payload.track,
     )
@@ -3042,6 +3067,8 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
         slots_available=total_slots, items=items,
         alerte_famine_envoyee=alerte_famine_envoyee,
         lexique_de_repli=repli_lexique,
+        divergences_fenetre=len(db_tools.DIVERGENCES_FENETRE),
+        comparaisons_fenetre=len(db_tools.COMPARAISONS_FENETRE),
     )
 
 
