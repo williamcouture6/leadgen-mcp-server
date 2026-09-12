@@ -38,11 +38,20 @@ re-recherche à 90 jours — l'horodatage garde son ancienne valeur NON NULLE
 pendant que `research_json` a été remplacé. Colonnes périmées **et** invisibles.
 En recalculant tout, ce script rattrape les deux cas.
 
-⚠️ Pas de filtre sur `status` : le critère de complétude ci-dessus n'en a pas
-non plus, et en poser un ici laisserait une fiche devenue `disqualified` à NULL
-pour toujours, donc le critère à jamais non nul. L'anti-clobber
-`metiers_verifies_a_la_main` est en revanche respecté — c'est le seul verrou qui
-protège une valeur posée à la main par William.
+🔴 LES STATUTS TERMINAUX SONT ÉCARTÉS, ICI **ET** DANS LE CRITÈRE. Une fiche
+`disqualified`/`suppressed` ne reçoit pas de colonnes de métiers, et n'est pas
+non plus comptée comme « à rattraper » — les deux vont ensemble, sinon le critère
+resterait non nul pour toujours. Le second UPDATE de la production porte la même
+garde, pour la même raison.
+
+Ce n'est pas qu'une question de cohérence : `suppressed` est un RETRAIT DE
+CONSENTEMENT, et `fenetre_mois` veut littéralement dire « les mois où on peut la
+démarcher ». L'écrire sur une fiche retirée est un mauvais signal en soi, même si
+personne ne le lit. Mesuré le 2026-09-12 : 0 fiche terminale porte un
+`research_json` sur cette piste — la garde est prospective.
+
+L'anti-clobber `metiers_verifies_a_la_main` est respecté lui aussi : c'est le seul
+verrou qui protège une valeur posée à la main.
 
 Usage :
     python scripts/backfill_metiers.py --track agence-ia --dry-run
@@ -83,6 +92,8 @@ async def run(track: str, dry_run: bool) -> None:
             "select": "id,name,research_json,metiers_verifies_a_la_main",
             "track": f"eq.{track}",
             "research_json": "not.is.null",
+            # Voir le docstring : écarté ici ET dans le critère de complétude.
+            "status": "not.in.(disqualified,suppressed)",
         },
     )
     print(f"[{track}] {len(companies)} fiches researchées lues (pages de {TAILLE_PAGE}).")
