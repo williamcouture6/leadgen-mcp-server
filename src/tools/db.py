@@ -880,7 +880,17 @@ async def _retenir(
             # website n'est démarchée que si sa fiche Google est exploitable).
             "select": (
                 "id,name,domain,website,city,icp_segment,industry,research_json,track,"
-                "google_rating,google_reviews_count,google_place_id"
+                "google_rating,google_reviews_count,google_place_id,"
+                # 🔴 PROJETÉE POUR ÊTRE COMPARÉE, PAS POUR DÉCIDER (AC1c·A).
+                # Sans elle, `company.get("fenetre_mois")` rend None en production,
+                # l'observation est court-circuitée, et /wf4/run remonte
+                # `comparaisons_fenetre=0` à tous les coups — ce qui se lit, par la
+                # convention que cette même conversation installe, comme « l'écrivain
+                # de la colonne est en panne ».
+                # Ajouter un champ à une PROJECTION ne peut pas changer quelles lignes
+                # sont retenues : la preuve de non-régression (rejeu sur instantané
+                # figé) le vérifie.
+                "fenetre_mois"
             ),
             "id": f"in.({','.join(company_ids)})",
         },
