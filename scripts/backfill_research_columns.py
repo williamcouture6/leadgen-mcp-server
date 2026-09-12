@@ -8,10 +8,17 @@ prompt :
   - lead_potential_score / lead_potential_reason  (UNIQUEMENT si research_json
     contient déjà `lead_potential` — sinon laissé tel quel, ça exige un re-research)
   - status -> 'enriched'  (+ last_enriched_at)
+  - metiers / fenetre_mois / metier_source / metiers_calcules_le  (AC1c·A,
+    2026-09-11 : `update_company_research` fait DEPUIS un SECOND UPDATE, et ce
+    script en hérite. ⚠️ Il ne remplace PAS `scripts/backfill_metiers.py`, qui
+    n'écrit QUE ces quatre colonnes : celui-ci repose aussi `status` et
+    `last_enriched_at`, ce qui sort une fiche du backlog de recherche pour
+    90 jours.)
 
 On réutilise telle quelle la fonction de prod `db.update_company_research` : même
 logique, donc le backfill ne peut pas diverger de WF-3. Les boîtes
-disqualified/suppressed sont protégées par le filtre interne de cette fonction.
+disqualified/suppressed sont protégées par le filtre interne de cette fonction —
+les DEUX updates le portent depuis AC1c·A.
 
 Usage :
     python scripts/backfill_research_columns.py --track REACTI --dry-run
@@ -75,6 +82,7 @@ async def run(track: str, dry_run: bool) -> None:
     n_confirme = n_potentiel = n_aucun = 0
     n_score_present = n_score_absent = 0
     n_written = 0
+    n_sans_metiers = 0
 
     for co in companies:
         rj = co.get("research_json") or {}
@@ -96,8 +104,14 @@ async def run(track: str, dry_run: bool) -> None:
         n_score_absent += int(not has_score)
 
         if not dry_run:
-            await dbt.update_company_research(co["id"], rj, emails_found=emails)
+            res = await dbt.update_company_research(co["id"], rj, emails_found=emails)
             n_written += 1
+            # 🔴 Le second UPDATE (colonnes de métiers) NE LÈVE JAMAIS : sans ce
+            # compteur, 2000 échecs donneraient 2000 avertissements noyés dans la
+            # boucle et un résumé final annonçant un succès complet.
+            # `verrouillee` n'entre pas ici : c'est l'anti-clobber, et c'est correct.
+            if res.get("statut_metiers") in ("echec", "absente"):
+                n_sans_metiers += 1
 
     print("─" * 60)
     print(f"décideur : confirmé={n_confirme}  potentiel={n_potentiel}  aucun={n_aucun}")
@@ -106,6 +120,10 @@ async def run(track: str, dry_run: bool) -> None:
         print("DRY-RUN : rien écrit. Relance sans --dry-run pour appliquer.")
     else:
         print(f"écrit : {n_written} boîtes mises à jour (status->enriched, décideur, score si présent).")
+        if n_sans_metiers:
+            print(f"⚠️  {n_sans_metiers} boîtes SANS colonnes de métiers "
+                  f"(second UPDATE en échec, ou fiche devenue terminale) — "
+                  f"rejouer scripts/backfill_metiers.py.")
 
 
 def main() -> None:

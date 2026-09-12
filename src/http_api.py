@@ -1610,9 +1610,14 @@ class ResearchCompanyByIdOut(BaseModel):
     emails_scraped_inserted: int = 0
     emails_scraped_duplicate: int = 0
     # None = la passe n'est pas allee jusqu'a l'ecriture (skipped/error).
-    # False = la fiche est recherchee mais SANS colonnes de metiers : elle est
-    # invisible aux fenetres saisonnieres tant que le backfill n'est pas rejoue.
+    # False = la fiche est recherchee mais SANS colonnes de metiers.
     metiers_ecrits: bool | None = None
+    # 🔴 QUATRE VALEURS, PAS UN BOOLEEN. `verrouillee` (l'anti-clobber a joue)
+    # est un comportement CORRECT : le confondre avec `echec` ferait sonner
+    # l'alarme sur le fonctionnement nominal des que William posera le drapeau
+    # de verification manuelle -- et une alarme qui sonne au nominal est morte.
+    # Seuls `echec` et `absente` sont des anomalies.
+    statut_metiers: str | None = None
 
 
 @app.post(
@@ -1700,11 +1705,12 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
     resultat_maj = await db_tools.update_company_research(
         payload.company_id, out.research_json, emails_found=out.emails_found
     )
-    if not resultat_maj.get("metiers_ecrits"):
+    if resultat_maj["statut_metiers"] in ("echec", "absente"):
         # Le second UPDATE de `update_company_research` ne lève jamais (il ne doit
         # pas faire perdre research_json). Sans ce journal, son échec serait MUET.
         logging.getLogger("wf3").warning(
-            "fiche %s recherchee SANS colonnes de metiers", payload.company_id
+            "fiche %s recherchee SANS colonnes de metiers (%s)",
+            payload.company_id, resultat_maj["statut_metiers"],
         )
     try:
         await db_tools.record_agent_run(
@@ -1771,7 +1777,8 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
         duration_ms=out.duration_ms,
         emails_scraped_inserted=inserted_scraped,
         emails_scraped_duplicate=duplicate_scraped,
-        metiers_ecrits=bool(resultat_maj.get("metiers_ecrits")),
+        metiers_ecrits=resultat_maj["metiers_ecrits"],
+        statut_metiers=resultat_maj["statut_metiers"],
     )
 
 
@@ -1866,8 +1873,10 @@ class RunWf3Out(BaseModel):
     skipped: int
     items: list[RunWf3Item]
     # Fiches recherchees avec succes MAIS dont les colonnes de metiers n'ont pas
-    # ete ecrites (second UPDATE en echec, ou fiche verrouillee a la main). Non
-    # nul = a rattraper par scripts/backfill_metiers.py. Doit rester a 0.
+    # ete ecrites par ANOMALIE : second UPDATE en echec, ou fiche devenue
+    # terminale pendant l'appel LLM. ⚠️ Une fiche verrouillee a la main n'entre
+    # PAS ici -- c'est l'anti-clobber qui joue, et c'est correct.
+    # Non nul = a rattraper par scripts/backfill_metiers.py.
     sans_colonnes_metiers: int = 0
 
 
@@ -1924,8 +1933,10 @@ async def _run_wf3(payload: RunWf3In) -> RunWf3Out:
             continue
         if res.status == "ok":
             succeeded += 1
-            # `is False` et pas `not …` : None = la passe n'a pas atteint l'ecriture.
-            if res.metiers_ecrits is False:
+            # 🔴 Seules les ANOMALIES comptent. Une fiche `verrouillee` a ses
+            # colonnes d'origine, posees a la main : la compter ici ferait
+            # monter le compteur sur un comportement correct.
+            if res.statut_metiers in ("echec", "absente"):
                 sans_colonnes_metiers += 1
         elif res.status.startswith("skipped"):
             skipped += 1

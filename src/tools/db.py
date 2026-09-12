@@ -1255,23 +1255,73 @@ async def update_company_research(
     # 🔴 ET IL NE LÈVE JAMAIS. L'appelant (`/research/company`) n'est pas sous
     # `try` : une exception ici perdrait research_json APRÈS un appel LLM de
     # ~35 s, et la boucle qui insère les contacts scrapés ne tournerait pas non
-    # plus. Une fiche sans colonnes, elle, est VISIBLE (metiers_calcules_le nul)
-    # et rattrapable par scripts/backfill_metiers.py.
-    metiers_ecrits = False
+    # plus.
+    #
+    # 🔴 LE RATTRAPAGE N'EST PAS `metiers_calcules_le IS NULL`. Ce critère ne
+    # voit que la PREMIÈRE passe. Si ce second UPDATE échoue sur une fiche déjà
+    # calculée — une re-recherche à 90 jours — l'horodatage garde son ancienne
+    # valeur non nulle pendant que `research_json` vient d'être remplacé :
+    # `metiers`/`fenetre_mois` décrivent alors l'ANCIEN JSON, périmés ET
+    # invisibles à un backfill qui ne cherche que les NULL. Le critère juste est
+    #     metiers_calcules_le is null or metiers_calcules_le < last_enriched_at
+    # (le même est inscrit dans le commentaire SQL de la colonne, migration 0059).
+    #
+    # ⚠️ COÛT : `db.update` est décoré d'un retry à 3 tentatives avec backoff
+    # exponentiel (1→8 s, timeout 30 s par tentative), donc sur un 5xx transitoire
+    # ce second appel peut ajouter une quinzaine de secondes PAR FICHE — contre un
+    # budget de lot d'environ 300 s avant que Railway coupe.
+    #
+    # ⚠️ LE FILTRE DES STATUTS TERMINAUX EST RÉPÉTÉ ICI, exprès. Sans lui, une
+    # fiche disqualified/suppressed se verrait refuser research_json par le
+    # premier UPDATE mais recevrait quand même ses colonnes de métiers — donc un
+    # `metiers_calcules_le` non nul, et un statut annonçant « tout va bien » sur
+    # le seul chemin où l'écriture principale a été jetée. Sur `suppressed`, qui
+    # est un retrait de consentement, écrire « les mois où on peut la démarcher »
+    # est un mauvais signal en soi. L'appel part même quand `rows` est vide : la
+    # fiche peut être devenue terminale PENDANT l'appel LLM, et c'est ce filtre —
+    # pas `rows` — qui tranche au moment de l'écriture.
+    statut_metiers = "echec"
     try:
         touchees = await db.update(
             "companies",
             extract_metiers_patch(research_json),
             filters={
                 "id": f"eq.{company_id}",
+                "status": "not.in.(disqualified,suppressed)",
                 "metiers_verifies_a_la_main": "eq.false",
             },
         )
-        metiers_ecrits = bool(touchees)
+        # `rows` a déjà répondu à « cette ligne existe-t-elle et est-elle non
+        # terminale ? » : distinguer les trois cas sains ne coûte aucune lecture.
+        if not rows:
+            statut_metiers = "absente"
+        elif touchees:
+            statut_metiers = "ecrit"
+        else:
+            statut_metiers = "verrouillee"
     except Exception as exc:  # noqa: BLE001 — voir le bloc ci-dessus
-        logger.warning("colonnes de metiers non ecrites pour %s : %s", company_id, exc)
+        # 🔴 `str(exc)` d'une HTTPStatusError rend « 400 Bad Request » + deux
+        # lignes de MDN. Le vrai message PostgREST (« PGRST204: column ... does
+        # not exist ») est dans `response.text`, et sur un chemin où l'exception
+        # est délibérément avalée c'est le SEUL canal de diagnostic.
+        # Idiome repris de src/lib/granola.py.
+        reponse = getattr(exc, "response", None)
+        corps = (getattr(reponse, "text", "") or "")[:300] if reponse is not None else ""
+        logger.warning(
+            "colonnes de metiers non ecrites pour %s : %s %s", company_id, exc, corps
+        )
 
-    return {"updated": len(rows), "metiers_ecrits": metiers_ecrits}
+    return {
+        "updated": len(rows),
+        # Conservé pour la rétro-compatibilité — `statut_metiers` porte le détail.
+        "metiers_ecrits": statut_metiers == "ecrit",
+        # ecrit · verrouillee (anti-clobber, COMPORTEMENT CORRECT) · absente · echec.
+        # Seuls `echec` et `absente` sont des anomalies : n'alerter que sur eux,
+        # sinon l'alarme sonnera sur le fonctionnement nominal le jour où William
+        # posera le drapeau de vérification manuelle — et une alarme qui sonne au
+        # nominal est une alarme morte.
+        "statut_metiers": statut_metiers,
+    }
 
 
 class AgentRunIn(BaseModel):
