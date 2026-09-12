@@ -1058,6 +1058,11 @@ class MessageDraftIn(BaseModel):
     # 0055). PAS le parametre du lot : l'ensemble APRES la garde des tetes
     # fixes. Sans lui, comparer A/B a C/D revient a comparer deux lots.
     bras_eligibles: str | None = None
+    # Ce dont ce courriel a parle, FIGE (migration 0058). Jamais relu depuis
+    # companies : AC1c ajoute precisement le recalcul qui reclasse, et relire au
+    # moment de l'analyse reecrirait l'histoire.
+    metiers: list[str] | None = None
+    metier_scene: str | None = None
 
 
 async def insert_message_draft(payload: MessageDraftIn) -> dict[str, Any]:

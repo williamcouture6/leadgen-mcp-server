@@ -170,6 +170,22 @@ def variantes_du_meme_metier(
     return max(repetes, key=lambda x: len(x[1]))
 
 
+def metier_de_la_scene(
+    services_offered: list[str] | None, aujourdhui: date
+) -> str | None:
+    """Le métier dont l'ouvreur parle RÉELLEMENT.
+
+    🔴 Ce n'est pas `MetiersResolus.scene`. Hors saison, `scene` vaut None et la
+    copie bascule sur le dominant. Cette fonction est la MÊME règle, nommée une
+    fois, pour que le message enregistre ce que le courriel a dit et non ce qu'un
+    recalcul croirait.
+    """
+    r = resoudre_metiers(services_offered, aujourdhui)
+    if r.scene:
+        return r.scene
+    return r.dominant if r.metiers else None
+
+
 def bloc_metiers_resolus(
     services_offered: list[str] | None, aujourdhui: date, gabarit: str | None = None
 ) -> str:
@@ -237,7 +253,7 @@ def bloc_metiers_resolus(
     #     le MOMENT qui est mauvais. La scène retombe sur le dominant, et le
     #     hors-saison se signale.
     hors_saison = r.scene is None and bool(r.metiers)
-    scene = r.scene or (r.dominant if hors_saison else None)
+    scene = metier_de_la_scene(services_offered, aujourdhui)
 
     if scene is None:
         lignes += [
@@ -635,6 +651,11 @@ class PersonalizeOut(BaseModel):
     duration_ms: int
     model: str
     usage: LLMUsage
+    # Ce dont ce courriel a parlé, résolu avec LA MÊME date que la copie.
+    # 🔴 Ne jamais recalculer côté appelant : `date.today()` y serait une autre
+    # date, et `MetiersResolus.scene` vaut None sur les cas hors saison.
+    metiers: list[str] = []
+    metier_scene: str | None = None
 
 
 def _call_llm(
@@ -679,6 +700,14 @@ async def personalize(payload: PersonalizeIn) -> PersonalizeOut:
     started = time.monotonic()
     slots_block = format_slots_for_prompt(payload.available_slots)
 
+    # 🔴 UNE SEULE date pour tout l'appel, et elle descend jusqu'au prompt.
+    # `_format_input_for_llm` retombait sur `date.today()` tout seul : deux
+    # lectures d'horloge, donc deux dates possibles, et la colonne aurait pu
+    # dire un métier que la copie n'a pas nommé (le tour de minuit, la veille
+    # d'une ouverture de fenêtre).
+    aujourdhui = date.today()
+    services_offered = payload.research_json.get("services_offered")
+
     user_message = _format_input_for_llm(
         research=payload.research_json,
         company=payload.company,
@@ -687,6 +716,7 @@ async def personalize(payload: PersonalizeIn) -> PersonalizeOut:
         template_choice=payload.template_choice,
         slots_block=slots_block,
         track=payload.track,
+        aujourdhui=aujourdhui,
     )
 
     # 4000 et non 2500 : la piste `agence-ia` rend TROIS corps (le courriel et
@@ -754,4 +784,6 @@ async def personalize(payload: PersonalizeIn) -> PersonalizeOut:
         duration_ms=int((time.monotonic() - started) * 1000),
         model=payload.model,
         usage=usage,
+        metiers=list(resoudre_metiers(services_offered, aujourdhui).metiers),
+        metier_scene=metier_de_la_scene(services_offered, aujourdhui),
     )

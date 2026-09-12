@@ -2553,6 +2553,13 @@ async def _personalize_one(
                     # « ABCD » où A et B auraient perdu — et l'écart entre A/B
                     # et C/D peut n'être que l'écart entre deux lots.
                     bras_eligibles=bras_eligibles,
+                    # Ce dont la copie a parle (migration 0058). La valeur vient
+                    # de ce que `personalize()` RETOURNE, avec SA date : un
+                    # recalcul ici lirait `date.today()` et, hors saison,
+                    # `MetiersResolus.scene` vaut None -- on ecrirait NULL sur
+                    # exactement les lignes pour lesquelles la colonne existe.
+                    metiers=out.metiers or None,
+                    metier_scene=out.metier_scene,
                 )
             )
             message_id = ins.get("message_id")
