@@ -78,6 +78,22 @@ def test_le_champ_existe_et_le_compteur_est_remis_a_zero():
     assert "comparaisons_fenetre" in http_api.RunWf4Out.model_fields
     assert "lexique_de_repli" in http_api.RunWf4Out.model_fields
     src = inspect.getsource(http_api._run_wf4)
+    # 🔴 LE NOM AU SITE D'APPEL, PAS SEULEMENT DANS LE MODELE. Mesure par
+    # mutation : renommer `divergences_fenetre=` en `divergence_fenetre=` au
+    # site nominal passait les 1776 tests -- Pydantic avale le kwarg inconnu et
+    # le compteur reste a 0 pour toujours. C'est exactement ce qui etait arrive
+    # a `repli_lexique` au site du verrou.
+    nominal = inspect.getsource(http_api)
+    assert "divergences_fenetre=len(" in nominal, (
+        "le compteur de divergences n'est pas remonte : Pydantic avale le kwarg"
+    )
+    assert "comparaisons_fenetre=len(" in nominal, (
+        "le compteur de comparaisons n'est pas remonte -- or c'est LUI qui leve "
+        "l'ambiguite de divergences=0"
+    )
+    assert "COMPARAISONS_FENETRE.clear()" in src, (
+        "seul un des deux compteurs est remis a zero"
+    )
     assert "DIVERGENCES_FENETRE.clear()" in src, (
         "le compteur n'est pas remis à zéro : il cumule sur toute la vie du "
         "processus et le chiffre remonté ne veut plus rien dire"
@@ -91,6 +107,18 @@ async def test_la_ligne_divergente_SORT_bien_de_la_selection(monkeypatch):
     fiche = {**DENEIGEUR, "fenetre_mois": [1, 2, 3]}
 
     async def _select(table, params=None, **_):
+        if table == "companies":
+            # 🔴 LE FAUX EXIGE LA PROJECTION. Mesure par mutation le 2026-09-12 :
+            # retirer `fenetre_mois` de la chaine `select` de `_retenir` passait
+            # les 1776 tests. En production la colonne serait absente de chaque
+            # ligne, l'observation court-circuitee, et `comparaisons_fenetre`
+            # resterait a 0 -- ce qui se lit, par la convention que cette meme
+            # conversation installe, comme << l'ecrivain est en panne >>.
+            demande = (params or {}).get("select", "")
+            assert "fenetre_mois" in demande, (
+                "la selection ne PROJETTE plus fenetre_mois : l'observation "
+                "sera court-circuitee en production"
+            )
         return {"contacts": [dict(CONTACT)], "companies": [dict(fiche)],
                 "messages": []}.get(table, [])
 

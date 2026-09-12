@@ -34,9 +34,14 @@ def test_les_metiers_sont_ordonnes_par_nombre_de_libelles():
     `metiers[1]` est le dominant, celui qui gouverne le lexique. Le type ne
     porte pas cet ordre — seul ce test le tient."""
     c = colonnes_metiers(
-        ["Déneigement", "Déneigement commercial", "Aménagement paysager"]
+        # ⚠️ CORPUS CHOISI POUR QUE LES DEUX ORDRES DIVERGENT. Le precedent
+        # (deneigement x2 + paysagement) etait degenere : `deneigement` precede
+        # `paysagement` AUSSI en ordre alphabetique, donc un tri alphabetique
+        # passait le test. Ici le compte dit paysagement d'abord, l'alphabet dit
+        # deneigement : seul le bon tri passe.
+        ["Aménagement paysager", "Plantations et haies", "Déneigement"]
     )
-    assert c["metiers"] == ["déneigement", "paysagement"]
+    assert c["metiers"] == ["paysagement", "déneigement"]
 
 
 def test_aucun_metier_reconnu_ouvre_les_douze_mois():

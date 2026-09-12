@@ -61,6 +61,15 @@ async def test_deux_updates_dans_le_bon_ordre(monkeypatch):
     assert "metiers" not in premier[0]
     assert set(second[0]) == {"metiers", "fenetre_mois", "metier_source",
                               "metiers_calcules_le"}
+    # 🔴 LE CONTENU, PAS SEULEMENT LES CLES. Mesure par mutation le 2026-09-12 :
+    # un ecrivain qui tamponne `fenetre_mois=[1..12]` et `metiers=[]` sur TOUTE
+    # la base passait la suite entiere (1776 verts). C'est le miroir du NULL
+    # silencieux que ce fichier existe pour empecher : au lieu d'ecarter tout le
+    # monde, on rend tout le monde joignable douze mois sur douze -- et la
+    # ceinture, qui est en observation seule, ne le rattrape pas.
+    assert second[0]["metiers"] == ["déneigement"]
+    assert second[0]["fenetre_mois"] == [8, 9, 10, 11, 12]
+    assert second[0]["metier_source"] == "services_offered"
 
 
 async def test_une_fiche_verrouillee_recoit_QUAND_MEME_son_research_json(monkeypatch):

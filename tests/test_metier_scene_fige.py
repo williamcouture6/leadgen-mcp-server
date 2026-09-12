@@ -105,3 +105,38 @@ async def test_le_brouillon_porte_le_metier_hors_saison(monkeypatch: pytest.Monk
     )
     assert payload.metier_scene == "paysagement"
     assert payload.metiers == ["paysagement"]
+
+
+def test_la_date_est_lue_UNE_SEULE_FOIS_et_descend_au_prompt():
+    """🔴 Mesure par mutation le 2026-09-12 : supprimer `aujourdhui=aujourdhui`
+    dans l'appel a `_format_input_for_llm` passait les 1776 tests.
+
+    Pourquoi c'est silencieux : le parametre a un defaut (`None`) qui retombe sur
+    `date.today()`. La suppression ne casse rien, elle ramene simplement DEUX
+    lectures d'horloge dans le meme appel — et une colonne pourrait alors nommer
+    un metier dont la copie n'a pas parle, au tour de minuit, la veille d'une
+    ouverture de fenetre.
+
+    ⚠️ Le controle est SUR LA SOURCE, et c'est assume. Exercer la plomberie
+    demanderait de simuler l'appel LLM complet ; ce qu'on veut tenir ici est
+    exactement ce que la mutation retirait, et une assertion de source le tient
+    sans faux-semblant. Elle dit ce qu'elle verifie : le kwarg est passe.
+    """
+    import inspect
+
+    from src.tools import personalize as perso
+
+    src = inspect.getsource(perso.personalize)
+    assert "aujourdhui = date.today()" in src, (
+        "personalize() ne lit plus l'horloge une fois pour toutes"
+    )
+    assert "aujourdhui=aujourdhui" in src, (
+        "la date ne descend plus au prompt : `_format_input_for_llm` va retomber "
+        "sur son propre date.today(), donc DEUX lectures d'horloge dans le meme "
+        "appel"
+    )
+    # Et le defaut qui rend la suppression silencieuse existe bien : c'est LUI
+    # qui justifie ce test plutot qu'une confiance dans la signature.
+    assert inspect.signature(
+        perso._format_input_for_llm
+    ).parameters["aujourdhui"].default is None
