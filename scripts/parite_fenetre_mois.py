@@ -141,6 +141,22 @@ async def run(track: str, annee: int) -> int:
     non_calculees: list[str] = []
 
     for co in companies:
+        if co.get("metiers_verifies_a_la_main"):
+            # 🔴 EXCLUE DES DEUX CONTRÔLES, et l'ordre compte.
+            #
+            # Du calcul d'écart : une fiche corrigée à la main DIVERGE du calcul
+            # par construction — c'est la définition même de la correction.
+            #
+            # Du seuil de péremption aussi, et c'est moins évident : le backfill
+            # SAUTE les fiches verrouillées (anti-clobber), donc il ne leur posera
+            # jamais `metiers_calcules_le`. Les soumettre au seuil ferait sortir ce
+            # script en erreur EN PERMANENCE dès la première correction manuelle,
+            # sans aucun recours — l'outil de rattrapage ne peut pas les rattraper.
+            # Une alarme sans geste de sortie est une alarme qu'on apprend à
+            # ignorer.
+            n_verrouillees += 1
+            continue
+
         if _perimee(co):
             n_non_calculees += 1
             non_calculees.append(
@@ -149,12 +165,6 @@ async def run(track: str, annee: int) -> int:
                 f"enrichie_le={co.get('last_enriched_at')} "
                 f"fenetre_mois={co.get('fenetre_mois')}"
             )
-
-        if co.get("metiers_verifies_a_la_main"):
-            # Diverge du calcul PAR CONSTRUCTION : c'est ce qu'est une
-            # correction humaine. Comptée, jamais comparée.
-            n_verrouillees += 1
-            continue
 
         n_comparees += 1
         colonne = set(co.get("fenetre_mois") or [])
