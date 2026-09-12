@@ -762,7 +762,15 @@ def fenetre_saisonniere_ouverte(
     # tout, et une fiche dont aucun métier n'est reconnu porte `[1..12]` en
     # colonne (défaut inversé des deux côtés) — elle ne PEUT pas diverger.
     colonne = company.get("fenetre_mois")
-    if colonne is not None:
+    # 🔴 `isinstance` ET PAS `is not None`. Sans lui, une colonne d'un type
+    # inattendu (une chaine, un entier — impossible depuis la base, qui rend un
+    # integer[], mais possible depuis une fiche construite a la main dans un test
+    # ou un script) ferait lever `mois in colonne`. Or AUCUN `try` ne protege le
+    # chemin `fenetre_saisonniere_ouverte` -> `_retenir` ->
+    # `list_contacts_to_personalize` -> `_run_wf4` : l'exception ne refuserait pas
+    # UNE entreprise, elle les refuserait TOUTES. Une ceinture qui ne refuse
+    # jamais n'a pas le droit de pouvoir lever.
+    if isinstance(colonne, (list, tuple, set, frozenset)):
         COMPARAISONS_FENETRE.add(str(company.get("id")))
         mois = (aujourdhui or date.today()).month
         if (mois in colonne) != verdict:
@@ -887,9 +895,15 @@ async def _retenir(
                 # `comparaisons_fenetre=0` à tous les coups — ce qui se lit, par la
                 # convention que cette même conversation installe, comme « l'écrivain
                 # de la colonne est en panne ».
-                # Ajouter un champ à une PROJECTION ne peut pas changer quelles lignes
-                # sont retenues : la preuve de non-régression (rejeu sur instantané
-                # figé) le vérifie.
+                # Ajouter un champ a une PROJECTION ne peut pas changer quelles
+                # lignes PostgREST rend : la requete ne filtre que par `id=in.(...)`,
+                # sans ressource embarquee ni `!inner`, et l'eligibilite en aval ne
+                # lit jamais cette colonne pour decider.
+                # ⚠️ CE N'EST PAS LE REJEU SUR INSTANTANE QUI LE PROUVE. Sa fausse
+                # base ignore le `select` : elle rend la ligne entiere quoi qu'on
+                # demande, donc elle est AVEUGLE a ce changement. Le raisonnement
+                # ci-dessus est la preuve ; le rejeu n'en est pas une.
+
                 "fenetre_mois"
             ),
             "id": f"in.({','.join(company_ids)})",

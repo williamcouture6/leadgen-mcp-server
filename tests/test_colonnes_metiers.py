@@ -55,7 +55,8 @@ def test_un_metier_douze_mois_sur_douze_n_ouvre_RIEN():
 
 
 def test_la_piscine_sans_verbe_dentretien_n_ouvre_RIEN():
-    """🔴 `EXIGE`. Mesuré : 29 fiches sur 40 sont dans ce cas, et l'une d'elles
+    """🔴 `EXIGE`. Mesuré le 2026-09-12 sur les 441 fiches : `piscine` est reconnue sur
+    **32**, dont **17** SANS verbe d'entretien, et l'une d'elles
     n'a QUE ça — elle n'est joignable aucun mois de l'année. Une règle « union
     des métiers saisonniers » lui rouvrirait sept mois par an, et le défaut
     serait invisible en septembre."""

@@ -2558,7 +2558,13 @@ async def _personalize_one(
                     # recalcul ici lirait `date.today()` et, hors saison,
                     # `MetiersResolus.scene` vaut None -- on ecrirait NULL sur
                     # exactement les lignes pour lesquelles la colonne existe.
-                    metiers=out.metiers or None,
+                    # 🔴 PAS `or None`. Sur `companies`, la meme conversation grave la regle
+                    # inverse : « aucun metier reconnu » est une INFORMATION, pas une
+                    # absence, et rendre NULL fait ecarter la ligne EN SILENCE par un
+                    # predicat SQL. On tient la meme convention ici : [] = « on a
+                    # cherche, on n'a rien reconnu » ; NULL = « jamais ecrit » (les
+                    # brouillons anterieurs a AC1c·A).
+                    metiers=out.metiers,
                     metier_scene=out.metier_scene,
                 )
             )
@@ -2735,6 +2741,24 @@ class RunWf4Out(BaseModel):
     # `comparaisons_fenetre=0` dit « rien comparé » — donc une panne de
     # l'écrivain de la colonne, pas une parité.
     divergences_fenetre: int = 0
+    # ⚠️ ZERO A TROIS CAUSES OPPOSEES, et deux ne sont pas des pannes :
+
+    #   (a) l'ecrivain de la colonne est en panne — la seule qui alarme ;
+
+    #   (b) le lot a ete REFUSE par le verrou (ce site rend 0 sans avoir
+
+    #       rien mesure) ;
+
+    #   (c) le lot n'a retenu aucun contact.
+
+    # 🔴 Ne jamais lire ce compteur seul : `processed` dans la meme
+
+    # reponse tranche entre (a) et (b)/(c). Et il compte des ENTREPRISES
+
+    # balayees (~150), pas des contacts du lot (~10) : les deux nombres
+
+    # ne parlent pas du meme objet.
+
     comparaisons_fenetre: int = 0
     items: list[RunWf4Item]
 

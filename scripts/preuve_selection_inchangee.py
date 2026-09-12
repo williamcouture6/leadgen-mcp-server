@@ -5,11 +5,28 @@ WF-3 ajoute des fiches, WF-4 écrit des brouillons qui retirent autant de
 contacts. Comparer deux exécutions en production rendrait un écart garanti, sans
 rapport avec le code.
 
-🔴 ET LA FAUSSE BASE HONORE LES FILTRES. La vraie requête des messages porte
-`status=not.in.(failed)` : une fausse base qui rend tout ferait croire qu'un
-brouillon abandonné gèle encore son contact, et le rejeu signalerait une
-régression qui n'existe pas. Un brouillon `failed` existe en base depuis le
-2026-09-10 — le cas n'est pas théorique.
+⚠️ CE QUE LA FAUSSE BASE HONORE, ET CE QU'ELLE IGNORE — a lire avant de
+conclure quoi que ce soit d'un « IDENTIQUE ».
+
+Elle honore : `direction` et `status` sur les messages, `offset`/`limit` sur les
+contacts, `id=in.(...)` sur les entreprises.
+
+🔴 Elle IGNORE : le `select` (elle rend la ligne entiere quelle que soit la
+projection demandee), `status`/`track`/`email` sur les contacts, l'`order`, et le
+`contact_id=in.(...)` des messages.
+
+Consequences, mesurees par un conseil de relecture le 2026-09-12 :
+  · ce rejeu est AVEUGLE a tout changement de projection — il dirait
+    « IDENTIQUE » meme si on retirait `research_json` de la chaine `select` ;
+  · il n'exerce JAMAIS le cas qui a motive la garde `entreprises_engagees` (un
+    frere passe en `status='contacted'`), puisque la capture filtre
+    `status in (new, ready)` a la source ;
+  · il tourne a `limit=1000` alors que la production tourne a 10-20 : la
+    pagination et la sortie anticipee ne sont jamais exercees.
+
+Ce qu'il prouve reellement : que la liste rendue par la selection, sur CET
+instantane, a CETTE date, est la meme avant et apres. C'est utile, et c'est
+moins que ce que son nom suggere.
 
 Usage :
     python scripts/preuve_selection_inchangee.py --capturer   # AVANT toute modif
