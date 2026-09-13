@@ -3,10 +3,22 @@
 Le cœur de la « structure en trois temps » (spec d'offre §3). Le rédacteur LLM
 ne classe RIEN : il reçoit les métiers déjà résolus et il écrit.
 
-**Fonction pure, pas de colonne.** AC1c (la vue de sélection, les colonnes
-dérivées, les index GIN, le backfill) est différé après le premier lot. Le jour
-où il se construit, cette fonction devient le calcul de la colonne : rien n'est
-jeté.
+**Fonction pure ET colonne, depuis AC1c·A (2026-09-12).** `classer_services`
+(sans date) est la source unique : `resoudre_metiers` l'appelle pour choisir la
+scène du courriel, `colonnes_metiers` l'appelle pour calculer ce qui est écrit
+dans `companies.metiers` / `companies.fenetre_mois`. Un seul dictionnaire, deux
+lecteurs — deux classifications concurrentes divergeraient, et le courriel
+parlerait d'un métier pendant que la file en croirait un autre.
+
+🔴 **LA COLONNE EST UN CACHE QUE RIEN N'INVALIDE.** Toute modification de
+`RACINES`, `EXIGE`, `EXCLUSIONS` ou `ECRASE` impose de rejouer
+`scripts/backfill_metiers.py` : la scène se recalcule à chaque brouillon, la
+colonne non. Corriger un trou de dictionnaire sans rejouer le backfill ne
+reclasse RIEN.
+
+⚠️ Ce qui reste d'AC1c : la **vue de sélection** qui décidera à partir de la
+colonne (conversation B). Aujourd'hui la sélection projette `fenetre_mois` et la
+COMPARE au calcul, sans jamais décider avec.
 
 ⚠️ **Appariement par racines, jamais un LLM** : auditable, rejouable, gratuit,
 sans dérive. « Déneigement commercial », « transport de neige » et « déneigement
