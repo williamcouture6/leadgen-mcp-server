@@ -85,6 +85,22 @@ async def _run(http_api, **kw):
     return await http_api.run_wf4(RunWf4In(track="agence-ia", **kw))
 
 
+def _est_le_rang_du_jour(compte: dict) -> bool:
+    """Le comptage qui sert à REPRENDRE L'ALTERNANCE, pas à détecter la famine.
+
+    Posé le 2026-09-10 : WF-4 tourne en deux lots de 10, et un lot de 10 ne se
+    divise pas par 4 (A=3, B=3, C=2, D=2). Chaque lot lit donc combien de
+    brouillons portant un bras ont déjà été écrits aujourd'hui, pour repartir
+    de là au lieu de zéro.
+
+    ⚠️ Il est payé à CHAQUE lot, par nécessité — c'est ce qui distingue ce
+    comptage de celui de la famine, qui n'est payé que dans le cas suspect.
+    Les assertions de ce fichier l'écartent donc explicitement : sans ça, elles
+    interdiraient tout `count()` et pas seulement celui qu'elles surveillent.
+    """
+    return compte["params"].get("template_choice") == "not.is.null"
+
+
 async def test_zero_draft_sur_une_file_pleine_crie(monkeypatch):
     envois: list[dict] = []
     http_api = _socle(monkeypatch, backlog=[], file_active=812, servis=500, envois=envois)
@@ -114,7 +130,7 @@ async def test_zero_draft_sur_une_file_vide_se_tait(monkeypatch):
     assert envois == []
 
 
-async def test_un_lot_qui_tourne_ne_paie_meme_pas_le_comptage(monkeypatch):
+async def test_un_lot_qui_tourne_ne_paie_que_le_rang_du_bras(monkeypatch):
     """Le comptage n'est payé que dans le cas suspect : un lot qui produit n'a
     rien de plus à demander à la base."""
     comptes: list[dict] = []
@@ -136,7 +152,12 @@ async def test_un_lot_qui_tourne_ne_paie_meme_pas_le_comptage(monkeypatch):
 
     assert out.processed == 1
     assert out.alerte_famine_envoyee is None
-    assert comptes == [], "aucun count() quand le lot produit"
+    famine = [c for c in comptes if not _est_le_rang_du_jour(c)]
+    assert famine == [], "aucun comptage de famine quand le lot produit"
+    # Et le rang se lit UNE fois PAR LOT, jamais par contact : le deplacer dans
+    # la boucle ferait un aller-retour PostgREST par brouillon, et l ancienne
+    # assertion (comptes == []) qui l aurait attrape a ete restreinte.
+    assert len([c for c in comptes if _est_le_rang_du_jour(c)]) == 1
     assert envois == []
 
 
@@ -150,15 +171,20 @@ async def test_le_comptage_passe_par_count_exact_et_par_track(monkeypatch):
     )
     await _run(http_api)
 
-    assert [c["table"] for c in comptes] == ["contacts", "messages"]
+    famine = [c for c in comptes if not _est_le_rang_du_jour(c)]
+    assert [c["table"] for c in famine] == ["contacts", "messages"]
     assert all(c["params"]["track"] == "eq.agence-ia" for c in comptes)
     # Les contacts joignables et pas encore écartés d'un côté…
-    assert comptes[0]["params"]["email"] == "not.is.null"
-    assert comptes[0]["params"]["status"] == "in.(new,ready)"
+    assert famine[0]["params"]["email"] == "not.is.null"
+    assert famine[0]["params"]["status"] == "in.(new,ready)"
     # …les messages ENCORE VIVANTS de l'autre, la même définition que celle qui
     # sert à WF-4 pour décider qu'un contact est déjà pris.
-    assert comptes[1]["params"]["status"] == "not.in.(failed)"
-    assert comptes[1]["params"]["direction"] == "eq.outbound"
+    assert famine[1]["params"]["status"] == "not.in.(failed)"
+    assert famine[1]["params"]["direction"] == "eq.outbound"
+    # Et le comptage du rang du jour est bien passé par count() lui aussi : il
+    # lirait sinon les lignes, donc plafonnerait à 1000 en silence.
+    rang = [c for c in comptes if _est_le_rang_du_jour(c)]
+    assert len(rang) == 1 and rang[0]["table"] == "messages"
 
 
 async def test_un_comptage_illisible_crie_quand_meme(monkeypatch):

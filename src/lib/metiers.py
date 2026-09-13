@@ -616,21 +616,44 @@ def metier_depuis_industry(industry: str | None) -> str | None:
     return None
 
 
-def resoudre_metiers(
-    services_offered: list[str] | None,
-    aujourdhui: date,
-    industry: str | None = None,
-) -> MetiersResolus:
-    """Apparie les libellés, choisit la scène, ordonne le reste.
+@dataclass(frozen=True)
+class Classement:
+    """Le classement des libellés, SANS le calendrier.
 
-    Déterministe et rejouable : deux appels avec les mêmes entrées rendent le
-    même résultat, ce qu'un classement par LLM ne garantit pas.
+    🔴 Aucune date n'entre ici, et c'est la raison d'être de la classe. Les
+    colonnes dérivées de `companies` se calculent une fois, à l'écriture de la
+    recherche ; si le calcul dépendait du jour, la colonne serait fausse le
+    lendemain sans que rien ne le dise.
+    """
 
-    ⚠️ `industry` est ACCEPTÉ MAIS IGNORÉ. Le repli existe
-    (`metier_depuis_industry`) et n'est appelé par personne — décision William
-    du 2026-09-02. Le paramètre reste dans la signature pour que le
-    débranchement soit vérifiable par un test plutôt que constaté par une
-    absence. Voir le bloc de commentaires avant le calcul des fenêtres.
+    metiers: tuple[str, ...]
+    """Ordonnés par nombre de libellés décroissant ; à égalité, l'ordre
+    d'apparition. `metiers[0]` est le dominant."""
+
+    compte: dict[str, int]
+    """Combien de libellés ont apparié chaque métier."""
+
+    exigence_satisfaite: frozenset[str]
+    """Les métiers de `EXIGE` dont le signal a été vu au moins une fois.
+    ⚠️ À n'utiliser qu'en test d'appartenance, jamais à itérer."""
+
+    source: str
+    """`services_offered` ou `inconnu`."""
+
+
+def classer_services(
+    services_offered: list[str] | None, industry: str | None = None
+) -> Classement:
+    """Apparie les libellés aux métiers. Déterministe, rejouable, sans date.
+
+    Extraite de `resoudre_metiers` le 2026-09-10 (AC1c·A) pour que le calcul des
+    colonnes et le choix de la scène du courriel partagent EXACTEMENT le même
+    dictionnaire. Deux classifications concurrentes divergeraient, et le courriel
+    parlerait d'un métier pendant que la file en croirait un autre.
+
+    ⚠️ `industry` est ACCEPTÉ MAIS IGNORÉ, comme dans `resoudre_metiers` : le
+    repli existe (`metier_depuis_industry`) et n'est appelé par personne —
+    décision William du 2026-09-02.
     """
     libelles = [s for s in (services_offered or []) if isinstance(s, str) and s.strip()]
 
@@ -648,10 +671,11 @@ def resoudre_metiers(
             for metier, motifs in _RACINES_RE.items()
             if any(m.search(plat) for m in motifs)
         }
-        # Les exclusions AVANT `ECRASE` : un libellé faussement apparié ne doit
-        # pas non plus servir à écraser un métier légitime. « Installation de
-        # clôtures de piscine » ne doit ni ajouter `piscine`, ni faire
-        # disparaître `excavation` par la règle piscine→excavation.
+        # 🔴 L'ORDRE DES TROIS BLOCS EST DÉLIBÉRÉ. Les exclusions AVANT
+        # `ECRASE` : un libellé faussement apparié ne doit pas non plus servir à
+        # écraser un métier légitime. « Installation de clôtures de piscine » ne
+        # doit ni ajouter `piscine`, ni faire disparaître `excavation` par la
+        # règle piscine→excavation.
         for metier, phrases in EXCLUSIONS.items():
             if metier in apparies and any(p in plat for p in phrases):
                 apparies.discard(metier)
@@ -663,12 +687,12 @@ def resoudre_metiers(
         for gagnant, perdants in ECRASE.items():
             if gagnant in apparies:
                 apparies -= set(perdants)
-        # 🔴 On réordonne selon RACINES avant d'insérer, et ce n'est PAS
+        # 🔴 ON RÉORDONNE SELON `_RACINES_RE` AVANT D'INSÉRER, et ce n'est PAS
         # cosmétique. `apparies` est un SET de chaînes : son ordre d'itération
         # dépend de la randomisation du hash de Python, qui change à CHAQUE
         # processus. Il décidait donc l'ordre d'insertion dans `compte`, donc
         # l'ordre d'apparition, donc la rupture d'égalité du tri stable plus
-        # bas — donc `dominant`, qui gouverne le LEXIQUE.
+        # bas — donc le dominant, qui gouverne le LEXIQUE.
         #
         # Mesuré avant correctif, même entreprise, seeds différents :
         #   PYTHONHASHSEED=1 → Piscines Élégance dominant='piscine'
@@ -678,12 +702,119 @@ def resoudre_metiers(
         #
         # ⚠️ Un test de rejouabilité DANS UN SEUL PROCESSUS ne peut pas voir
         # ça : le hash est tiré une fois au démarrage. Il faut des processus
-        # séparés — voir `test_le_dominant_est_stable_entre_processus`.
+        # séparés — voir `test_le_dominant_est_stable_entre_processus`
+        # (`tests/test_metiers.py`, sur `resoudre_metiers`) et
+        # `test_le_classement_est_stable_entre_processus`
+        # (`tests/test_classer_services.py`, sur cette fonction-ci).
         for metier in _RACINES_RE:
             if metier not in apparies:
                 continue
             compte[metier] = compte.get(metier, 0) + 1
             ordre_apparition.setdefault(metier, rang)
+
+    if not compte:
+        # Défaut inversé (garde-fou nº2) : aucun métier RECONNU. Ce n'est pas la
+        # même chose que « services_offered vide ».
+        return Classement(
+            metiers=(), compte={}, exigence_satisfaite=frozenset(), source="inconnu"
+        )
+
+    metiers = tuple(sorted(compte, key=lambda m: (-compte[m], ordre_apparition[m])))
+    return Classement(
+        metiers=metiers,
+        compte=dict(compte),
+        exigence_satisfaite=frozenset(exigence_satisfaite),
+        source="services_offered",
+    )
+
+
+def colonnes_metiers(
+    services_offered: list[str] | None, industry: str | None = None
+) -> dict[str, object]:
+    """Les trois valeurs que `companies` portera, prêtes à écrire.
+
+    🔴 `fenetre_mois` porte LE RÉSULTAT de la règle, pas l'union brute des
+    fenêtres. Trois cas, tous résolus ici :
+
+      · au moins un métier saisonnier DONT LA FENÊTRE A LE DROIT DE S'OUVRIR
+        → l'union de ces fenêtres ;
+      · aucun métier reconnu → les douze mois (défaut inversé, garde-fou nº2) ;
+      · aucune fenêtre ouvrable → vide, l'entreprise n'est jamais démarchée.
+
+    « A le droit de s'ouvrir » recouvre DEUX conditions, et oublier la seconde
+    est le défaut que trois relectures ont mis à jour :
+      1. le métier a une saison documentée (`SAISONS`) — un métier 12 mois sur
+         12 ne peut pas enclencher une séquence (règle du 2026-09-02) ;
+      2. si le métier figure dans `EXIGE`, son signal a été vu au moins une fois
+         (« entretien de piscine » ouvre ; « installation de piscine creusée »
+         non). Le signal dépend du LIBELLÉ : il ne se reconstitue pas depuis la
+         liste des métiers, d'où le calcul ici et pas ailleurs.
+
+    ⚠️ CETTE VALEUR EST UN CACHE, ET RIEN NE L'INVALIDE. Toute modification de
+    `RACINES`, `EXIGE`, `EXCLUSIONS` ou `ECRASE` impose de rejouer
+    `scripts/backfill_metiers.py` : la scène du courriel se recalcule à chaque
+    brouillon, la colonne non. Corriger un trou de dictionnaire sans rejouer le
+    backfill ne reclasse RIEN.
+    """
+    classement = classer_services(services_offered, industry)
+
+    if not classement.metiers:
+        return {
+            "metiers": [],
+            "fenetre_mois": list(range(1, 13)),
+            "metier_source": "inconnu",
+        }
+
+    # 🔴 CE CALCUL DIVERGE DE `resoudre_metiers`, ET C'EST VOULU. NE PAS
+    # « RÉPARER » L'UN POUR LE FAIRE RESSEMBLER À L'AUTRE.
+    #
+    # Les deux répondent à des questions différentes :
+    #   · `resoudre_metiers.joignable` / `.fenetre_ouverte` = le DIAGNOSTIC et
+    #     le choix de la scène du courriel — « ce métier a-t-il une fenêtre
+    #     ouverte ce mois-ci ? ». Un métier sans saison a une fenêtre ouverte
+    #     tous les mois (garde-fou nº2), donc il y compte.
+    #   · `fenetre_mois` ci-dessous = la SÉLECTION — « a-t-on le droit
+    #     d'enclencher une séquence de contact ? ». La règle du 2026-09-02
+    #     l'interdit à un métier 12 mois sur 12.
+    #
+    # Le cas concret qui rend l'écart visible : un paveur pur ressort avec
+    # `joignable=True` chez `resoudre_metiers` et `fenetre_mois=[]` ici. Ce
+    # n'est pas une incohérence, c'est la règle — on ne lui écrit jamais, mais
+    # si on lui écrivait on saurait quoi lui dire.
+    mois: set[int] = set()
+    for metier in classement.metiers:
+        if metier not in SAISONS:
+            continue
+        if metier in EXIGE and metier not in classement.exigence_satisfaite:
+            continue
+        mois |= fenetre_mois(metier)
+
+    return {
+        "metiers": list(classement.metiers),
+        "fenetre_mois": sorted(mois),
+        "metier_source": classement.source,
+    }
+
+
+def resoudre_metiers(
+    services_offered: list[str] | None,
+    aujourdhui: date,
+    industry: str | None = None,
+) -> MetiersResolus:
+    """Apparie les libellés, choisit la scène, ordonne le reste.
+
+    Déterministe et rejouable : deux appels avec les mêmes entrées rendent le
+    même résultat, ce qu'un classement par LLM ne garantit pas.
+
+    ⚠️ `industry` est ACCEPTÉ MAIS IGNORÉ. Le repli existe
+    (`metier_depuis_industry`) et n'est appelé par personne — décision William
+    du 2026-09-02. Le paramètre reste dans la signature pour que le
+    débranchement soit vérifiable par un test plutôt que constaté par une
+    absence. Voir le bloc de commentaires avant le calcul des fenêtres.
+    """
+    classement = classer_services(services_offered, industry)
+    compte = classement.compte
+    exigence_satisfaite = classement.exigence_satisfaite
 
     if not compte:
         # Défaut inversé : aucun métier reconnu ne veut pas dire « aucun mois ».
@@ -695,13 +826,9 @@ def resoudre_metiers(
             scene_moment_saison=None,
         )
 
-    # Décroissant par nombre de libellés ; à égalité, l'ordre d'apparition dans
-    # `services_offered` (stable, donc rejouable).
-    metiers = tuple(
-        sorted(compte, key=lambda m: (-compte[m], ordre_apparition[m]))
-    )
+    metiers = classement.metiers
     dominant = metiers[0]
-    source = "services_offered"
+    source = classement.source
 
     # 🔴 LE REPLI SUR `industry` EXISTE MAIS N'EST PAS BRANCHÉ — décision
     # William du 2026-09-02. NE PAS LE REBRANCHER SANS LUI DEMANDER.

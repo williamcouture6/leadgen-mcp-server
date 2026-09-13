@@ -243,6 +243,35 @@ qui parle de l'entreprise. `{ENUMERATION_SERVICES}` se construit depuis
 — par exemple « autant le déneigement résidentiel que les contrats saisonniers
 pis le service de nuit ». Deux à quatre éléments, jamais plus.
 
+🔴 **NE REDIS JAMAIS LE MÊME MÉTIER DEUX FOIS DANS L'ÉNUMÉRATION.**
+Décision William du 2026-09-10, en relisant un brouillon réel :
+
+    ❌ je vois que tu fais du déneigement d'entrées résidentielles, du
+       déneigement sur appel pis du déneigement occasionnel
+
+    ✅ je vois que tu fais plusieurs sortes de déneigement, d'entrées, sur
+       appel et occasionnel
+
+Le métier se dit **une fois**, puis ce qui distingue les variantes. Un humain
+écrit comme ça ; répéter le mot trois fois sonne comme une liste recopiée.
+
+**Le bloc « Métiers résolus » te dit quand c'est le cas** — il nomme le métier
+partagé et liste les libellés qui le portent. Tu n'as pas à le chercher.
+
+⚠️ **Le cas le plus fréquent est MIXTE, pas pur.** Mesuré sur 69 brouillons :
+la répétition venait 11 fois sur 12 de deux ou trois variantes **plus un
+service voisin**. Les deux formes se combinent alors — les variantes se
+regroupent, le reste se rattache avec « pis » :
+
+    ❌ autant du déneigement résidentiel que du déneigement commercial pis de
+       la mini-excavation
+
+    ✅ autant plusieurs sortes de déneigement, résidentiel et commercial, que
+       de la mini-excavation
+
+Quand aucun métier ne revient deux fois, la forme reste « autant X que Y pis
+Z » et rien ne change.
+
 🔴 **Si tu reçois C ou D, `services_offered` porte au moins deux libellés** —
 sinon le code ne t'aurait pas donné ce gabarit. La forme « autant X que Y » est
 donc toujours possible. Tu n'as **jamais** à l'adapter à un service unique, et

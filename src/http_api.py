@@ -23,6 +23,7 @@ from .lib.gabarits import (
     GABARITS,
     bras_demandes,
     bras_du_lot,
+    bras_eligibles_texte,
     est_un_gabarit,
     tete_fixe_servable,
 )
@@ -468,6 +469,234 @@ def _ligne_resume_conformite(
     if partis_avec_remarque:
         ligne += f" · 📝 {partis_avec_remarque} parti(s) avec une remarque"
     return ligne
+
+
+# ------------------------------------------------- Performance par gabarit
+#
+# Les libellés lisibles des cinq catégories mesurées par agence.v_bras_en_tete.
+# L'ordre est celui de l'entonnoir — répondre, dire oui, prendre RDV, acheter —
+# puis la qualité des réponses, qui n'est pas une étape mais un ratio entre deux
+# d'entre elles.
+_LIBELLES_CATEGORIES: dict[str, str] = {
+    "taux_reponse": "réponse",
+    "taux_oui": "oui",
+    "taux_rdv": "RDV",
+    "taux_vente": "vente",
+    "part_oui_dans_reponses": "qualité des réponses",
+}
+
+# 🔴 Le verdict ne s'affiche JAMAIS en langage de base. « trop tot » se lit comme
+# un état technique ; « trop tôt pour conclure » se lit comme un ordre de ne pas
+# agir, ce qui est exactement ce qu'il veut dire.
+_LIBELLES_VERDICTS: dict[str, str] = {
+    # 'incoherent' (0053) n'est PAS un résultat : c'est un défaut de calcul —
+    # un numérateur qui dépasse sa base. Il se lit comme une alarme, pas comme
+    # une mesure, et il vaut mieux le voir que de le laisser se déguiser en
+    # « non concluant » pour toujours.
+    "incoherent": "🚨 CALCUL INCOHÉRENT — un numérateur dépasse sa base",
+    "ecart net": "écart net",
+    "non concluant": "écart non concluant",
+    "trop tot": "trop tôt pour conclure",
+    "pas de comparaison": "un seul bras servi",
+    "aucune donnee": "aucune donnée",
+}
+
+
+def _pourcent_fr(valeur: Any) -> str:
+    """13.2 -> « 13,2 % ». Rend une chaîne vide sur NULL — jamais « 0,0 % » :
+    la vue distingue déjà « pas de donnée » de « zéro », l'affichage ne doit
+    pas recoller les deux."""
+    if valeur is None:
+        return ""
+    return f"{float(valeur):.1f}".replace(".", ",") + " %"
+
+
+def _entier(valeur: Any) -> int:
+    """Un compteur de vue, rendu robuste au type que PostgREST envoie.
+
+    `count(*)` arrive en entier JSON aujourd'hui ; un `numeric` sérialisé en
+    chaîne ('12.0') ferait lever `int()` et tuerait le résumé ENTIER, puisque le
+    rendu vit hors des try/except des lectures. Ce repli couvre donc un mauvais
+    TYPE, et rien d'autre.
+
+    🔴 IL NE COUVRE PAS UNE CLÉ ABSENTE, et c'est délibéré : `r.get()` sur une
+    colonne disparue rendrait `None`, donc 0, donc « aucun courriel parti » le
+    soir où 500 courriels sont partis — un résumé confiant et faux, bien pire
+    qu'un échec franc. Les colonnes attendues sont vérifiées en amont par
+    `_colonnes_perf_manquantes`, qui le DIT au lieu de compter zéro.
+    """
+    try:
+        return int(float(valeur))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _pluriel(n: int, singulier: str, pluriel: str | None = None) -> str:
+    """« 0 livré » · « 1 livré » · « 2 livrés ». Le français ne met le pluriel
+    qu'à partir de deux, et un résumé qui écrit « 1 ventes » se lit comme un
+    résumé qu'on n'a pas relu."""
+    mot = singulier if abs(n) < 2 else (pluriel or singulier + "s")
+    return f"{n} {mot}"
+
+
+# Les colonnes que le rendu LIT vraiment. Elles doivent rester alignées sur la
+# chaîne `select=` de summary_daily et sur ce que rend agence.v_perf_par_bras.
+#
+# 🔴 POURQUOI CETTE LISTE EXISTE. PostgREST ne signale pas une colonne absente
+# d'un `select=` : il rend simplement les autres. Sans cette garde, raccourcir
+# la chaîne `select=` — un geste qui a l'air d'un ménage — ferait lire `None`
+# donc 0 sur `partis`, et le bloc annoncerait « aucun courriel parti » le soir
+# où 500 sont partis. Aucune autre couche ne détecte cette divergence avant la
+# production.
+_COLONNES_PERF_LUES: tuple[str, ...] = (
+    "bras", "leads", "partis", "rebonds", "livres", "livres_reponse",
+    "reponses_brutes", "oui_bruts", "rdv_bruts", "ventes_brutes", "taux_reponse",
+)
+
+
+def _colonnes_perf_manquantes(perf: list[dict[str, Any]]) -> list[str]:
+    """Les colonnes attendues qu'aucune ligne ne porte."""
+    if not perf:
+        return []
+    return sorted(c for c in _COLONNES_PERF_LUES if any(c not in r for r in perf))
+
+
+def _bloc_performance_gabarit(
+    perf: list[dict[str, Any]], tete: list[dict[str, Any]]
+) -> str:
+    """La performance de chaque gabarit du courriel de tri, pour le résumé.
+
+    🔴 CE QUE CE BLOC REFUSE DE FAIRE : nommer un gagnant tout court. Chaque
+    ligne de tête porte son verdict SUR LA MÊME LIGNE, parce qu'un « B mène »
+    lu seul un soir de fatigue est la phrase qui fait basculer toute une file
+    sur une réponse chanceuse. La vue elle-même refuse déjà de conclure sous
+    400 livrés mûrs par bras (0052) ; ici on ne fait que ne jamais séparer le
+    nom de son verdict.
+
+    TROIS SILENCES DIFFÉRENTS, ET AUCUN N'EST LE VIDE. Le bloc rend TOUJOURS
+    quelque chose quand il est appelé : un bloc absent se lirait comme
+    « aucun écart à signaler », c'est-à-dire comme une information rassurante
+    qu'on n'a pas.
+      - aucun gabarit en base       => on le dit (WF-4 n'écrit peut-être plus)
+      - rien n'est parti            => on le dit, et AUCUN nom de gabarit
+      - tout est parti et a rebondi => 🚨 c'est une PANNE D'ENVOI, pas une file
+                                       en attente. Le premier jet lisait
+                                       `livres == 0` et affichait « aucun
+                                       courriel parti » alors que 40 courriels
+                                       étaient partis et avaient tous rebondi.
+
+    Une catégorie dont le premier est à zéro succès ne fait pas de ligne de
+    tête : un premier à zéro n'est pas un premier, et les compteurs par bras
+    montrent déjà ces zéros.
+    """
+    manquantes = _colonnes_perf_manquantes(perf)
+    if manquantes:
+        # Une divergence entre la chaîne `select=` et la vue. On la NOMME : la
+        # compter comme des zéros donnerait un résumé faux et confiant.
+        return (
+            "📊 *Performance gabarit* — ⚠️ colonnes absentes de la lecture : "
+            + ", ".join(manquantes)
+            + ". La chaîne `select=` a divergé de agence.v_perf_par_bras — "
+            "les chiffres ci-dessous seraient faux, ils ne sont pas affichés."
+        )
+
+    if not perf:
+        # Lecture réussie mais aucune ligne : soit rien n'a jamais été écrit,
+        # soit WF-4 a cessé de renseigner `template_choice`. Les deux méritent
+        # d'être vus.
+        return (
+            "📊 *Performance gabarit* — aucun gabarit en base. Soit aucun "
+            "brouillon n'a encore été écrit, soit WF-4 n'écrit plus "
+            "`template_choice` : dans le second cas le test A/B ne mesure plus rien."
+        )
+
+    total_leads = sum(_entier(r.get("leads")) for r in perf)
+    total_partis = sum(_entier(r.get("partis")) for r in perf)
+    total_livres = sum(_entier(r.get("livres")) for r in perf)
+    total_rebonds = sum(_entier(r.get("rebonds")) for r in perf)
+
+    if total_partis == 0:
+        return (
+            "📊 *Performance gabarit* — aucun courriel parti, rien à comparer "
+            f"({_pluriel(total_leads, 'brouillon')} en attente)"
+        )
+
+    if total_livres == 0:
+        # 🚨 Tout est parti et TOUT a rebondi. Ce n'est pas une file en attente,
+        # c'est une panne d'envoi en cours ce soir-là.
+        return (
+            f"📊 *Performance gabarit* — 🚨 {_pluriel(total_partis, 'courriel parti', 'courriels partis')} "
+            f"et {_pluriel(total_rebonds, 'rebond')} : RIEN n'a été livré. "
+            "Ce n'est pas une file en attente, c'est un problème d'envoi."
+        )
+
+    lignes = ["📊 *Performance gabarit*"]
+    for r in sorted(perf, key=lambda x: str(x.get("bras") or "")):
+        livres = _entier(r.get("livres"))
+        murs = _entier(r.get("livres_reponse"))
+        bouts = [_pluriel(livres, "livré")]
+        # La base des taux n'est pas le nombre de livrés mais le nombre de
+        # livrés assez anciens pour avoir pu répondre (0052). Quand les deux
+        # diffèrent, le dire — sinon « 512 livrés · 20,0 % » invite à diviser
+        # de tête et à ne pas retrouver le compte.
+        if murs != livres:
+            bouts[-1] += f" ({_pluriel(murs, 'mûr')})"
+        rep = f"{_entier(r.get('reponses_brutes'))} rép"
+        taux = _pourcent_fr(r.get("taux_reponse"))
+        if taux:
+            rep += f" ({taux})"
+        bouts.append(rep)
+        bouts.append(f"{_entier(r.get('oui_bruts'))} oui")
+        bouts.append(f"{_entier(r.get('rdv_bruts'))} RDV")
+        bouts.append(_pluriel(_entier(r.get("ventes_brutes")), "vente"))
+        rebonds = _entier(r.get("rebonds"))
+        if rebonds:
+            # Un bras à 40 % de rebond était visuellement identique à un bras
+            # sain : le compteur existait dans la vue et n'était pas affiché.
+            bouts.append(f"⚠️ {_pluriel(rebonds, 'rebond')}")
+        lignes.append(f"  *{r.get('bras') or '?'}* — " + " · ".join(bouts))
+
+    par_categorie = {str(t.get("categorie")): t for t in tete}
+
+    # La COHORTE comparée (0055) : le classement ne met en regard que des
+    # leads dont les MÊMES bras étaient en jeu. Un lot tiré en « CD » n'a
+    # jamais mis A et B en lice ; l'opposer aux autres reviendrait à
+    # comparer deux lots et à appeler ça un test. On la NOMME dans le bloc,
+    # sinon un lecteur croira que le classement porte sur tout ce qu'il
+    # voit dans le tableau juste au-dessus.
+    lignes_tete: list[str] = []
+    for cle, libelle in _LIBELLES_CATEGORIES.items():
+        t = par_categorie.get(cle)
+        if not t or not t.get("bras_en_tete"):
+            continue
+        if _entier(t.get("succes_en_tete")) == 0:
+            continue
+        brut = str(t.get("verdict") or "")
+        # Un verdict inconnu ne s'affiche PAS en langage de base : il se nomme
+        # comme inconnu. Sans ça, une valeur ajoutée un jour à la vue partirait
+        # dans Slack sans accent et sans qu'on sache que c'est une nouveauté.
+        verdict = _LIBELLES_VERDICTS.get(brut) or f"verdict inconnu ({brut or 'absent'})"
+        ligne = f"  🥇 {libelle} : {t.get('bras_en_tete')} {_pourcent_fr(t.get('valeur_en_tete'))}"
+        if t.get("bras_suivant"):
+            ligne += (
+                f" devant {t.get('bras_suivant')} "
+                f"{_pourcent_fr(t.get('valeur_suivant'))}"
+            )
+        # Le verdict est collé au nom, sur la MÊME ligne : relégué en bas de
+        # bloc, il ne serait pas lu par celui qui survole.
+        lignes_tete.append(f"{ligne} — {verdict}")
+
+    if lignes_tete:
+        cohorte = next(
+            (str(t.get("cohorte")) for t in tete if t.get("cohorte")), None
+        )
+        if cohorte:
+            lignes.append(
+                f"  _classement restreint aux leads où {cohorte} étaient en jeu_"
+            )
+        lignes.extend(lignes_tete)
+
+    return "\n".join(lignes)
 
 
 class DailySummaryIn(BaseModel):
@@ -959,6 +1188,88 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         if ligne_conformite:
             text += "\n" + ligne_conformite
 
+    # ------------------------------------- Performance par gabarit (0050/0052)
+    # Hors de la boucle par track, comme le bloc PT3 : les vues ne portent que
+    # des messages qui ont un bras, et seul `agence-ia` en a un. Les passer en
+    # revue par track imprimerait le bloc deux fois, dont une section OPT vide.
+    #
+    # ⚠️ C'est un ÉTAT CUMULÉ, pas l'activité du jour — et c'est voulu : une
+    # réponse à un cold email arrive sur deux à trois semaines (le courriel, puis
+    # les relances dans le fil). Un découpage quotidien ne montrerait jamais
+    # qu'un dénominateur d'aujourd'hui et un numérateur de personne.
+    #
+    # 🔴 DEUX `try` SÉPARÉS, ET LE RENDU EN DEHORS DES DEUX. Trois raisons, toutes
+    # relevées par le conseil du 2026-09-10 sur le premier jet, qui n'en avait
+    # qu'un seul englobant tout :
+    #   1. une panne sur le seul CLASSEMENT faisait disparaître AUSSI le tableau
+    #      par bras, alors que ses chiffres étaient parfaitement lisibles ;
+    #   2. une exception née dans le RENDU (un type inattendu) se maquillait en
+    #      « lecture en ÉCHEC », ce qui envoie chercher la panne du mauvais côté
+    #      — dans les journaux PostgREST plutôt que dans le formatage ;
+    #   3. le `except` écrasait `totals` avec `{"lu": False}`, détruisant des
+    #      chiffres déjà correctement lus, y compris pour l'appelant en post=False.
+    # Le rendu est donc hors des `try`, comme celui de la ligne de conformité
+    # juste au-dessus : s'il casse, le résumé échoue franchement au lieu de
+    # mentir sur la cause.
+    #
+    # `select_all` et non `select` : le plafond PostgREST de 1000 lignes coupe
+    # en silence, et ce dépôt a déjà payé ce défaut ailleurs.
+    perf_bras: list[dict[str, Any]] = []
+    tete_bras: list[dict[str, Any]] = []
+    lecture_perf_ok = True
+    lecture_tete_ok = True
+    try:
+        perf_bras = await sb.select_all(
+            "v_perf_par_bras", order="bras", schema="agence",
+            params={
+                "select": "bras,leads,partis,rebonds,livres,desabonnements,"
+                          "reponses_brutes,oui_bruts,rdv_bruts,ventes_brutes,"
+                          "livres_reponse,livres_rdv,livres_vente,"
+                          "reponses,oui,rdv,ventes,oui_avec_reponse,"
+                          "taux_reponse,taux_oui,taux_rdv,taux_vente,"
+                          "part_oui_dans_reponses,taux_rebond"
+            },
+        )
+    except Exception as e:  # noqa: BLE001 — non bloquant, mais JAMAIS silencieux
+        print(f"[summary] lecture agence.v_perf_par_bras échouée: {e!r}")
+        lecture_perf_ok = False
+    try:
+        tete_bras = await sb.select_all(
+            "v_bras_en_tete", order="categorie", schema="agence",
+            params={
+                "select": "cohorte,categorie,bras_en_tete,valeur_en_tete,succes_en_tete,"
+                          "base_en_tete,bras_suivant,valeur_suivant,"
+                          "succes_suivant,base_suivant,z,verdict"
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[summary] lecture agence.v_bras_en_tete échouée: {e!r}")
+        lecture_tete_ok = False
+
+    totals["performance_gabarit"] = {
+        "lu": lecture_perf_ok and lecture_tete_ok,
+        "bras": perf_bras,
+        "en_tete": tete_bras,
+    }
+    if not lecture_perf_ok:
+        # Sans les compteurs, il n'y a rien à afficher — mais l'absence de bloc
+        # ressemble à « aucun écart », c'est-à-dire à une information rassurante
+        # qu'on n'a pas. Même principe que la ligne de conformité.
+        text += (
+            "\n📊 *Performance gabarit* — ⚠️ lecture de agence.v_perf_par_bras en "
+            "ÉCHEC : aucun chiffre par gabarit ce soir. L'absence de bloc ne veut "
+            "PAS dire « aucun écart »."
+        )
+    else:
+        text += "\n" + _bloc_performance_gabarit(perf_bras, tete_bras)
+        if not lecture_tete_ok:
+            # Les compteurs sont bons, seul le classement manque : on le dit
+            # sans jeter le reste.
+            text += (
+                "\n  ⚠️ classement indisponible : lecture de agence.v_bras_en_tete "
+                "en ÉCHEC. Les compteurs ci-dessus restent justes."
+            )
+
     # État du PARC, sans filtre de date : c'est l'entreprise coincée depuis six
     # semaines qu'on veut voir, pas l'activité du jour.
     #
@@ -1298,6 +1609,15 @@ class ResearchCompanyByIdOut(BaseModel):
     error_text: str | None = None
     emails_scraped_inserted: int = 0
     emails_scraped_duplicate: int = 0
+    # None = la passe n'est pas allee jusqu'a l'ecriture (skipped/error).
+    # False = la fiche est recherchee mais SANS colonnes de metiers.
+    metiers_ecrits: bool | None = None
+    # 🔴 QUATRE VALEURS, PAS UN BOOLEEN. `verrouillee` (l'anti-clobber a joue)
+    # est un comportement CORRECT : le confondre avec `echec` ferait sonner
+    # l'alarme sur le fonctionnement nominal des que William posera le drapeau
+    # de verification manuelle -- et une alarme qui sonne au nominal est morte.
+    # Seuls `echec` et `absente` sont des anomalies.
+    statut_metiers: str | None = None
 
 
 @app.post(
@@ -1382,9 +1702,16 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
             error_text=repr(e),
         )
 
-    await db_tools.update_company_research(
+    resultat_maj = await db_tools.update_company_research(
         payload.company_id, out.research_json, emails_found=out.emails_found
     )
+    if resultat_maj["statut_metiers"] in ("echec", "absente"):
+        # Le second UPDATE de `update_company_research` ne lève jamais (il ne doit
+        # pas faire perdre research_json). Sans ce journal, son échec serait MUET.
+        logging.getLogger("wf3").warning(
+            "fiche %s recherchee SANS colonnes de metiers (%s)",
+            payload.company_id, resultat_maj["statut_metiers"],
+        )
     try:
         await db_tools.record_agent_run(
             db_tools.AgentRunIn(
@@ -1450,6 +1777,8 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
         duration_ms=out.duration_ms,
         emails_scraped_inserted=inserted_scraped,
         emails_scraped_duplicate=duplicate_scraped,
+        metiers_ecrits=resultat_maj["metiers_ecrits"],
+        statut_metiers=resultat_maj["statut_metiers"],
     )
 
 
@@ -1543,6 +1872,12 @@ class RunWf3Out(BaseModel):
     failed: int
     skipped: int
     items: list[RunWf3Item]
+    # Fiches recherchees avec succes MAIS dont les colonnes de metiers n'ont pas
+    # ete ecrites par ANOMALIE : second UPDATE en echec, ou fiche devenue
+    # terminale pendant l'appel LLM. ⚠️ Une fiche verrouillee a la main n'entre
+    # PAS ici -- c'est l'anti-clobber qui joue, et c'est correct.
+    # Non nul = a rattraper par scripts/backfill_metiers.py.
+    sans_colonnes_metiers: int = 0
 
 
 @app.post("/wf3/run", dependencies=[Depends(_require_auth)], response_model=RunWf3Out)
@@ -1587,7 +1922,7 @@ async def _run_wf3(payload: RunWf3In) -> RunWf3Out:
     results = await asyncio.gather(*(_research_one(co) for co in backlog))
 
     items: list[RunWf3Item] = []
-    succeeded = failed = skipped = 0
+    succeeded = failed = skipped = sans_colonnes_metiers = 0
     for co, res, err in results:
         if res is None:
             failed += 1
@@ -1598,6 +1933,11 @@ async def _run_wf3(payload: RunWf3In) -> RunWf3Out:
             continue
         if res.status == "ok":
             succeeded += 1
+            # 🔴 Seules les ANOMALIES comptent. Une fiche `verrouillee` a ses
+            # colonnes d'origine, posees a la main : la compter ici ferait
+            # monter le compteur sur un comportement correct.
+            if res.statut_metiers in ("echec", "absente"):
+                sans_colonnes_metiers += 1
         elif res.status.startswith("skipped"):
             skipped += 1
         else:
@@ -1611,6 +1951,7 @@ async def _run_wf3(payload: RunWf3In) -> RunWf3Out:
     return RunWf3Out(
         processed=len(items), succeeded=succeeded, failed=failed,
         skipped=skipped, items=items,
+        sans_colonnes_metiers=sans_colonnes_metiers,
     )
 
 
@@ -2065,8 +2406,15 @@ async def _personalize_one(
     persist: bool,
     available_slots: list[dict[str, Any]],
     social_proof: list[dict[str, Any]],
+    bras_eligibles: str | None = None,
 ) -> PersonalizeContactOut:
-    """Coeur partagé entre /personalize/contact et /wf4/run."""
+    """Coeur partagé entre /personalize/contact et /wf4/run.
+
+    `bras_eligibles` (0055) est l'ensemble des bras qui pouvaient être servis à
+    CE contact, calculé par l'appelant AVANT le tirage. Il descend jusqu'ici
+    plutôt que d'être recalculé, pour qu'il décrive exactement le tirage qui a
+    eu lieu et pas une reconstitution.
+    """
     contact_id = contact_row["id"]
     if not contact_row.get("email"):
         return PersonalizeContactOut(contact_id=contact_id, status="skipped_no_email")
@@ -2200,6 +2548,24 @@ async def _personalize_one(
                         if any(email.get(cle) for cle in CLES_RELANCES)
                         else None
                     ),
+                    # Les bras EN JEU au moment de ce tirage (0055). Sans cette
+                    # colonne, un lot tiré en « CD » est indiscernable d'un lot
+                    # « ABCD » où A et B auraient perdu — et l'écart entre A/B
+                    # et C/D peut n'être que l'écart entre deux lots.
+                    bras_eligibles=bras_eligibles,
+                    # Ce dont la copie a parle (migration 0058). La valeur vient
+                    # de ce que `personalize()` RETOURNE, avec SA date : un
+                    # recalcul ici lirait `date.today()` et, hors saison,
+                    # `MetiersResolus.scene` vaut None -- on ecrirait NULL sur
+                    # exactement les lignes pour lesquelles la colonne existe.
+                    # 🔴 PAS `or None`. Sur `companies`, la meme conversation grave la regle
+                    # inverse : « aucun metier reconnu » est une INFORMATION, pas une
+                    # absence, et rendre NULL fait ecarter la ligne EN SILENCE par un
+                    # predicat SQL. On tient la meme convention ici : [] = « on a
+                    # cherche, on n'a rien reconnu » ; NULL = « jamais ecrit » (les
+                    # brouillons anterieurs a AC1c·A).
+                    metiers=out.metiers,
+                    metier_scene=out.metier_scene,
                 )
             )
             message_id = ins.get("message_id")
@@ -2306,6 +2672,10 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
             0,
             metier_connu=_tete_fixe_servable(company),
         ),
+        bras_eligibles=bras_eligibles_texte(
+            payload.template_choice,
+            metier_connu=_tete_fixe_servable(company),
+        ),
         model=payload.model,
         persist=payload.persist,
         available_slots=slots,
@@ -2362,6 +2732,34 @@ class RunWf4Out(BaseModel):
     # ⚠️ Ce n'est PAS un compteur de la copie : s'il monte, c'est WF-3 qui n'a
     # pas assez creuse les services de l'entreprise.
     lexique_de_repli: int = 0
+    # 🔴 OBSERVATION SEULE (AC1c·A) : la colonne `companies.fenetre_mois`
+    # comparée au calcul de `fenetre_saisonniere_ouverte`, PENDANT la sélection
+    # réelle. Aucun des deux ne refuse quoi que ce soit ici.
+    #
+    # 🔴 DEUX compteurs, pas un. `divergences_fenetre=0` seul est ambigu : il
+    # vaut 0 quand tout concorde ET quand il n'y avait rien à comparer.
+    # `comparaisons_fenetre=0` dit « rien comparé » — donc une panne de
+    # l'écrivain de la colonne, pas une parité.
+    divergences_fenetre: int = 0
+    # ⚠️ ZERO A TROIS CAUSES OPPOSEES, et deux ne sont pas des pannes :
+
+    #   (a) l'ecrivain de la colonne est en panne — la seule qui alarme ;
+
+    #   (b) le lot a ete REFUSE par le verrou (ce site rend 0 sans avoir
+
+    #       rien mesure) ;
+
+    #   (c) le lot n'a retenu aucun contact.
+
+    # 🔴 Ne jamais lire ce compteur seul : `processed` dans la meme
+
+    # reponse tranche entre (a) et (b)/(c). Et il compte des ENTREPRISES
+
+    # balayees (~150), pas des contacts du lot (~10) : les deux nombres
+
+    # ne parlent pas du meme objet.
+
+    comparaisons_fenetre: int = 0
     items: list[RunWf4Item]
 
 
@@ -2479,6 +2877,52 @@ async def _alerter_famine_wf4(
     return envoyee
 
 
+async def _bras_deja_servis(track: str) -> int:
+    """Combien de brouillons PORTANT UN BRAS ont déjà été écrits sur cette piste.
+
+    🔴 POURQUOI CE COMPTEUR EXISTE. WF-4 tourne en DEUX lots de 10 par jour
+    (découpage du 2026-09-09 : Railway coupe une requête à 300 s). Or un lot de
+    10 ne se divise pas par 4 — les rangs 0 à 9 donnent A=3, B=3, C=2, D=2.
+    Chaque lot, tous les jours, servait donc 30/30/20/20, et C et D
+    accumulaient leur base 1,5 fois plus lentement que A et B : environ six
+    semaines de retard sur le plancher de agence.v_bras_en_tete.
+
+    En repartant d'où la journée en est, les deux lots quotidiens se comportent
+    comme un seul lot de 20, qui se divise exactement par quatre.
+
+    ⚠️ ON MESURE, ON NE PARAMÈTRE PAS. Un `rang_depart` posé dans le JSON n8n
+    mentirait le jour où le premier lot rend 7 brouillons au lieu de 10 —
+    contacts sautés, panne à mi-lot — et personne ne s'en apercevrait. Compter
+    ce qui a réellement été écrit se répare tout seul.
+
+    🔴 ET LE COMPTE NE SE BORNE PAS À LA JOURNÉE — c'est le second correctif,
+    du 2026-09-10 au soir. Avec une borne à minuit, un jour qui écrit 18
+    brouillons au lieu de 20 laisse un reste de 2, et ce reste retombe TOUJOURS
+    sur les deux premiers bras, puisque le lendemain repart du rang zéro. À
+    18/jour régulier, ça donne 27,8/27,8/22,2/22,2 tous les jours : la même
+    maladie que le 30/30/20/20, en plus petit, et tout aussi cumulative.
+    En comptant depuis toujours, le reste d'un jour se reporte sur le suivant et
+    l'écart maximal entre bras reste borné à 1 SUR TOUTE LA DURÉE DU TEST.
+
+    Fail-soft à 0 : une lecture en échec fait repartir le lot du rang zéro. On
+    perd l'équilibre, jamais le lot.
+    """
+    from . import supabase_client as sb
+
+    try:
+        return await sb.count(
+            "messages",
+            params={
+                "direction": "eq.outbound",
+                "track": f"eq.{track}",
+                "template_choice": "not.is.null",
+            },
+        )
+    except Exception as e:  # noqa: BLE001 — non bloquant, mais jamais silencieux
+        print(f"[wf4] lecture du rang de depart echouee, on repart de zero: {e!r}")
+        return 0
+
+
 @app.post("/wf4/run", dependencies=[Depends(_require_auth)], response_model=RunWf4Out)
 async def run_wf4(payload: RunWf4In) -> RunWf4Out:
     # Un lot a la fois par piste — voir `_VERROUS_DE_LOT`.
@@ -2489,13 +2933,28 @@ async def run_wf4(payload: RunWf4In) -> RunWf4Out:
         )
         return RunWf4Out(
             processed=0, drafts_created=0, skipped=0, failed=0, slots_available=0,
-            repli_lexique=0, items=[],
+            # ⚠️ `repli_lexique=0` jusqu'au 2026-09-12 : ce nom n'existe PAS dans
+            # le modèle, et Pydantic l'avalait sans un mot. C'est le retour qu'un
+            # humain lit quand il diagnostique un lot refusé.
+            lexique_de_repli=0, divergences_fenetre=0, comparaisons_fenetre=0,
+            items=[],
         )
     async with _verrou_de_lot(cle):
         return await _run_wf4(payload)
 
 
 async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
+    # Le compte remonté ne vaut que pour CE lot — sinon il cumule sur toute la
+    # vie du processus et ne veut plus rien dire.
+    #
+    # ⚠️ `GET /contacts/to-personalize` (route de diagnostic) appelle la MÊME
+    # sélection et alimente donc ces compteurs sans jamais les vider. Ce n'est
+    # pas bloquant — le vidage ci-dessous a lieu au début de chaque lot — mais
+    # un compteur lu AILLEURS qu'au retour de `/wf4/run` peut porter les restes
+    # d'un appel de diagnostic.
+    db_tools.DIVERGENCES_FENETRE.clear()
+    db_tools.COMPARAISONS_FENETRE.clear()
+
     backlog = await db_tools.list_contacts_to_personalize(
         limit=payload.limit, max_per_company=payload.max_per_company, track=payload.track,
     )
@@ -2525,6 +2984,21 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
 
     social_proof = _load_client_references()
 
+    # 🔴 LE RANG COMPTE LES BROUILLONS ÉCRITS, PAS LES CONTACTS PARCOURUS.
+    #
+    # Premier jet du correctif : `rang_depart + rang` avec `rang` venant
+    # d'`enumerate(backlog)`. Les deux compteurs divergeaient dès qu'un contact
+    # était sauté (pas de courriel, pas de recherche, erreur du rédacteur) :
+    # `enumerate` avançait, le compteur en base non, et les rangs de fin de lot
+    # étaient REJOUÉS au lot suivant. Avec deux sauts par lot de 10, mesuré :
+    # A=6 B=6 C=2 D=2, soit 37,5/37,5/12,5/12,5 — PIRE que le 30/30/20/20 que
+    # le correctif venait remplacer.
+    #
+    # Un rang qui n'avance qu'à l'écriture supprime la divergence : le rang EST
+    # le numéro d'ordre du brouillon, et le compteur en base mesure exactement
+    # la même chose.
+    rang_du_bras = await _bras_deja_servis(payload.track)
+
     items: list[RunWf4Item] = []
     drafts = skipped = failed = repli_lexique = 0
 
@@ -2546,7 +3020,21 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
             "A/B est FAUSSÉ tant que ça dure.", rangs[:5],
         )
 
-    for rang, entry in enumerate(backlog):
+    # 🔴 SÉLECTIONNÉ par priorité, PARCOURU par ordre d'arrivée.
+    #
+    # `db._retenir` trie le lot par potentiel : c'est ce qui décide QUI entre
+    # dans le lot, et c'est le but du barème. Mais `rang_du_bras` est un
+    # compteur appliqué dans l'ordre du parcours — l'appliquer à une liste
+    # triée par score recorrélerait le bras au potentiel, même en continuant
+    # d'un lot à l'autre : avec 10 brouillons par lot, le décalage vaut 2 mod 4,
+    # donc le meilleur lead alternerait éternellement entre A et C, et B et D
+    # n'en verraient jamais un seul.
+    #
+    # Parcourir dans l'ordre d'ARRIVÉE règle les deux : le compteur garde sa
+    # répartition égale entre les lots, et le bras cesse de dépendre du score.
+    # L'ordre du parcours n'a aucune autre conséquence — les brouillons d'un
+    # même lot partent le même jour.
+    for entry in sorted(backlog, key=lambda e: e.get("rang_arrivee", 0)):
         contact = entry["contact"]
         company = entry["company"]
         # Compte AVANT la generation : meme si le draft echoue ensuite, le fait
@@ -2561,15 +3049,14 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
                 # `lib/gabarits.GABARITS_A_TETE_FIXE`.
                 template_choice=_bras_ab(
                     payload.template_choice,
-                    # 🔴 Le rang d'ARRIVÉE, pas la position dans la file. Depuis
-                    # que le lot sort trié par potentiel (2026-09-09), la
-                    # position est une fonction du score : le bras A prendrait
-                    # les rangs 0, 4, 8… donc toujours les meilleurs leads, et
-                    # `v_perf_par_bras` mesurerait leur qualité au lieu de la
-                    # copie. `rang_arrivee` est posé par `db._poser_rang_arrivee`.
-                    # Repli sur `rang` pour les appelants qui bâtissent un
-                    # backlog à la main (rejeu, tests).
-                    entry.get("rang_arrivee", rang),
+                    # Le compteur continu entre les lots (voir sa définition).
+                    # Le découplage avec le score se fait par l'ORDRE DU
+                    # PARCOURS, plus haut — pas ici.
+                    rang_du_bras,
+                    metier_connu=_tete_fixe_servable(company),
+                ),
+                bras_eligibles=bras_eligibles_texte(
+                    payload.template_choice,
                     metier_connu=_tete_fixe_servable(company),
                 ),
                 model=payload.model,
@@ -2587,6 +3074,14 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
 
         if res.status == "ok":
             drafts += 1
+        # 🔴 Le rang n'avance QUE si une ligne a été écrite — et le critère est
+        # `res.message_id`, pas `res.status == "ok"`. Un corps vide rend bien
+        # "ok" sans rien insérer (garde `if persist and subject and body`) : le
+        # rang aurait alors avancé pour un bras que personne n'a reçu, et le
+        # compteur en base, lui, ne l'aurait pas vu. C'est exactement la
+        # divergence que ce correctif existe pour supprimer.
+        if res.message_id:
+            rang_du_bras += 1
         elif res.status.startswith("skipped"):
             skipped += 1
         else:
@@ -2639,6 +3134,8 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
         slots_available=total_slots, items=items,
         alerte_famine_envoyee=alerte_famine_envoyee,
         lexique_de_repli=repli_lexique,
+        divergences_fenetre=len(db_tools.DIVERGENCES_FENETRE),
+        comparaisons_fenetre=len(db_tools.COMPARAISONS_FENETRE),
     )
 
 

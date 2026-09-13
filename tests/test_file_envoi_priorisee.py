@@ -55,7 +55,12 @@ def _monde(
 
     async def fake_select(table, params=None):
         if params_vus is not None:
-            params_vus[table] = dict(params or {})
+            # ⚠️ Deux requêtes portent sur `contacts` : la lecture paginée de la
+            # file (avec `limit`) et celle des frères d'entreprise (sans). Sans
+            # cette distinction, la seconde écrase la première et l'assertion
+            # sur `order` ne trouve plus rien.
+            cle = table if "limit" in (params or {}) or table != "contacts" else "freres"
+            params_vus[cle] = dict(params or {})
         if table == "contacts":
             return contacts
         if table == "companies":

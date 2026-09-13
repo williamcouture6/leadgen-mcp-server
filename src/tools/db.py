@@ -32,9 +32,11 @@ from pydantic import BaseModel, Field
 
 from .. import supabase_client as db
 from ..lib.lead_scoring import MARQUEUR_TETE_DE_FILE, calculer_score, est_tete_de_file
-from ..lib.metiers import SAISONS, resoudre_metiers
+from ..lib.metiers import SAISONS, colonnes_metiers, resoudre_metiers
 from ..lib.owner_match import summarize_company_decideur
 from ..lib.pricing import estimated_cost_usd
+
+logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------
@@ -679,6 +681,20 @@ def _rang_de_priorite(company: dict[str, Any]) -> tuple[int, int]:
     return (tete, rang_score)
 
 
+# Les entreprises dont la colonne `fenetre_mois` a été comparée au calcul, et
+# celles où les deux divergent.
+#
+# 🔴 OBSERVATION SEULE — AC1c·A. Le verdict rendu reste TOUJOURS celui du calcul :
+# la colonne est neuve, le backfill peut avoir été rattrapé par WF-3, et 119 tests
+# du dépôt construisent des fiches sans cette clé.
+#
+# 🔴 DEUX compteurs, pas un. `divergences=0` seul est ambigu : il vaut 0 quand
+# tout concorde ET quand il n'y avait rien à comparer (colonne NULL parce que
+# l'écrivain a échoué en silence). `comparaisons=0` distingue les deux.
+DIVERGENCES_FENETRE: set[str] = set()
+COMPARAISONS_FENETRE: set[str] = set()
+
+
 def fenetre_saisonniere_ouverte(
     company: dict[str, Any], *, track: str, aujourdhui: date | None = None
 ) -> bool:
@@ -756,7 +772,31 @@ def fenetre_saisonniere_ouverte(
     # disait que le repli s'appliquait. Une session future l'aurait lu devant
     # une fiche écartée, aurait conclu à un bogue, et aurait « réparé » en
     # rebranchant le repli, c'est-à-dire en annulant la décision.
-    return any(m in SAISONS for m in resolus.fenetre_ouverte)
+    verdict = any(m in SAISONS for m in resolus.fenetre_ouverte)
+
+    # Observation : la colonne dit-elle la même chose ? On ne change rien au
+    # verdict — voir le commentaire des deux compteurs.
+    #
+    # ⚠️ Les DEUX `return True` plus haut court-circuitent l'observation, et
+    # c'est ASSUMÉ, pas un oubli : la piste ≠ `agence-ia` n'est pas filtrée du
+    # tout, et une fiche dont aucun métier n'est reconnu porte `[1..12]` en
+    # colonne (défaut inversé des deux côtés) — elle ne PEUT pas diverger.
+    colonne = company.get("fenetre_mois")
+    # 🔴 `isinstance` ET PAS `is not None`. Sans lui, une colonne d'un type
+    # inattendu (une chaine, un entier — impossible depuis la base, qui rend un
+    # integer[], mais possible depuis une fiche construite a la main dans un test
+    # ou un script) ferait lever `mois in colonne`. Or AUCUN `try` ne protege le
+    # chemin `fenetre_saisonniere_ouverte` -> `_retenir` ->
+    # `list_contacts_to_personalize` -> `_run_wf4` : l'exception ne refuserait pas
+    # UNE entreprise, elle les refuserait TOUTES. Une ceinture qui ne refuse
+    # jamais n'a pas le droit de pouvoir lever.
+    if isinstance(colonne, (list, tuple, set, frozenset)):
+        COMPARAISONS_FENETRE.add(str(company.get("id")))
+        mois = (aujourdhui or date.today()).month
+        if (mois in colonne) != verdict:
+            DIVERGENCES_FENETRE.add(str(company.get("id")))
+
+    return verdict
 
 
 async def list_contacts_to_personalize(
@@ -943,7 +983,25 @@ async def _retenir(
             "select": (
                 "id,name,domain,website,city,icp_segment,industry,research_json,track,"
                 "google_rating,google_reviews_count,google_place_id,"
-                "lead_potential_score,lead_potential_reason"
+                # lead_potential_* : SERVENT UNIQUEMENT à ordonner le lot ; ils
+                # sont retirés avant d'être rendus (voir CHAMPS_INTERNES).
+                "lead_potential_score,lead_potential_reason,"
+                # 🔴 PROJETÉE POUR ÊTRE COMPARÉE, PAS POUR DÉCIDER (AC1c·A).
+                # Sans elle, `company.get("fenetre_mois")` rend None en production,
+                # l'observation est court-circuitée, et /wf4/run remonte
+                # `comparaisons_fenetre=0` à tous les coups — ce qui se lit, par la
+                # convention que cette même conversation installe, comme « l'écrivain
+                # de la colonne est en panne ».
+                # Ajouter un champ a une PROJECTION ne peut pas changer quelles
+                # lignes PostgREST rend : la requete ne filtre que par `id=in.(...)`,
+                # sans ressource embarquee ni `!inner`, et l'eligibilite en aval ne
+                # lit jamais cette colonne pour decider.
+                # ⚠️ CE N'EST PAS LE REJEU SUR INSTANTANE QUI LE PROUVE. Sa fausse
+                # base ignore le `select` : elle rend la ligne entiere quoi qu'on
+                # demande, donc elle est AVEUGLE a ce changement. Le raisonnement
+                # ci-dessus est la preuve ; le rejeu n'en est pas une.
+
+                "fenetre_mois"
             ),
         },
         ids=company_ids,
@@ -966,10 +1024,49 @@ async def _retenir(
     # re-bouncer (jetons brûlés + réputation d'envoi) — ça se règle au niveau
     # contact, pas en régénérant un draft.
     # (messages.status est NOT NULL DEFAULT 'draft' → pas de piège NULL avec not.in.)
+    # 🔴 L'EXCLUSION PORTE SUR L'ENTREPRISE, PAS SEULEMENT SUR LE CONTACT.
+    #
+    # Mesuré le 2026-09-10 : 85 leads pour 78 entreprises, et PROGAZON avait
+    # reçu QUATRE courriels froids, sur les bras A, C et D. `max_per_company`
+    # ne vaut qu'à l'intérieur d'un lot : celui de 12 h retenait le contact 1 et
+    # écartait le contact 2, celui de 12 h 30 revoyait le contact 2, ne le
+    # trouvait dans aucun message, et le servait.
+    #
+    # C'est d'abord un problème d'ENVOI — quatre courriels froids à la même
+    # boîte, c'est ce qui fait dire « c'est du spam », et ça se voit chez le
+    # prospect avant de se voir chez nous. Accessoirement, le bras du deuxième
+    # courriel est confondu avec « cette entreprise nous a déjà vus ».
+    #
+    # ⚠️ ON REMONTE DES ENTREPRISES VERS TOUS LEURS CONTACTS, et pas seulement
+    # ceux de la page. `send.py` passe le contact à `status='contacted'` au
+    # push : le frère DÉJÀ SERVI a donc quitté le `status in (new, ready)` que
+    # lit la sélection. Déduire l'exclusion des contacts de la page raterait
+    # exactement le cas dangereux — celui où l'entreprise a déjà reçu son
+    # courriel.
+    # ⚠️ Par TRANCHES : ce filtre porte sur toutes les entreprises de la file
+    # lue en entier (345 contacts au 2026-09-09, et ça grossit). Un `in.(...)`
+    # d'un seul bloc finirait en URL trop longue, donc en 414 muet — et un
+    # frère manquant ici, c'est une entreprise qui reçoit un deuxième courriel.
+    freres = await _select_par_tranches(
+        "contacts",
+        cle="company_id",
+        ids=company_ids,
+        params={"select": "id,company_id"},
+    )
+    company_par_contact = {f["id"]: f["company_id"] for f in freres}
+
+    # `status=not.in.(failed)` : un message ABANDONNÉ ne gèle ni son contact ni
+    # son entreprise. 'failed' est la façon PRÉVUE de retirer un brouillon à la
+    # main ; bloquer dessus gèlerait toute la boîte au lieu de la libérer.
     existing_msgs = await _select_par_tranches(
         "messages",
         cle="contact_id",
-        ids=[c["id"] for c in contacts],
+        # 🔴 TOUS LES FRÈRES, pas les contacts de la page. `send.py` fait passer
+        # un contact poussé en `status='contacted'` : le frère DÉJÀ SERVI a donc
+        # quitté la file que lit la sélection. Interroger seulement la page
+        # raterait exactement le cas dangereux — l'entreprise qui a déjà reçu
+        # son courriel. C'est le cœur du test `test_une_entreprise_un_courriel`.
+        ids=list(company_par_contact),
         # `order` → tranche PAGINÉE (et non `select_all`, à dessein : les faux
         # `select` des tests ne connaissent pas `select_all`). Voir la docstring.
         order="id",
@@ -978,13 +1075,21 @@ async def _retenir(
             "direction": "eq.outbound",
             "status": "not.in.(failed)",
         },
-    )
+    ) if company_par_contact else []
     already_drafted = {m["contact_id"] for m in existing_msgs}
+    entreprises_engagees = {
+        company_par_contact[cid]
+        for cid in already_drafted
+        if cid in company_par_contact
+    }
 
     # Filtre + groupe par company
     eligible: dict[str, list[dict[str, Any]]] = {}
     for c in contacts:
         if c["id"] in already_drafted:
+            continue
+        # Une entreprise déjà servie ne revient pas, quel que soit le contact.
+        if c["company_id"] in entreprises_engagees:
             continue
         company = by_id.get(c["company_id"])
         if not company:
@@ -1124,6 +1229,15 @@ class MessageDraftIn(BaseModel):
     # Les corps des relances, {"relance_1": "...", "relance_2": "..."}
     # (migration 0046). NULL sur la piste OPT, qui n'a pas de relances.
     followups: dict[str, Any] | None = None
+    # Les bras qui pouvaient REELLEMENT etre servis a ce contact (migration
+    # 0055). PAS le parametre du lot : l'ensemble APRES la garde des tetes
+    # fixes. Sans lui, comparer A/B a C/D revient a comparer deux lots.
+    bras_eligibles: str | None = None
+    # Ce dont ce courriel a parle, FIGE (migration 0058). Jamais relu depuis
+    # companies : AC1c ajoute precisement le recalcul qui reclasse, et relire au
+    # moment de l'analyse reecrirait l'histoire.
+    metiers: list[str] | None = None
+    metier_scene: str | None = None
 
 
 async def insert_message_draft(payload: MessageDraftIn) -> dict[str, Any]:
@@ -1340,6 +1454,23 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     return patch
 
 
+def extract_metiers_patch(research_json: Any) -> dict[str, Any]:
+    """Les colonnes de métiers à écrire, depuis le research_json.
+
+    Calquée sur `extract_lead_potential_patch` pour la forme — mais elle rend
+    TOUJOURS un patch, là où sa jumelle rend `{}` quand la donnée manque. C'est
+    voulu : « aucun métier reconnu » est une information (le défaut inversé, qui
+    ouvre les douze mois), pas une absence. Rendre `{}` laisserait la colonne à
+    NULL, ce qu'un prédicat `fenetre_mois @> array[9]` écarte EN SILENCE.
+    """
+    services = None
+    if isinstance(research_json, dict):
+        services = research_json.get("services_offered")
+    patch = dict(colonnes_metiers(services if isinstance(services, list) else None))
+    patch["metiers_calcules_le"] = datetime.now(timezone.utc).isoformat()
+    return patch
+
+
 async def _statut_apres_recherche(
     company_id: str,
     emails_found: list[dict[str, Any]] | None,
@@ -1411,7 +1542,84 @@ async def update_company_research(
             "status": "not.in.(disqualified,suppressed)",
         },
     )
-    return {"updated": len(rows)}
+
+    # ── Second UPDATE : les colonnes de métiers, et lui seul ────────────────
+    # 🔴 SÉPARÉ, ET DANS CET ORDRE, POUR UNE RAISON MESURÉE. L'anti-clobber ne
+    # peut pas vivre dans le filtre du patch ci-dessus : il y sauterait l'UPDATE
+    # ENTIER, donc research_json, status et last_enriched_at — et cette dernière
+    # porte la ré-éligibilité à 90 jours du backlog de recherche. 41 fiches en
+    # sortiraient pour trois mois, en silence (mesuré le 2026-09-10).
+    #
+    # 🔴 ET IL NE LÈVE JAMAIS. L'appelant (`/research/company`) n'est pas sous
+    # `try` : une exception ici perdrait research_json APRÈS un appel LLM de
+    # ~35 s, et la boucle qui insère les contacts scrapés ne tournerait pas non
+    # plus.
+    #
+    # 🔴 LE RATTRAPAGE N'EST PAS `metiers_calcules_le IS NULL`. Ce critère ne
+    # voit que la PREMIÈRE passe. Si ce second UPDATE échoue sur une fiche déjà
+    # calculée — une re-recherche à 90 jours — l'horodatage garde son ancienne
+    # valeur non nulle pendant que `research_json` vient d'être remplacé :
+    # `metiers`/`fenetre_mois` décrivent alors l'ANCIEN JSON, périmés ET
+    # invisibles à un backfill qui ne cherche que les NULL. Le critère juste est
+    #     metiers_calcules_le is null or metiers_calcules_le < last_enriched_at
+    # (le même est inscrit dans le commentaire SQL de la colonne, migration 0059).
+    #
+    # ⚠️ COÛT : `db.update` est décoré d'un retry à 3 tentatives avec backoff
+    # exponentiel (1→8 s, timeout 30 s par tentative), donc sur un 5xx transitoire
+    # ce second appel peut ajouter une quinzaine de secondes PAR FICHE — contre un
+    # budget de lot d'environ 300 s avant que Railway coupe.
+    #
+    # ⚠️ LE FILTRE DES STATUTS TERMINAUX EST RÉPÉTÉ ICI, exprès. Sans lui, une
+    # fiche disqualified/suppressed se verrait refuser research_json par le
+    # premier UPDATE mais recevrait quand même ses colonnes de métiers — donc un
+    # `metiers_calcules_le` non nul, et un statut annonçant « tout va bien » sur
+    # le seul chemin où l'écriture principale a été jetée. Sur `suppressed`, qui
+    # est un retrait de consentement, écrire « les mois où on peut la démarcher »
+    # est un mauvais signal en soi. L'appel part même quand `rows` est vide : la
+    # fiche peut être devenue terminale PENDANT l'appel LLM, et c'est ce filtre —
+    # pas `rows` — qui tranche au moment de l'écriture.
+    statut_metiers = "echec"
+    try:
+        touchees = await db.update(
+            "companies",
+            extract_metiers_patch(research_json),
+            filters={
+                "id": f"eq.{company_id}",
+                "status": "not.in.(disqualified,suppressed)",
+                "metiers_verifies_a_la_main": "eq.false",
+            },
+        )
+        # `rows` a déjà répondu à « cette ligne existe-t-elle et est-elle non
+        # terminale ? » : distinguer les trois cas sains ne coûte aucune lecture.
+        if not rows:
+            statut_metiers = "absente"
+        elif touchees:
+            statut_metiers = "ecrit"
+        else:
+            statut_metiers = "verrouillee"
+    except Exception as exc:  # noqa: BLE001 — voir le bloc ci-dessus
+        # 🔴 `str(exc)` d'une HTTPStatusError rend « 400 Bad Request » + deux
+        # lignes de MDN. Le vrai message PostgREST (« PGRST204: column ... does
+        # not exist ») est dans `response.text`, et sur un chemin où l'exception
+        # est délibérément avalée c'est le SEUL canal de diagnostic.
+        # Idiome repris de src/lib/granola.py.
+        reponse = getattr(exc, "response", None)
+        corps = (getattr(reponse, "text", "") or "")[:300] if reponse is not None else ""
+        logger.warning(
+            "colonnes de metiers non ecrites pour %s : %s %s", company_id, exc, corps
+        )
+
+    return {
+        "updated": len(rows),
+        # Conservé pour la rétro-compatibilité — `statut_metiers` porte le détail.
+        "metiers_ecrits": statut_metiers == "ecrit",
+        # ecrit · verrouillee (anti-clobber, COMPORTEMENT CORRECT) · absente · echec.
+        # Seuls `echec` et `absente` sont des anomalies : n'alerter que sur eux,
+        # sinon l'alarme sonnera sur le fonctionnement nominal le jour où William
+        # posera le drapeau de vérification manuelle — et une alarme qui sonne au
+        # nominal est une alarme morte.
+        "statut_metiers": statut_metiers,
+    }
 
 
 class AgentRunIn(BaseModel):

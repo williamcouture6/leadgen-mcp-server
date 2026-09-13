@@ -61,6 +61,16 @@ class _FausseBase:
         ]
 
     async def select(self, table: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        if table == "contacts" and "company_id" in params:
+            # La lecture des FRERES : tous les contacts des entreprises
+            # candidates, y compris ceux qui ont quitte la file au push
+            # (status contacted). Elle ne compte pas comme une page de file.
+            ids = params["company_id"].removeprefix("in.(").rstrip(")").split(",")
+            return [
+                {"id": c["id"], "company_id": c["company_id"]}
+                for c in self.contacts
+                if c["company_id"] in ids
+            ]
         if table == "contacts":
             self.pages_lues += 1
             deb = int(params.get("offset", 0))
@@ -170,7 +180,9 @@ async def test_la_page_ne_depasse_jamais_le_plafond_postgrest(
 
     class _Espion(_FausseBase):
         async def select(self, table, params):
-            if table == "contacts":
+            # `limit` absent = la requête des FRÈRES (exclusion par entreprise,
+            # AC1c), pas la lecture paginée de la file. On ne mesure que celle-ci.
+            if table == "contacts" and "limit" in params:
                 vus.append(int(params["limit"]))
             return await super().select(table, params)
 

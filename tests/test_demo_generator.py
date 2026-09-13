@@ -86,6 +86,11 @@ class TestPersonalizeTri:
             duration_ms = 5
             template_used = "A"
             usage = _Usage()
+            # Le vrai `PersonalizeOut` les porte depuis la migration 0058 : ce
+            # double doit suivre le contrat, sinon il teste une forme qui
+            # n'existe plus.
+            metiers = []
+            metier_scene = None
 
         return _Out()
 

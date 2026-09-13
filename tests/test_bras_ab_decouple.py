@@ -1,22 +1,22 @@
-"""🔴 Le gabarit A/B/C/D se tire du rang d'ARRIVÉE, jamais de la position d'envoi.
+"""🔴 Le gabarit A/B/C/D ne doit jamais être corrélé au potentiel du lead.
 
-Le garde-fou qui manquait, relevé par le second conseil du 2026-09-09.
+Deux conversations ont travaillé ce mécanisme en parallèle, chacune avec une
+moitié du problème. La fusion du 2026-09-13 garde les deux.
 
-`bras_du_lot` alterne sur un rang, et son invariant dit « jamais une propriété
-du contact ». Depuis que le lot sort trié par potentiel, la POSITION dans le lot
-est une fonction du score : si le rang venait de là, le bras A prendrait les
-rangs 0, 4, 8… donc toujours les meilleurs leads, D les plus faibles, à chaque
-envoi et dans le même sens — et `v_perf_par_bras` mesurerait la qualité des
-leads au lieu de la copie.
+**Le problème d'équilibre** (conversation B) : le rang repartait de zéro à
+chaque lot. Un lot de 10 ne se divise pas par 4 — A=3, B=3, C=2, D=2 — donc C
+et D accumulaient leur base 1,5 fois plus lentement. Correctif : `rang_du_bras`
+est lu en base (`_bras_deja_servis`) et n'avance qu'à l'écriture d'un brouillon.
 
-`db._poser_rang_arrivee` pose donc `rang_arrivee` (l'ordre d'arrivée) sur chaque
-retenu, et `/wf4/run` lit CETTE étiquette. Rien ne le vérifiait : un test
-contrôlait que la clé est posée, un autre que le tri trie, aucun que le pipeline
-consomme la bonne des deux. Le repli `entry.get("rang_arrivee", rang)` aurait
-laissé un remaniement futur retomber en silence sur la position triée.
+**Le problème de corrélation** (cette conversation) : depuis que le lot sort
+trié par potentiel, appliquer un compteur dans l'ordre du parcours donne le
+bras A aux meilleurs leads. Le compteur continu ne suffit PAS à le régler : à
+10 brouillons par lot, le décalage vaut 2 modulo 4, donc le meilleur lead d'un
+lot alternerait éternellement entre A et C, et B et D n'en verraient jamais un.
 
-Ici le backlog est fabriqué avec un rang d'arrivée EXACTEMENT INVERSE de la
-position : si le code lisait la position, les bras sortiraient A, B, C, D.
+**La résolution** : le lot est SÉLECTIONNÉ par priorité, puis PARCOURU dans
+l'ordre d'ARRIVÉE. Le compteur garde sa répartition égale, et le bras cesse de
+dépendre du score. C'est ce que ce fichier verrouille.
 """
 from __future__ import annotations
 
@@ -33,7 +33,12 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _backlog_a_rang_inverse() -> list[dict]:
-    """Quatre contacts dont `rang_arrivee` est l'inverse de la position."""
+    """Le lot tel que `_retenir` le rend : trié par priorité décroissante.
+
+    `Ent0` est le meilleur potentiel (premier de la liste) mais le DERNIER
+    arrivé (`rang_arrivee = 3`). Si le bras suivait la position dans la liste,
+    Ent0 prendrait A. Il doit prendre D.
+    """
     return [
         {
             "contact": {"id": f"ct-{i}", "email": f"a{i}@x.ca", "first_name": "A"},
@@ -48,16 +53,11 @@ def _backlog_a_rang_inverse() -> list[dict]:
     ]
 
 
-async def test_le_bras_suit_le_rang_d_arrivee_pas_la_position(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _socle(monkeypatch: pytest.MonkeyPatch, backlog: list[dict], vus: list):
     from src import http_api
     from src import supabase_client as sb
     from src.lib import calcom as calcom_mod
     from src.lib import slack as slack_mod
-    from src.http_api import RunWf4In
-
-    vus: list[tuple[str, str]] = []
 
     async def faux_personalize(contact, company, *, template_choice, **kw):
         vus.append((company["name"], template_choice))
@@ -67,7 +67,7 @@ async def test_le_bras_suit_le_rang_d_arrivee_pas_la_position(
         )
 
     async def faux_backlog(**kw):
-        return _backlog_a_rang_inverse()
+        return backlog
 
     async def faux_count(table, params=None, schema=None):
         return 0
@@ -75,63 +75,77 @@ async def test_le_bras_suit_le_rang_d_arrivee_pas_la_position(
     async def faux_notify(**kw):
         return True
 
+    async def faux_deja_servis(track):
+        return 0
+
     monkeypatch.setattr(http_api.db_tools, "list_contacts_to_personalize", faux_backlog)
     monkeypatch.setattr(http_api, "_personalize_one", faux_personalize)
+    monkeypatch.setattr(http_api, "_bras_deja_servis", faux_deja_servis)
     monkeypatch.setattr(calcom_mod, "get_available_slots", lambda **kw: [])
     monkeypatch.setattr(http_api, "_load_client_references", lambda: [])
     monkeypatch.setattr(sb, "count", faux_count)
     monkeypatch.setattr(slack_mod, "notify", faux_notify)
+    return http_api
+
+
+async def test_le_bras_suit_l_ordre_d_arrivee_pas_le_potentiel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vus: list[tuple[str, str]] = []
+    http_api = _socle(monkeypatch, _backlog_a_rang_inverse(), vus)
+    from src.http_api import RunWf4In
 
     await http_api.run_wf4(RunWf4In(track="agence-ia", template_choice="ABCD"))
 
-    bras = [b for _, b in vus]
-    assert bras == ["D", "C", "B", "A"], (
-        f"les bras suivent la position triée, pas le rang d'arrivée : {vus}"
+    # Parcouru dans l'ordre d'ARRIVÉE : Ent3 est arrivé le premier.
+    assert [n for n, _ in vus] == ["Ent3", "Ent2", "Ent1", "Ent0"], (
+        f"le lot est parcouru dans l'ordre de la file triée : {vus}"
     )
+    # Et le compteur distribue les quatre bras dans cet ordre-là.
+    assert [b for _, b in vus] == ["A", "B", "C", "D"], vus
+    # Donc le MEILLEUR potentiel (Ent0, premier de la liste) prend D, pas A.
+    assert dict(vus)["Ent0"] == "D"
+
+
+async def test_le_compteur_continue_entre_les_lots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """La moitié « équilibre » : un deuxième lot ne redémarre pas à A.
+
+    `_bras_deja_servis` rend 2 — deux brouillons déjà écrits — donc le lot
+    reprend au troisième bras.
+    """
+    vus: list[tuple[str, str]] = []
+    http_api = _socle(monkeypatch, _backlog_a_rang_inverse(), vus)
+    from src import http_api as api_mod
+    from src.http_api import RunWf4In
+
+    async def deja_deux(track):
+        return 2
+
+    monkeypatch.setattr(api_mod, "_bras_deja_servis", deja_deux)
+
+    await http_api.run_wf4(RunWf4In(track="agence-ia", template_choice="ABCD"))
+
+    assert [b for _, b in vus] == ["C", "D", "A", "B"], vus
 
 
 async def test_la_prod_crie_si_l_etiquette_disparait(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Troisième moitié du garde-fou : le journal, pour ce que les tests ratent.
+    """Le journal, pour ce que les tests ne peuvent pas prévoir.
 
-    Les deux tests précédents couvrent le code tel qu'il est écrit. Si un
-    remaniement futur retirait `rang_arrivee` de `_retenir`, le repli de
-    `/wf4/run` ferait retomber l'alternance sur la position triée par
-    potentiel — silencieusement. Ici, la prod le dit.
+    Si un remaniement futur retirait `rang_arrivee` de `_retenir`, le lot
+    serait parcouru dans l'ordre de la file triée — donc les bras
+    redeviendraient corrélés au potentiel, silencieusement.
     """
-    from src import http_api
-    from src import supabase_client as sb
-    from src.http_api import RunWf4In
-    from src.lib import calcom as calcom_mod
-    from src.lib import slack as slack_mod
-
     sans_etiquette = [
-        {k: v for k, v in entree.items() if k != "rang_arrivee"}
-        for entree in _backlog_a_rang_inverse()
+        {k: v for k, v in e.items() if k != "rang_arrivee"}
+        for e in _backlog_a_rang_inverse()
     ]
-
-    async def faux_personalize(contact, company, *, template_choice, **kw):
-        return SimpleNamespace(
-            status="ok", message_id="m", template_used=template_choice,
-            duration_ms=1, error_text=None,
-        )
-
-    async def faux_backlog(**kw):
-        return sans_etiquette
-
-    async def faux_count(table, params=None, schema=None):
-        return 0
-
-    async def faux_notify(**kw):
-        return True
-
-    monkeypatch.setattr(http_api.db_tools, "list_contacts_to_personalize", faux_backlog)
-    monkeypatch.setattr(http_api, "_personalize_one", faux_personalize)
-    monkeypatch.setattr(calcom_mod, "get_available_slots", lambda **kw: [])
-    monkeypatch.setattr(http_api, "_load_client_references", lambda: [])
-    monkeypatch.setattr(sb, "count", faux_count)
-    monkeypatch.setattr(slack_mod, "notify", faux_notify)
+    vus: list[tuple[str, str]] = []
+    http_api = _socle(monkeypatch, sans_etiquette, vus)
+    from src.http_api import RunWf4In
 
     with caplog.at_level("WARNING", logger="wf4"):
         await http_api.run_wf4(RunWf4In(track="agence-ia", template_choice="ABCD"))
