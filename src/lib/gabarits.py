@@ -36,6 +36,12 @@ gabarit choisi par défaut silencieux.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
+from .avis import bloc_avis_autorise
+from .metiers import classer_services
+
 # L'ordre compte : c'est celui de l'alternance.
 #   A — l'angle du manque          B — l'angle de la course
 #   C — la saison, service vague   D — la saison, mécanique en vitrine
@@ -101,6 +107,41 @@ def tete_fixe_servable(
     if not metiers_reconnus:
         return False
     return citation_autorisee or nb_services >= 2
+
+
+def tete_fixe_servable_pour_entreprise(company: Mapping[str, Any]) -> bool:
+    """La même règle, mais lue depuis une FICHE `companies`.
+
+    🔴 POURQUOI ELLE EST ICI ET PAS DANS `http_api`. Le calcul des trois
+    booléens vivait dans `http_api._tete_fixe_servable`, donc atteignable
+    seulement par une route HTTP. Le rattrapage de `messages.bras_eligibles`
+    (2026-09-13) a besoin d'EXACTEMENT ce calcul pour reconstituer, sur un
+    brouillon déjà écrit, l'ensemble des bras qui étaient réellement en jeu.
+    Le recopier dans un script aurait fabriqué une seconde vérité, et elle
+    aurait divergé sur les cas limites — avis sous le plancher, un seul service
+    — c'est-à-dire précisément sur les lignes que le rattrapage existe pour
+    étiqueter correctement. `http_api._tete_fixe_servable` délègue désormais
+    ici, et un test tient l'égalité des deux.
+
+    🔴 AUCUNE DATE N'ENTRE DANS CE CALCUL, et c'est ce qui rend le rattrapage
+    légitime. `bras_eligibles` décrit un tirage qui a EU LIEU : si le résultat
+    dépendait du jour où on le rejoue, le backfill n'étiquetterait pas le
+    passé, il en écrirait un autre — en silence, puisque rien ne compare.
+    D'où l'appel à `classer_services` (sans calendrier depuis AC1c·A) plutôt
+    qu'à `resoudre_metiers(services, date.today())`, dont la signature laisse
+    croire l'inverse. Les deux rendent le même ensemble de métiers — la date ne
+    choisit que la SCÈNE du courriel — mais passer par la version datée
+    inviterait la prochaine session à croire qu'elle compte.
+    """
+    research = company.get("research_json") or {}
+    services = research.get("services_offered") or []
+    return tete_fixe_servable(
+        metiers_reconnus=bool(classer_services(services).metiers),
+        citation_autorisee=bloc_avis_autorise(
+            company.get("google_rating"), company.get("google_reviews_count")
+        ),
+        nb_services=len(services),
+    )
 
 
 def bras_eligibles(

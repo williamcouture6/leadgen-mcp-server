@@ -18,14 +18,13 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from pydantic import BaseModel
 
 from . import supabase_client as sb
-from .lib.avis import bloc_avis_autorise
 from .lib.gabarits import (
     GABARITS,
     bras_demandes,
     bras_du_lot,
     bras_eligibles_texte,
     est_un_gabarit,
-    tete_fixe_servable,
+    tete_fixe_servable_pour_entreprise,
 )
 from .lib.metiers import resoudre_metiers
 from .lib.relances import CLES_RELANCES
@@ -2382,16 +2381,15 @@ def _tete_fixe_servable(company: dict[str, Any]) -> bool:
     Un seul endroit décide, pour le LOT comme pour le REJEU manuel : les deux
     passaient auparavant par deux expressions recopiées, et la route de rejeu
     n'en avait aucune. Voir `lib/gabarits.tete_fixe_servable` pour le pourquoi.
+
+    ⚠️ LE CALCUL A DÉMÉNAGÉ DANS `lib/gabarits` le 2026-09-13, et cette fonction
+    n'est plus qu'un alias. Le rattrapage de `messages.bras_eligibles` a besoin
+    du MÊME calcul depuis un script : tant qu'il vivait ici, il n'était
+    atteignable que par une route HTTP, et un script aurait dû le recopier.
+    Ne pas le rapatrier ici — `tests/test_tete_fixe_pour_entreprise.py` tient
+    l'égalité entre les deux chemins précisément pour l'interdire.
     """
-    research = company.get("research_json") or {}
-    services = research.get("services_offered") or []
-    return tete_fixe_servable(
-        metiers_reconnus=bool(resoudre_metiers(services, date.today()).metiers),
-        citation_autorisee=bloc_avis_autorise(
-            company.get("google_rating"), company.get("google_reviews_count")
-        ),
-        nb_services=len(services),
-    )
+    return tete_fixe_servable_pour_entreprise(company)
 
 
 _bras_ab = bras_du_lot
