@@ -44,9 +44,15 @@ def test_les_deux_versions_ouvrent_pareil() -> None:
         "clients aiment ton travail!" in PLAT
     )
     assert (
-        "Avec {ENUMERATION_SERVICES}, on comprend que t'en as plein les bras!"
+        "Avec {ENUMERATION_SERVICES}, on comprend que tu en couvres beaucoup!"
         in PLAT
     )
+    # ⚠️ « tu en couvres beaucoup » est la phrase de William, et elle a failli
+    # se perdre : mon brouillon de la nouvelle forme disait « à voir tout ce que
+    # tu couvres … tu en couvres beaucoup », donc je l'avais remplacée pour
+    # éviter la répétition. La refonte a fait sauter le début — et donc la
+    # répétition — mais j'avais gardé le remplacement. Vérifié le 2026-09-14 :
+    # aucun mot ne se répète dans la phrase telle qu'elle est aujourd'hui.
 
 
 def test_le_deuxieme_temps_garde_sa_formulation() -> None:

@@ -156,7 +156,7 @@ frontière est simple : citer un client, non ; supposer une situation, oui.
 
 ### 2. Preuves sociales subtiles non détectées par regex
 - "Nos années dans le métier nous ont appris que…" → sous-entend une expérience client passée qu'on n'a pas.
-  🔴 **Ne confonds pas avec « On comprend que… » suivi d'un fait sur LE PROSPECT.** Les gabarits C et D ouvrent leur 2ᵉ paragraphe par « Avec {NOTE} étoiles sur {NB_AVIS} avis Google, on comprend que tes clients aiment ton travail! » ou « Avec {SES SERVICES}, on comprend que t'en as plein les bras! ». Ça ne prétend RIEN sur notre expérience : ça commente ce qu'on vient de lire sur lui — sa note Google ou la liste de ses services. C'est une formulation FIXE, écrite par William, identique pour tous les destinataires.
+  🔴 **Ne confonds pas avec « On comprend que… » suivi d'un fait sur LE PROSPECT.** Les gabarits C et D ouvrent leur 2ᵉ paragraphe par « Avec {NOTE} étoiles sur {NB_AVIS} avis Google, on comprend que tes clients aiment ton travail! » ou « Avec {SES SERVICES}, on comprend que tu en couvres beaucoup! ». Ça ne prétend RIEN sur notre expérience : ça commente ce qu'on vient de lire sur lui — sa note Google ou la liste de ses services. C'est une formulation FIXE, écrite par William, identique pour tous les destinataires.
   ⚠️ Cet exemple était « On comprend bien votre secteur » jusqu'au 2026-09-02 — assez proche de la copie réelle pour que le juge refuse le gabarit D lors du premier passage réel, pendant qu'il approuvait le C sur exactement la même tournure. Changé ; ne pas le remettre.
 - "Notre approche éprouvée" → "éprouvée" = preuve sociale implicite.
 - "Comme la plupart de nos prospects" → suggère un volume de clients.

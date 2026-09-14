@@ -230,7 +230,7 @@ temps.
 
 **Si elle ne l'est PAS** (sous le plancher, ou aucune donnée) :
 ```
-Avec {ENUMERATION_SERVICES}, on comprend que t'en as plein les bras! Pourtant
+Avec {ENUMERATION_SERVICES}, on comprend que tu en couvres beaucoup! Pourtant
 je suis certain qu'il serait possible de te simplifier la vie avec la gestion
 de tes clients et t'en amener plus en même temps.
 ```
@@ -326,7 +326,7 @@ Le contrôle déterministe `check_avis_conformes` lit le nombre, pas le mot qui
 suit — ajouter « Google » ne le dérange pas.
 
 ⚠️ La phrase du milieu change entre les deux versions et c'est voulu : « tes
-clients aiment ton travail » découle d'une note, « t'en as plein les bras »
+clients aiment ton travail » découle d'une note, « tu en couvres beaucoup »
 découle d'une liste. La chute, elle, est **identique** dans les deux.
 
 ---
