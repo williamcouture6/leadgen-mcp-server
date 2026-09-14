@@ -202,7 +202,11 @@ def bloc_faits_verifies(
 
     if bloc_avis_autorise(google_rating, google_reviews_count):
         consigne = (
-            f"  ✅ Tu PEUX citer : « {note} étoiles sur {compte} avis ».\n"
+            # ⚠️ « avis Google » : le gabarit le dit ainsi depuis le
+            # 2026-09-14, et ce bloc est ce que le rédacteur RECOPIE. Les
+            # deux doivent se suivre, sinon il recopie une forme que le
+            # gabarit contredit trois lignes plus bas.
+            f"  ✅ Tu PEUX citer : « {note} étoiles sur {compte} avis Google ».\n"
             "  Ces deux chiffres se recopient exactement, sans les modifier."
         )
     else:

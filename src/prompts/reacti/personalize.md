@@ -222,18 +222,17 @@ mois, la phrase en jours.
 
 **Si la citation est AUTORISÉE :**
 ```
-Avec ton entreprise, je vois que tu as {NOTE} étoiles sur {NB_AVIS} avis. On
-comprend que tes clients aiment ton travail! Pourtant je suis certain qu'il
-serait possible de te simplifier la vie avec la gestion de tes clients et
-t'en amener plus en même temps.
+Avec {NOTE} étoiles sur {NB_AVIS} avis Google, on comprend que tes clients
+aiment ton travail! Pourtant je suis certain qu'il serait possible de te
+simplifier la vie avec la gestion de tes clients et t'en amener plus en même
+temps.
 ```
 
 **Si elle ne l'est PAS** (sous le plancher, ou aucune donnée) :
 ```
-Avec ton entreprise, je vois que tu fais {ENUMERATION_SERVICES}. On comprend
-que tu en couvres beaucoup! Pourtant je suis certain qu'il serait possible de
-te simplifier la vie avec la gestion de tes clients et t'en amener plus en
-même temps.
+Avec {ENUMERATION_SERVICES}, on comprend que t'en as plein les bras! Pourtant
+je suis certain qu'il serait possible de te simplifier la vie avec la gestion
+de tes clients et t'en amener plus en même temps.
 ```
 
 **Si elle ne l'est PAS et qu'il n'y a qu'UN SEUL service** (ou aucun) :
@@ -253,10 +252,12 @@ Exemples de ce qu'il sert : « J'imagine qu'à la première bordée, ça rentre 
 mal tout en même temps! » (déneigement), « J'imagine qu'au printemps, ça rentre
 pas mal tout en même temps! » (paysagement).
 
-⚠️ **Ce paragraphe-là NE COMMENCE PAS par « Avec ton entreprise, je vois que tu
-fais … ».** Les deux autres versions le font parce qu'elles apportent un fait
-neuf — une note, une liste de services. Ici il n'y a rien à apporter : le métier
-est **déjà nommé à la première ligne**, le redire sonne comme un gabarit.
+⚠️ **Ce paragraphe-là ne reprend PAS la forme « Avec … , on comprend que … ! »
+des deux autres versions.** Elles l'ont parce qu'elles apportent un fait neuf —
+une note, une liste de services — et le commentent. Ici il n'y a rien à
+apporter : le métier est **déjà nommé à la première ligne**, et le redire
+sonnerait comme un gabarit. La supposition tient lieu des deux temps à elle
+seule.
 
 **Pourquoi elle existe.** Sans elle, ces entreprises ne recevaient ni C ni D du
 tout : `tete_fixe_servable` leur refusait le gabarit, faute de phrase possible.
@@ -309,8 +310,23 @@ dit laquelle des trois employer. Tu n'as donc jamais à improviser.
 donné ce gabarit. » C'était vrai tant que le code REFUSAIT C et D aux fiches à
 un seul service. Ça ne l'est plus.
 
+🔴 **LES DEUX VERSIONS S'OUVRENT PAR « Avec … , on comprend que … ! »** et ce
+n'est pas un hasard de rédaction — décision William du 2026-09-14, en relisant
+un courriel monté. Elles disaient avant « Avec ton entreprise, **je vois que**
+tu as … » / « … **je vois que** tu fais … », et le 1ᵉʳ paragraphe finit sur
+« **j'ai aussi vu** que tu fais du paysagement » quand il y a un 2ᵉ temps.
+Deux fois le même verbe à une ligne d'écart, sur **70 % des destinataires**.
+
+C'est l'ancre qui a bougé, pas le 2ᵉ temps : sa formulation est une décision
+du 2026-09-09 (« tu fais X » → « j'ai aussi vu que tu fais X ») et la défaire
+aurait annulé l'une pour réparer l'autre.
+
+⚠️ **« avis Google »**, et pas « avis » tout court : même décision, même jour.
+Le contrôle déterministe `check_avis_conformes` lit le nombre, pas le mot qui
+suit — ajouter « Google » ne le dérange pas.
+
 ⚠️ La phrase du milieu change entre les deux versions et c'est voulu : « tes
-clients aiment ton travail » découle d'une note, « tu en couvres beaucoup »
+clients aiment ton travail » découle d'une note, « t'en as plein les bras »
 découle d'une liste. La chute, elle, est **identique** dans les deux.
 
 ---
