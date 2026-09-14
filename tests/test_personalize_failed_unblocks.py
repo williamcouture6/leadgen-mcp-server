@@ -16,6 +16,26 @@ import pytest
 from src import supabase_client as real_db
 import src.tools.db as dbt
 
+
+@pytest.fixture(autouse=True)
+def _fenetre_ouverte(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La date est figee au 15 decembre : la fenetre du deneigement est ouverte.
+
+    Depuis le 2026-09-14, une fiche dont aucun metier n'est reconnu n'est plus
+    demarchee. Les decors de ce module portent donc un metier reel, et sa
+    fenetre doit etre ouverte le jour ou le test tourne — sinon la selection
+    rendrait une liste vide et les cas deviendraient verts pour rien.
+    """
+    import datetime as _dt
+
+    class _Decembre(_dt.date):
+        @classmethod
+        def today(cls):
+            return _dt.date(2026, 12, 15)
+
+    monkeypatch.setattr(dbt, "date", _Decembre)
+
+
 # Statuts qui doivent garder le contact hors du backlog WF-4.
 STATUTS_BLOQUANTS = ["draft", "queued", "sent", "delivered", "bounced", "replied"]
 
@@ -44,8 +64,14 @@ def _fake_select_factory(messages: list[dict], captured: dict):
                 # contact, jamais prospectees) — la garde etait donc prouvee
                 # sur une piste morte, et rien ne la prouvait sur la seule
                 # piste vivante.
+                # ⚠️ Un METIER RECONNU, avec la date figee plus bas pour que sa
+                # fenetre soit ouverte. Depuis le 2026-09-14, une fiche dont
+                # aucun metier n'est reconnu n'est plus demarchee du tout : le
+                # decor ne peut plus se contenter d'un research_json quelconque,
+                # sinon ce test deviendrait vert en ne selectionnant RIEN.
                 {"id": "co-1", "name": "Ex Co", "track": "agence-ia",
-                 "website": "https://exco.ca", "research_json": {"x": 1}},
+                 "website": "https://exco.ca",
+                 "research_json": {"services_offered": ["Déneigement résidentiel"]}},
             ]
         if table == "messages":
             captured["params"] = params

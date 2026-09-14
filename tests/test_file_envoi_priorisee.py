@@ -42,11 +42,29 @@ def _monde(
 
     ⚠️ `website` est obligatoire dans la fixture : `site_ou_fiche_exploitable`
     (AC1b) écarte une entreprise sans site ET sans fiche Google exploitable.
-    Et `research_json` reste sans `services_offered`, donc aucun métier n'est
-    reconnu — l'entreprise est alors joignable toute l'année et la fenêtre
-    saisonnière ne filtre rien. Ces deux gardes tournent AVANT le tri : ces
-    tests portent sur l'ORDRE, il faut donc que tout le monde les franchisse.
+
+    ⚠️ ET CHAQUE FICHE PORTE UN MÉTIER RECONNU, avec la date figée au 15
+    décembre pour que sa fenêtre soit ouverte. Ces deux gardes tournent AVANT
+    le tri, et ces tests portent sur l'ORDRE : il faut donc que tout le monde
+    les franchisse.
+
+    🔴 CE DÉTAIL A CHANGÉ LE 2026-09-14, et c'est pour ça qu'il est écrit ici.
+    Avant, `research_json` n'avait volontairement AUCUN `services_offered` :
+    aucun métier reconnu valait « joignable toute l'année » (le défaut inversé
+    de la spec), donc le filtre saisonnier ne gênait pas. Ce défaut a été
+    renversé — sans métier reconnu, on n'écrit plus. Le décor devait donc
+    cesser de s'appuyer dessus. Ne pas le « simplifier » en retirant les
+    services : les six cas redeviendraient verts en ne sélectionnant plus rien.
     """
+    import datetime as _dt
+
+    class _Decembre(_dt.date):
+        @classmethod
+        def today(cls):
+            return _dt.date(2026, 12, 15)
+
+    monkeypatch.setattr(dbt, "date", _Decembre)
+
     contacts = [
         {"id": f"ct-{c['id']}", "company_id": c["id"], "email": f"{c['id']}@ex.ca",
          "status": "new"}
@@ -65,7 +83,8 @@ def _monde(
             return contacts
         if table == "companies":
             return [
-                {"research_json": {"x": 1}, "track": "agence-ia",
+                {"research_json": {"services_offered": ["Déneigement résidentiel"]},
+                 "track": "agence-ia",
                  "website": f"https://{c['id']}.ca", **c}
                 for c in companies
             ]
@@ -219,4 +238,5 @@ async def test_le_marqueur_ne_descend_jamais_vers_la_copie(
     assert "lead_potential_score" not in company
     assert MARQUEUR_TETE_DE_FILE not in str(company)
     # Le reste de la fiche est intact.
-    assert company["name"] == "cVert" and company["research_json"] == {"x": 1}
+    assert company["name"] == "cVert"
+    assert company["research_json"] == {"services_offered": ["Déneigement résidentiel"]}

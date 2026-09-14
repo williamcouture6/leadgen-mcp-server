@@ -720,12 +720,41 @@ def fenetre_saisonniere_ouverte(
     paysagistes dont la saison s'est terminée cet été et dont la prochaine
     fenêtre ouvre le 15 janvier.
 
-    🔴 DÉFAUT INVERSÉ, VOLONTAIRE : une entreprise dont AUCUN métier n'est
-    reconnu reste joignable toute l'année. La spec le dit explicitement (les
-    « 2 manquantes » de sa §3). Se taire faute de savoir reviendrait à ne
-    jamais écrire à une entreprise que la table de métiers ne sait pas classer,
-    et le silence serait invisible — c'est le garde-fou nº2, on inclut dans le
-    doute.
+    🔴 RENVERSÉ LE 2026-09-14 : UNE ENTREPRISE SANS MÉTIER RECONNU N'EST PLUS
+    DÉMARCHÉE. Décision William. Cette fonction rendait `True` ici — défaut
+    inversé volontaire de la spec du 2026-08-27 §3, « on inclut dans le doute ».
+
+    Ce qui l'a fait tomber, mesuré le 2026-09-14 sur les 457 fiches joignables :
+    ces entreprises portent `fenetre_mois = [1..12]`, donc elles étaient les
+    SEULES joignables douze mois sur douze pendant que toutes les autres
+    attendaient leur saison. En septembre, où seul le déneigement est ouvert,
+    elles passaient quand même. Le défaut inversé n'était pas neutre : il
+    PRIVILÉGIAIT les fiches qu'on ne sait pas classer.
+
+    Le cas concret : « Conception Perma-Nourricière » a reçu un courriel froid.
+    Onze services — design en permaculture, agroforesterie, parcs comestibles
+    municipaux, jardins pédagogiques, aide aux subventions — et aucun qui soit
+    un métier du catalogue. Ce n'est pas un contracteur de services résidentiels.
+
+    C'est la MÊME règle que celle de Niwa (2026-09-02), étendue au cas qu'elle
+    avait laissé ouvert :
+        aucun métier reconnu  → ÉCARTÉE (depuis 2026-09-14)
+        un métier sans saison → ÉCARTÉE (depuis 2026-09-02)
+    Dans les deux cas on écrirait sans savoir à qui — soit faute de donnée, soit
+    sur une donnée fausse. La correction est en amont, dans WF-3 et le
+    dictionnaire de `lib/metiers`, jamais en devinant ici.
+
+    ⚠️ LE DÉFAUT INVERSÉ DE `lib/metiers` RESTE EN PLACE, et ce n'est pas une
+    incohérence. `fenetre_mois` répond à « QUAND est le bon moment ? » et rend
+    toujours les douze mois sur l'inconnu ; cette fonction-ci répond à « A-T-ON
+    LE DROIT d'écrire ? ». La spec distinguait déjà les deux — permission
+    contre optimisation — et c'est la permission qui change de réponse.
+    Renverser AUSSI la colonne casserait son sens.
+
+    ⚠️ L'OBJECTION DE LA SPEC RESTE VALABLE : « le silence serait invisible ».
+    Elle n'est pas écartée, elle est déplacée — ces entreprises doivent se voir
+    dans `agence.v_pourquoi_pas_de_courriel`. Un refus muet redeviendrait le
+    défaut que la spec craignait.
 
     ⚠️ Ne s'applique QU'À la piste `agence-ia`. OPT est gelée et ses métiers
     (dentiste, physio) n'ont pas de saison ; y appliquer la fenêtre écarterait
@@ -739,7 +768,19 @@ def fenetre_saisonniere_ouverte(
         services, aujourdhui or date.today(), industry=company.get("industry")
     )
     if not resolus.metiers:
-        return True  # défaut inversé : on inclut dans le doute
+        # 🔴 `False` depuis le 2026-09-14 — voir le docstring. C'était `True`,
+        # et l'inverser relève d'une décision de William, pas d'un nettoyage :
+        # ne pas « corriger » ce retour en croyant restaurer le garde-fou nº2
+        # de la spec. Le garde-fou vit toujours, mais dans `lib/metiers`, sur la
+        # colonne `fenetre_mois` — pas sur la permission d'écrire.
+        #
+        # ⚠️ Comme les deux autres sorties anticipées, celle-ci court-circuite
+        # l'observation de la ceinture plus bas, et c'est VOULU : la colonne
+        # porte `[1..12]` sur ces fiches (défaut inversé, inchangé), donc elle
+        # divergerait systématiquement du verdict. Ce serait du bruit, pas un
+        # signal — la colonne et le verdict ne répondent plus à la même
+        # question sur ce cas précis.
+        return False
 
     # 🔴 UN MÉTIER 12 MOIS SUR 12 N'ENCLENCHE PAS LA SÉQUENCE — règle William du
     # 2026-09-02, et c'est la MÊME que celle du choix de la scène.

@@ -68,14 +68,46 @@ def test_un_metier_sans_saison_seul_n_ouvre_jamais(fiche: dict, quand: datetime.
 
 
 @pytest.mark.parametrize("quand", [SEPTEMBRE, JANVIER], ids=["septembre", "janvier"])
-def test_aucun_metier_reconnu_reste_joignable(quand: datetime.date) -> None:
-    """🔴 Le contrôle négatif, et il porte toute la distinction.
+def test_aucun_metier_reconnu_n_est_plus_joignable(quand: datetime.date) -> None:
+    """🔴 RENVERSEMENT — décision William du 2026-09-14.
 
-    Une fiche dont AUCUN métier n'est reconnu tombe sur le défaut inversé et
-    reste joignable. Si ce test échoue en même temps que le précédent passe,
-    c'est que la règle a été appliquée trop largement — et le silence serait
-    invisible : ces entreprises disparaîtraient de la file sans que rien ne
-    l'annonce.
+    CE TEST AFFIRMAIT L'INVERSE JUSQU'À CETTE DATE, et ce n'était pas un
+    oubli : la spec du 2026-08-27 §3 posait un « défaut inversé » volontaire —
+    faute de savoir quand est le bon mois, on n'en interdisait aucun. Le
+    raisonnement tenait : se taire faute de savoir aurait fait disparaître en
+    silence toute entreprise que le dictionnaire ne sait pas classer.
+
+    CE QUI A CHANGÉ. Mesuré le 2026-09-14 sur les 457 fiches joignables : les 5
+    entreprises sans métier reconnu portaient `fenetre_mois = [1..12]`, donc
+    elles étaient les SEULES joignables douze mois sur douze, pendant que toutes
+    les autres attendaient leur saison. En septembre, où seul le déneigement
+    est ouvert, elles passaient quand même.
+
+    Ce que ça a produit : « Conception Perma-Nourricière » a reçu un courriel
+    froid. Onze services listés — design en permaculture, agroforesterie,
+    parcs comestibles municipaux, jardins pédagogiques, aide aux subventions —
+    et aucun qui soit un métier du catalogue. Ce n'est pas un contracteur de
+    services résidentiels.
+
+    LA RÈGLE EST DONC LA MÊME QUE CELLE DE NIWA, étendue au cas qu'elle avait
+    laissé ouvert. William, 2026-09-02 : « les compagnies qui n'ont de reconnu
+    qu'un métier sans réel lien, et qui est 12 mois sur 12, on doit faire en
+    sorte qu'elles ne soient pas contactées. » Le cas « un métier faux » était
+    couvert ; le cas « aucun métier » ne l'était pas. Il l'est maintenant :
+
+        aucun métier reconnu  → ÉCARTÉE. On n'a rien, et écrire sans savoir à
+                                qui on écrit, c'est deviner.
+        un métier sans saison → ÉCARTÉE. On a quelque chose, et c'est faux.
+
+    ⚠️ LE DÉFAUT INVERSÉ DE `lib/metiers` N'EST PAS TOUCHÉ. `fenetre_mois`
+    continue de rendre les douze mois sur l'inconnu — c'est une réponse à
+    « quel est le bon moment ? », pas à « a-t-on le droit d'écrire ? ». Seule
+    la seconde question change de réponse ici. Les inverser toutes les deux
+    casserait le sens de la colonne.
+
+    ⚠️ ET LE SILENCE NE DOIT PAS ÊTRE INVISIBLE — c'était l'objection de la
+    spec, et elle reste valable. Ces entreprises doivent apparaître dans
+    `agence.v_pourquoi_pas_de_courriel` avec leur raison.
     """
     inconnue = {
         "name": "Services Généraux Machin",
@@ -85,7 +117,55 @@ def test_aucun_metier_reconnu_reste_joignable(quand: datetime.date) -> None:
     assert not resoudre_metiers(
         inconnue["research_json"]["services_offered"], quand
     ).metiers, "la fiche d'exemple ne doit apparier AUCUN métier"
-    assert fenetre_saisonniere_ouverte(inconnue, track="agence-ia", aujourdhui=quand)
+    assert not fenetre_saisonniere_ouverte(inconnue, track="agence-ia", aujourdhui=quand), (
+        "une entreprise dont aucun metier n'est reconnu ne doit plus etre "
+        "demarchee (decision William 2026-09-14)"
+    )
+
+
+def test_la_fiche_reelle_qui_a_declenche_le_renversement() -> None:
+    """Le cas concret, garde-fou contre un retour en arrière par distraction.
+
+    « Conception Perma-Nourricière » a ONZE services et 24 avis à 5,0 — donc
+    tout ce qu'il faut pour écrire un beau courriel. Ce n'est pas la pauvreté
+    de la fiche qui l'écarte, c'est qu'aucun de ses libellés n'est un métier du
+    catalogue. Une fiche riche et hors cible est exactement le cas qu'un test
+    sur une fiche vide laisserait passer.
+    """
+    perma = {
+        "name": "Conception Perma-Nourricière",
+        "industry": "paysagiste",
+        "google_rating": 5.0,
+        "google_reviews_count": 24,
+        "research_json": {"services_offered": [
+            "Design en permaculture (plans 2D et 3D photoréalistes)",
+            "Forêts nourricières résidentielles",
+            "Agroforesterie et sylvopastoralisme (terres agricoles)",
+            "Aménagements municipaux (parcs comestibles, forêts communautaires)",
+            "Aménagements éducatifs (jardins pédagogiques, cours d'école)",
+            "Analyse de sol",
+            "Aide aux demandes de subventions",
+        ]},
+    }
+    assert not fenetre_saisonniere_ouverte(perma, track="agence-ia", aujourdhui=SEPTEMBRE)
+    assert not fenetre_saisonniere_ouverte(perma, track="agence-ia", aujourdhui=JANVIER)
+
+
+def test_la_piste_opt_n_est_pas_touchee_par_le_renversement() -> None:
+    """⚠️ OPT est gelée et ses métiers (dentiste, physio) n'apparient RIEN.
+
+    Appliquer le renversement à OPT y écarterait tout le monde en silence —
+    c'est déjà la raison pour laquelle le filtre entier s'arrête à la première
+    ligne quand la piste n'est pas `agence-ia`. Ce test tient cette sortie.
+    """
+    dentiste = {
+        "name": "Clinique Dentaire Untel",
+        "research_json": {"services_offered": ["Détartrage", "Couronnes"]},
+    }
+    assert not resoudre_metiers(
+        dentiste["research_json"]["services_offered"], SEPTEMBRE
+    ).metiers
+    assert fenetre_saisonniere_ouverte(dentiste, track="OPT", aujourdhui=SEPTEMBRE)
 
 
 def test_un_metier_sans_saison_EN_PLUS_d_un_saisonnier_ne_gene_pas() -> None:

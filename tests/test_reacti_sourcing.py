@@ -8,6 +8,26 @@ import pytest
 from src import supabase_client as real_db
 import src.tools.db as dbt
 
+
+@pytest.fixture(autouse=True)
+def _fenetre_ouverte(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La date est figee au 15 decembre : la fenetre du deneigement est ouverte.
+
+    Depuis le 2026-09-14, une fiche dont aucun metier n'est reconnu n'est plus
+    demarchee. Les decors de ce module portent donc un metier reel, et sa
+    fenetre doit etre ouverte le jour ou le test tourne — sinon la selection
+    rendrait une liste vide et les cas deviendraient verts pour rien.
+    """
+    import datetime as _dt
+
+    class _Decembre(_dt.date):
+        @classmethod
+        def today(cls):
+            return _dt.date(2026, 12, 15)
+
+    monkeypatch.setattr(dbt, "date", _Decembre)
+
+
 REACTI_VERTICALS = {
     "entrepreneur en déneigement",
     "paysagiste",
@@ -90,10 +110,16 @@ async def test_personalize_isole_par_track_company(monkeypatch: pytest.MonkeyPat
             return [
                 # `website` renseigne des deux cotes : ce test porte sur l'isolation
                 # PAR TRACK, pas sur la garde sans-site d'AC1b.
+                # ⚠️ Un METIER RECONNU des deux cotes, avec la date figee par la
+                # fixture du module. Depuis le 2026-09-14, une fiche sans metier
+                # reconnu n'est plus demarchee : sans ca, la premiere assertion
+                # comparerait deux ensembles vides et ne prouverait plus rien.
                 {"id": "co-opt", "name": "OPT Co", "track": "OPT",
-                 "website": "https://opt.ca", "research_json": {"x": 1}},
+                 "website": "https://opt.ca",
+                 "research_json": {"services_offered": ["Déneigement résidentiel"]}},
                 {"id": "co-rea", "name": "REA Co", "track": "agence-ia",
-                 "website": "https://rea.ca", "research_json": {"x": 1}},
+                 "website": "https://rea.ca",
+                 "research_json": {"services_offered": ["Déneigement résidentiel"]}},
             ]
         return []  # messages
 
