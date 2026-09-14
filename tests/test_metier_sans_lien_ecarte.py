@@ -23,10 +23,21 @@ Une reconnaissance fausse est pire qu'une absence de reconnaissance, parce
 qu'elle a l'air d'une information. Traiter les deux pareil — dans un sens ou
 dans l'autre — est l'erreur que ces tests empêchent.
 
-⚠️ Un repli sur `industry` existe (`metier_depuis_industry`) et rendrait Niwa
-joignable en lui redonnant `paysagement` depuis son mot-clé de sourcing. Il est
-DÉBRANCHÉ volontairement. La spec du 2026-08-27 le prévoit pourtant — d'où le
-test qui vérifie qu'il le reste.
+💀 LES DEUX EXEMPLES D'ORIGINE NE SONT PLUS DES EXEMPLES (2026-09-14).
+
+« Niwa Paysagiste » et « Aménagement Côté Jardin » portent toutes deux
+`industry = paysagiste`. Ce secteur était IGNORÉ jusqu'au 2026-09-14 ; William a
+renversé cette décision — « comme il a paysagiste dans son secteur, il doit être
+traité comme telle ». Les deux sont donc désormais reconnues `paysagement` et
+JOIGNABLES de janvier à juin.
+
+🔴 LA RÈGLE CI-DESSUS N'EST PAS TOUCHÉE POUR AUTANT, et c'est tout l'objet de ce
+fichier. Elle s'applique maintenant aux fiches dont **ni les services ni le
+secteur** ne disent un métier saisonnier. Les fixtures ont été remplacées en
+conséquence ; `test_le_secteur_sauve_les_fiches_qu_il_peut` tient l'autre bord.
+
+⚠️ NE PAS « RÉPARER » CE FICHIER en lui rendant ses anciennes fixtures : elles
+passeraient désormais pour la mauvaise raison.
 """
 from __future__ import annotations
 
@@ -40,20 +51,32 @@ from src.tools.db import fenetre_saisonniere_ouverte
 JANVIER = datetime.date(2027, 1, 20)   # toutes les saisons ouvertes ou presque
 SEPTEMBRE = datetime.date(2026, 9, 2)  # seul le déneigement est ouvert
 
-# Les deux fiches réelles qui ont déclenché la décision.
-NIWA = {
-    "name": "Niwa Paysagiste",
-    "industry": "paysagiste",
+# 💀 Les deux fiches réelles qui ont déclenché la décision du 2026-09-02 —
+# « Niwa Paysagiste » et « Aménagement Côté Jardin », toutes deux
+# `industry = paysagiste` — ne servent plus ici : leur secteur les sauve depuis
+# le 2026-09-14. Elles sont tenues par
+# `test_le_secteur_sauve_les_fiches_qu_il_peut`, plus bas.
+#
+# Ce qu'il fallait à leur place : des fiches dont NI les services NI le secteur
+# ne nomment un métier saisonnier. C'est le cas qui reste, et c'est celui que la
+# règle vise.
+PAVEUR_SANS_SECTEUR = {
+    "name": "Pavage Untel",
+    # Pas d'`industry` du tout : le cas le plus fréquent hors sourcing Places.
     "research_json": {"services_offered": ["Pose de pavé uni"]},
 }
-COTE_JARDIN = {
-    "name": "Aménagement Côté Jardin Inc.",
-    "industry": "paysagiste",
+EXCAVATEUR_SECTEUR_MUET = {
+    "name": "Excavation Machin",
+    # Un secteur QUI N'APPARIE AUCUNE RACINE : il ne peut rien sauver.
+    "industry": "entrepreneur général",
     "research_json": {"services_offered": ["Excavation résidentielle", "Pavage de stationnement"]},
 }
 
 
-@pytest.mark.parametrize("fiche", [NIWA, COTE_JARDIN], ids=["niwa", "cote_jardin"])
+@pytest.mark.parametrize(
+    "fiche", [PAVEUR_SANS_SECTEUR, EXCAVATEUR_SECTEUR_MUET],
+    ids=["paveur_sans_secteur", "excavateur_secteur_muet"],
+)
 @pytest.mark.parametrize("quand", [SEPTEMBRE, JANVIER], ids=["septembre", "janvier"])
 def test_un_metier_sans_saison_seul_n_ouvre_jamais(fiche: dict, quand: datetime.date) -> None:
     """Écartée TOUTE L'ANNÉE, pas seulement hors saison.
@@ -111,7 +134,11 @@ def test_aucun_metier_reconnu_n_est_plus_joignable(quand: datetime.date) -> None
     """
     inconnue = {
         "name": "Services Généraux Machin",
-        "industry": "paysagiste",
+        # 💀 Portait `industry = paysagiste` jusqu'au 2026-09-14. Depuis que le
+        # secteur complète le classement, ce secteur-là la sauverait — et le
+        # test mesurerait le contraire de ce qu'il annonce. Un secteur qui
+        # n'apparie aucune racine est ce qu'il faut ici.
+        "industry": "entrepreneur général",
         "research_json": {"services_offered": ["Consultation", "Forfaits sur mesure"]},
     }
     assert not resoudre_metiers(
@@ -134,7 +161,16 @@ def test_la_fiche_reelle_qui_a_declenche_le_renversement() -> None:
     """
     perma = {
         "name": "Conception Perma-Nourricière",
-        "industry": "paysagiste",
+        # 💀 En base elle porte `industry = paysagiste`, et depuis le 2026-09-14
+        # ce secteur la rendrait joignable de janvier à juin. C'est une
+        # CONSÉQUENCE ASSUMÉE du renversement de William, pas un oubli : une
+        # firme de design en permaculture sourcée sur le mot-clé « paysagiste »
+        # entre dans la file comme paysagiste.
+        # ⚠️ Ce test-ci garde le secteur muet pour continuer d'exercer la règle
+        # qu'il vise — « une fiche riche mais sans métier du catalogue est
+        # écartée ». Le cas réel, lui, est tenu par
+        # `test_le_secteur_sauve_les_fiches_qu_il_peut`.
+        "industry": "entrepreneur général",
         "google_rating": 5.0,
         "google_reviews_count": 24,
         "research_json": {"services_offered": [
@@ -149,6 +185,45 @@ def test_la_fiche_reelle_qui_a_declenche_le_renversement() -> None:
     }
     assert not fenetre_saisonniere_ouverte(perma, track="agence-ia", aujourdhui=SEPTEMBRE)
     assert not fenetre_saisonniere_ouverte(perma, track="agence-ia", aujourdhui=JANVIER)
+
+
+def test_le_secteur_sauve_les_fiches_qu_il_peut() -> None:
+    """🔧 L'AUTRE BORD DE LA RÈGLE — décision William du 2026-09-14.
+
+    « Comme il a paysagiste dans son secteur, il doit être traité comme telle. »
+
+    Les deux fiches réelles qui avaient motivé la règle inverse le 2026-09-02
+    sont désormais joignables **en saison**, parce que leur mot-clé de sourcing
+    dit un métier que leurs libellés taisent. Ce n'est pas un contournement de
+    la règle : la règle écarte les fiches qu'on ne sait pas nommer, et le
+    secteur les nomme.
+
+    ⚠️ EN SAISON SEULEMENT. Le paysagement ouvre de janvier à juin : ces fiches
+    restent écartées en septembre. Si ce test passait aux deux dates, c'est que
+    le secteur aurait été traité comme un laissez-passer au lieu d'un métier.
+    """
+    niwa = {
+        "name": "Niwa Paysagiste",
+        "industry": "paysagiste",
+        "research_json": {"services_offered": ["Pose de pavé uni"]},
+    }
+    cote_jardin = {
+        "name": "Aménagement Côté Jardin Inc.",
+        "industry": "paysagiste",
+        "research_json": {"services_offered": ["Excavation résidentielle",
+                                               "Pavage de stationnement"]},
+    }
+    for fiche in (niwa, cote_jardin):
+        assert fenetre_saisonniere_ouverte(fiche, track="agence-ia", aujourdhui=JANVIER), (
+            f"{fiche['name']} : le secteur ne la sauve pas — elle reste "
+            f"injoignable pour toujours"
+        )
+        assert not fenetre_saisonniere_ouverte(
+            fiche, track="agence-ia", aujourdhui=SEPTEMBRE
+        ), (
+            f"{fiche['name']} : joignable en septembre alors que le paysagement "
+            f"ferme en juin — le secteur sert de laissez-passer au lieu de métier"
+        )
 
 
 def test_la_piste_opt_n_est_pas_touchee_par_le_renversement() -> None:
@@ -183,24 +258,42 @@ def test_un_metier_sans_saison_EN_PLUS_d_un_saisonnier_ne_gene_pas() -> None:
     assert fenetre_saisonniere_ouverte(mixte, track="agence-ia", aujourdhui=SEPTEMBRE)
 
 
-def test_le_repli_sur_industry_reste_debranche() -> None:
-    """🔴 La spec du 2026-08-27 le PRÉVOIT — d'où ce test.
+def test_le_secteur_complete_le_classement_sans_dominer() -> None:
+    """💀 CE TEST DISAIT L'INVERSE JUSQU'AU 2026-09-14.
 
-    Elle décrit `metier_source` comme « services_offered · industry (repli) ·
-    inconnu ». Le repli a été écrit le 2026-09-02, mesuré, puis débranché le
-    jour même sur décision de William. Quelqu'un le rebranchera en croyant
-    réparer un oubli de la spec ; ce test le lui dira.
+    Il s'appelait `test_le_repli_sur_industry_reste_debranche` et gelait la
+    décision du 2026-09-02 : « si la seule chose qu'on reconnaît d'un
+    paysagiste est pavage, notre donnée sur lui est mauvaise — on ne devine pas
+    son métier depuis le mot-clé de sourcing ».
 
-    Ce qu'on vérifie : passer `industry` ne change RIEN au résultat.
+    🔧 William a renversé cette décision le 2026-09-14, sur le cas Niwa :
+    « comme il a paysagiste dans son secteur, il doit être traité comme telle ».
+
+    Ce qui a changé entre les deux dates, et qui justifie le renversement :
+    `industry` a été MESURÉ. Ce n'est pas du texte deviné — c'est le mot-clé
+    Google Places qui a fait entrer l'entreprise dans la liste, il ne prend que
+    sept valeurs, toutes des métiers, et sur les 478 fiches qui en portent un,
+    **462 (97 %) ont déjà ce métier reconnu par leurs services**. Le secteur
+    n'invente donc rien dans 97 % des cas ; il comble un trou dans les 3 %
+    restants.
+
+    ⚠️ L'objection d'origine reste vraie et reste tenue par
+    `test_le_secteur_ne_vole_jamais_la_scene` : le courriel doit parler de ce
+    que l'entreprise fait VRAIMENT. C'est pour ça que le secteur entre avec un
+    poids de 1 et un rang de dernier arrivé — il ouvre la fenêtre, il ne prend
+    jamais la parole.
     """
     sans = resoudre_metiers(["Pose de pavé uni"], JANVIER)
     avec = resoudre_metiers(["Pose de pavé uni"], JANVIER, industry="paysagiste")
-    assert sans.metiers == avec.metiers == ("pavage",), (
-        "le repli sur `industry` a été rebranché — Niwa redevient joignable. "
-        "Décision William du 2026-09-02 : ces fiches ne sont pas contactées, "
-        "la correction est en amont dans WF-3."
+
+    assert sans.metiers == ("pavage",)
+    assert "paysagement" in avec.metiers, (
+        "le secteur n'est plus lu — Niwa redevient injoignable pour toujours"
     )
-    assert "paysagement" not in avec.metiers
+    assert avec.metiers[0] == "pavage", (
+        f"le secteur a volé la première place : {avec.metiers}. Le courriel "
+        f"parlerait de plates-bandes à un pavageur."
+    )
 
 
 def test_la_regle_porte_sur_SAISONS_pas_sur_une_liste_figee() -> None:

@@ -138,27 +138,33 @@ def test_les_deux_paysagistes_a_fenetre_vide_rouvrent() -> None:
         )
 
 
-def test_niwa_reste_ferme_et_ce_n_est_PAS_un_trou_de_dictionnaire() -> None:
-    """🔴 LE TROISIÈME PAYSAGISTE N'EST PAS RÉPARÉ, ET C'EST VOULU.
+def test_niwa_n_est_PAS_un_trou_de_dictionnaire_mais_son_secteur_la_sauve() -> None:
+    """💀 CE TEST DISAIT « Niwa reste fermée, et c'est voulu » IL Y A UNE HEURE.
 
-    « Niwa Paysagiste » porte `industry = 'paysagiste'` et le mot dans son nom,
-    mais ses services sont tous du dur : « Aménagement complet clé en main »,
-    « Trottoirs », « Terrasses sur mesure », « Pavage », « Murets »,
-    « Marches ». C'est un contracteur de PAVAGE, métier douze-mois, qui
-    n'ouvre pas de séquence.
+    Le constat technique tenait et TIENT TOUJOURS : ses libellés sont tous du
+    dur (« Trottoirs », « Terrasses sur mesure », « Pavage », « Murets »), donc
+    élargir les racines de paysagement ne l'atteindrait pas. Ce n'est pas un
+    trou de dictionnaire.
 
-    Son cas relève d'une question de CONCEPTION, pas du dictionnaire :
-    `classer_services` n'utilise `industry` qu'en REPLI, quand les services ne
-    rendent rien — ici `pavage` matche, donc `industry` est ignoré. Faire
-    d'`industry` un COMPLÉMENT plutôt qu'un repli toucherait beaucoup de
-    fiches et demande sa propre mesure, et la décision de William.
+    🔧 Ce qui a changé, c'est la conclusion. J'avais écrit « en faire un
+    complément demande sa propre mesure et la décision de William ». La mesure a
+    été faite (462 fiches sur 478 inchangées) et William a tranché : « comme il
+    a paysagiste dans son secteur, il doit être traité comme telle ».
 
-    Ce test existe pour qu'on ne « répare » pas Niwa par accident en élargissant
-    les racines : s'il tombe, c'est qu'une racine trop large est entrée.
+    Ce que ce test garde : les SERVICES ne donnent toujours que `pavage`, et le
+    secteur ouvre la fenêtre sans prendre la première place.
     """
     services = ["Aménagement complet clé en main", "Trottoirs",
                 "Terrasses sur mesure", "Pavage (asphalte et pavés)",
                 "Murets", "Marches"]
+
+    # Les services seuls : inchangés, et fenêtre toujours vide.
+    assert classer_services(services).metiers == ("pavage",)
+    assert colonnes_metiers(services)["fenetre_mois"] == []
+
+    # Avec le secteur : la fenêtre s'ouvre, mais le courriel parle toujours
+    # de pavage — ce qu'elle vend vraiment.
     c = classer_services(services, industry="paysagiste")
-    assert c.metiers == ("pavage",), f"obtenu {c.metiers}"
-    assert colonnes_metiers(services, industry="paysagiste")["fenetre_mois"] == []
+    assert c.metiers[0] == "pavage", f"le secteur a volé la scène : {c.metiers}"
+    assert "paysagement" in c.metiers
+    assert colonnes_metiers(services, industry="paysagiste")["fenetre_mois"]         == [1, 2, 3, 4, 5, 6]

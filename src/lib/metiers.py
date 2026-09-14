@@ -83,7 +83,28 @@ RACINES: dict[str, tuple[str, ...]] = {
         # retirant.
         "transplantation",
     ),
-    "tonte": ("tonte", "pelouse", "gazon", "tondre"),
+    "tonte": (
+        "tonte", "pelouse", "gazon", "tondre",
+        # 🔧 Ajoutees le 2026-09-14, decision William : « les services affiches
+        # sont tous des services connexes a la tonte de pelouse, la deduction
+        # est facile a faire ». Le dictionnaire ne connaissait que l'acte de
+        # COUPER ; tout l'entretien AUTOUR de la coupe lui echappait, et
+        # « Spray Green - Traitement de pelouse » n'avait donc aucun metier
+        # reconnu -- douze mois par defaut inverse, donc demarchable en
+        # decembre pour de la pelouse.
+        #
+        # Chaque racine est mesuree, et le juge est le SECTEUR dans lequel le
+        # mot apparait : un mot de pelouse ne doit se voir que chez des
+        # entreprises de pelouse. Voir tests/test_racines_pelouse_trous.py.
+        "aeration", "fertilisation", "mauvaises herbes", "digitaire",
+        "engrais", "ensemencement", "terreautage", "herbicide",
+        # ⚠️ LA SEULE A SURVEILLER. Propre sur le catalogue actuel (7 secteurs,
+        # tous exterieurs/residentiels), mais en maconnerie « mortier de chaux »
+        # la ferait basculer. Si ce secteur entre un jour, la sortie est
+        # EXCLUSIONS -- pas le retrait de la racine, d'autres fiches en
+        # dependent.
+        "chaux",
+    ),
     # « pression » (34 fiches au 2026-08-30) -> lavage de vitres (decision William,
     # 2026-08-30) : meme client, meme saison d'avril, meme equipement.
     "lavage de vitres": ("vitre", "fenetre", "pression"),
@@ -677,9 +698,23 @@ def classer_services(
     dictionnaire. Deux classifications concurrentes divergeraient, et le courriel
     parlerait d'un métier pendant que la file en croirait un autre.
 
-    ⚠️ `industry` est ACCEPTÉ MAIS IGNORÉ, comme dans `resoudre_metiers` : le
-    repli existe (`metier_depuis_industry`) et n'est appelé par personne —
-    décision William du 2026-09-02.
+    🔧 `industry` COMPLÈTE le classement depuis le 2026-09-14 (décision
+    William). Il était accepté mais IGNORÉ — `metier_depuis_industry` existait,
+    sa docstring nommait le cas qu'elle devait régler, et personne ne l'appelait.
+
+    📏 Pourquoi c'est fiable : `industry` n'est pas du texte libre deviné, c'est
+    le MOT-CLÉ DE SOURCING qui a fait entrer l'entreprise dans la liste, et il
+    ne prend que sept valeurs, toutes des métiers.
+
+    📏 Impact mesuré sur les 478 fiches qui en portent un : 462 (97 %) ont déjà
+    ce métier par leurs services, donc NO-OP ; 14 changent de fenêtre, toutes
+    dans le bon sens.
+
+    🔴 LE SECTEUR NE PREND JAMAIS LE DESSUS. Poids de 1, rang de dernier arrivé :
+    il ne devient dominant que s'il est SEUL. C'est ce qui protège le lexique du
+    courriel — « Niwa Paysagiste » ouvre sa fenêtre grâce au secteur, mais son
+    courriel continue de parler de pavé uni, ce qu'elle vend vraiment. Inverser
+    ce poids ferait écrire à un pavageur qu'on veut lui parler de plates-bandes.
     """
     libelles = [s for s in (services_offered or []) if isinstance(s, str) and s.strip()]
 
@@ -738,19 +773,48 @@ def classer_services(
             compte[metier] = compte.get(metier, 0) + 1
             ordre_apparition.setdefault(metier, rang)
 
+    # 🔧 LE SECTEUR, EN COMPLÉMENT (2026-09-14).
+    metier_du_secteur = metier_depuis_industry(industry)
+    secteur_a_servi = False
+    if metier_du_secteur is not None and metier_du_secteur not in compte:
+        compte[metier_du_secteur] = 1
+        # 🔴 RANG DE DERNIER ARRIVÉ, jamais 0. Le tri plus bas départage les
+        # égalités par l'ordre d'apparition : mettre le secteur en tête lui
+        # ferait voler le dominant à un métier réellement vendu, donc changer
+        # le LEXIQUE du courriel.
+        ordre_apparition[metier_du_secteur] = len(libelles)
+        secteur_a_servi = True
+        # 🔴 L'EXIGENCE SE LIT AUSSI SUR LE SECTEUR, sinon `entretien de
+        # piscine` ajouterait `piscine` sans jamais rien ouvrir — un changement
+        # invisible, pire qu'un changement absent. Le secteur porte le mot
+        # « entretien » dans son propre nom : le lire suffit.
+        plat_secteur = _sans_accents(industry or "")
+        for metier, signaux in EXIGE.items():
+            if metier == metier_du_secteur and any(s in plat_secteur for s in signaux):
+                exigence_satisfaite.add(metier)
+
     if not compte:
-        # Défaut inversé (garde-fou nº2) : aucun métier RECONNU. Ce n'est pas la
-        # même chose que « services_offered vide ».
+        # Défaut inversé (garde-fou nº2) : aucun métier RECONNU, ni dans les
+        # services ni dans le secteur. Ce n'est pas la même chose que
+        # « services_offered vide ».
         return Classement(
             metiers=(), compte={}, exigence_satisfaite=frozenset(), source="inconnu"
         )
+
+    # 🔴 QUATRE SOURCES, pas deux. Sans `services_offered+industry`, on ne
+    # pourrait pas retrouver en base les fiches dont la fenêtre DÉPEND du
+    # secteur — donc ni mesurer l'effet de cette décision, ni la défaire.
+    if secteur_a_servi:
+        source = "services_offered+industry" if libelles and len(compte) > 1 else "industry"
+    else:
+        source = "services_offered"
 
     metiers = tuple(sorted(compte, key=lambda m: (-compte[m], ordre_apparition[m])))
     return Classement(
         metiers=metiers,
         compte=dict(compte),
         exigence_satisfaite=frozenset(exigence_satisfaite),
-        source="services_offered",
+        source=source,
     )
 
 

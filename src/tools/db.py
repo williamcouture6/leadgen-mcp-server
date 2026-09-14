@@ -1654,12 +1654,34 @@ async def update_company_research(
                 "metiers_verifies_a_la_main": "eq.false",
             },
         )
-        # `rows` a déjà répondu à « cette ligne existe-t-elle et est-elle non
-        # terminale ? » : distinguer les trois cas sains ne coûte aucune lecture.
+        # 🔧 CINQ VALEURS DEPUIS LE 2026-09-14, décision William : « le 20e qui
+        # a été mis comme verrouillé doit être mis comme disqualifié ».
+        #
+        # Le cas réel : « Groupe AZ Extermination », le 2026-09-14 à 15 h 00. La
+        # recherche n'a rien rendu, le PREMIER update l'a donc passée en
+        # `disqualified` — et le SECOND, qui exclut les statuts terminaux, l'a
+        # écartée. Le code rendait alors `verrouillee`, un mot qui désigne
+        # l'anti-clobber (« William a corrigé cette fiche à la main »). Deux
+        # causes opposées sous une seule étiquette : l'une est une décision de
+        # William qu'on protège, l'autre une fiche que la recherche vient de
+        # fermer.
+        #
+        # ⚠️ AUCUNE DES DEUX N'ALERTE, donc ce n'était pas un faux positif — mais
+        # un diagnostic qui ment sur la cause envoie chercher au mauvais endroit
+        # le jour où ça compte.
         if not rows:
             statut_metiers = "absente"
         elif touchees:
             statut_metiers = "ecrit"
+        elif patch.get("status") in ("disqualified", "suppressed"):
+            # 🔴 ON LIT LE PATCH, PAS LA BASE. Le statut terminal vient presque
+            # toujours du PREMIER UPDATE de cette même fonction : la recherche
+            # n'a rien rendu, `_statut_apres_recherche` a conclu `disqualified`,
+            # le premier update l'a écrit — et le second, qui exclut les statuts
+            # terminaux, s'est donc exclu lui-même. La réponse est dans `patch`,
+            # déjà en mémoire. Un `select` de plus coûterait un aller-retour
+            # réseau PAR FICHE pour une valeur qu'on vient d'écrire.
+            statut_metiers = "terminale"
         else:
             statut_metiers = "verrouillee"
     except Exception as exc:  # noqa: BLE001 — voir le bloc ci-dessus
@@ -1678,11 +1700,15 @@ async def update_company_research(
         "updated": len(rows),
         # Conservé pour la rétro-compatibilité — `statut_metiers` porte le détail.
         "metiers_ecrits": statut_metiers == "ecrit",
-        # ecrit · verrouillee (anti-clobber, COMPORTEMENT CORRECT) · absente · echec.
-        # Seuls `echec` et `absente` sont des anomalies : n'alerter que sur eux,
-        # sinon l'alarme sonnera sur le fonctionnement nominal le jour où William
-        # posera le drapeau de vérification manuelle — et une alarme qui sonne au
-        # nominal est une alarme morte.
+        # ecrit · verrouillee (anti-clobber) · terminale (fiche disqualifiée ou
+        # supprimée) · absente · echec.
+        # 🔴 Seuls `echec` et `absente` sont des anomalies : n'alerter que sur
+        # eux. `verrouillee` et `terminale` sont deux COMPORTEMENTS CORRECTS, et
+        # les distinguer ne sert pas l'alerte — ça sert le diagnostic, qui doit
+        # dire « William l'a corrigée à la main » ou « la recherche l'a fermée »,
+        # jamais l'un pour l'autre. Une alarme qui sonne au nominal est une
+        # alarme morte ; un diagnostic qui ment est pire, il envoie chercher
+        # ailleurs.
         "statut_metiers": statut_metiers,
     }
 

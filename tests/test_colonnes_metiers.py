@@ -73,7 +73,7 @@ def test_la_piscine_sans_verbe_dentretien_n_ouvre_RIEN():
     assert avec["fenetre_mois"] == [1, 2, 3, 4, 5, 6, 7]
 
 
-def test_industry_ne_rebranche_PAS_le_repli():
+def test_industry_complete_la_colonne():
     """🔴 GÈLE UN DÉBRANCHEMENT VOLONTAIRE — décision William du 2026-09-02.
 
     `metier_depuis_industry` existe et résout bien « déneigement » depuis ce
@@ -89,10 +89,23 @@ def test_industry_ne_rebranche_PAS_le_repli():
     non reconnue doit rester `inconnu` + les douze mois (défaut inversé), et
     surtout PAS devenir un déneigeur joignable d'août à décembre.
     """
+    # 💀 Jusqu'au 2026-09-14 ce test exigeait l'INVERSE : metiers == [],
+    # source « inconnu », douze mois. Décision William renversée sur les cas
+    # Niwa et Spray Green — voir tests/test_industry_complement.py pour le
+    # raisonnement et la mesure (97 % des fiches inchangées).
     c = colonnes_metiers(["Consultation"], industry="entrepreneur en déneigement")
-    assert c["metiers"] == []
-    assert c["metier_source"] == "inconnu"
-    assert c["fenetre_mois"] == list(range(1, 13))
+    assert c["metiers"] == ["déneigement"]
+    assert c["metier_source"] == "industry"
+    assert c["fenetre_mois"] == [8, 9, 10, 11, 12], (
+        "une fiche dont on ne reconnaît que le secteur doit suivre la saison de "
+        "ce secteur, pas rester douze mois par défaut inversé"
+    )
+
+    # ⚠️ Le défaut inversé TIENT TOUJOURS quand le secteur ne dit rien non plus.
+    inconnue = colonnes_metiers(["Consultation"], industry="boulangerie")
+    assert inconnue["metiers"] == []
+    assert inconnue["metier_source"] == "inconnu"
+    assert inconnue["fenetre_mois"] == list(range(1, 13))
 
 
 def test_le_patch_survit_a_un_aller_retour_json():
