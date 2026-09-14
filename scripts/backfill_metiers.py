@@ -14,6 +14,17 @@ silence, si ce backfill passait par elle. Un backfill de colonnes dérivées doi
 être un NO-OP sur tout le reste de la fiche : d'où l'`sb.update` direct, avec un
 patch qui ne contient QUE les quatre colonnes.
 
+🔴 IL NE SE LANCE QUE SUR DÉCISION EXPLICITE DE WILLIAM (2026-09-13).
+« Pour le rattrapage je le ferai plus tard, quand je déciderai que c'est le bon
+moment. » Une session qui lit le paragraphe suivant va vouloir le rejouer
+d'elle-même : NE LE FAIS PAS. Signale que le rejeu est dû, explique ce qu'il
+changerait, et attends. Deux raisons de fond, pas une politesse :
+  · il ÉCRASE les colonnes des fiches déjà écrites par l'écrivain, donc il
+    détruit toute mesure en cours sur `update_company_research` — il repeint
+    par-dessus la panne et la rend invisible ;
+  · il déplace `metiers_calcules_le` PARTOUT, ce qui change qui est joignable
+    aujourd'hui. Ce n'est pas un no-op, même quand le dictionnaire n'a pas bougé.
+
 🔴 IL DOIT ÊTRE REJOUÉ APRÈS TOUTE MODIFICATION DU DICTIONNAIRE.
 `RACINES`, `EXIGE`, `EXCLUSIONS`, `ECRASE` dans `src/lib/metiers.py` : ces
 colonnes sont un **cache que RIEN n'invalide**. La scène du courriel se
