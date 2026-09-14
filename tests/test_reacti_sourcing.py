@@ -66,7 +66,7 @@ def test_company_in_track_defaut_opt() -> None:
 async def test_research_filtre_track(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict = {}
 
-    async def fake_select(table, params=None):
+    async def fake_select(table, params=None, schema=None):
         captured["params"] = params or {}
         return []
 
@@ -80,7 +80,7 @@ async def test_research_filtre_track(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_personalize_isole_par_track_company(monkeypatch: pytest.MonkeyPatch) -> None:
     """Un contact dont la company est OPT ne sort PAS quand on demande agence-ia."""
 
-    async def fake_select(table, params=None):
+    async def fake_select(table, params=None, schema=None):
         if table == "contacts":
             return [
                 {"id": "ct-opt", "company_id": "co-opt", "email": "a@opt.ca", "status": "new"},

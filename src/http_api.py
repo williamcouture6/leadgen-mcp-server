@@ -3036,20 +3036,30 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
             ))
             continue
 
+        # 🔴 LE RANG ET LES COMPTEURS DE SORTIE SONT DEUX CHOSES, et il a fallu
+        # un conseil pour le voir. Le premier jet posait `if res.message_id:`
+        # entre `if res.status == "ok":` et son `elif` — ce qui a silencieusement
+        # REBRANCHÉ la chaîne `elif/else` du STATUT vers l'ÉCRITURE. En mode
+        # `persist=False`, chaque contact rendait alors `drafts += 1` ET
+        # `failed += 1` : un lot parfaitement sain se déclarait entièrement en
+        # échec, et `processed != drafts + skipped + failed`.
+        #
+        # Les deux décomptes sont donc désormais séparés par une ligne vide et
+        # un commentaire, et un test tient l'invariant de somme.
         if res.status == "ok":
             drafts += 1
-        # 🔴 Le rang n'avance QUE si une ligne a été écrite — et le critère est
-        # `res.message_id`, pas `res.status == "ok"`. Un corps vide rend bien
-        # "ok" sans rien insérer (garde `if persist and subject and body`) : le
-        # rang aurait alors avancé pour un bras que personne n'a reçu, et le
-        # compteur en base, lui, ne l'aurait pas vu. C'est exactement la
-        # divergence que ce correctif existe pour supprimer.
-        if res.message_id:
-            rang_du_bras += 1
         elif res.status.startswith("skipped"):
             skipped += 1
         else:
             failed += 1
+
+        # Le rang n'avance QUE si une ligne a été écrite — critère
+        # `res.message_id`, pas le statut. Un corps vide rend bien "ok" sans
+        # rien insérer (garde `if persist and subject and body`) : le rang
+        # aurait alors avancé pour un bras que personne n'a reçu, alors que le
+        # compteur en base, lui, ne l'aurait pas vu.
+        if res.message_id:
+            rang_du_bras += 1
         items.append(RunWf4Item(
             contact_id=contact["id"], company_name=company.get("name"),
             status=res.status, message_id=res.message_id,

@@ -27,7 +27,7 @@ def _fake_select_factory(messages: list[dict], captured: dict):
     RENDE le message si le code oublie de filtrer.
     """
 
-    async def fake_select(table, params=None):
+    async def fake_select(table, params=None, schema=None):
         params = params or {}
         if table == "contacts":
             return [

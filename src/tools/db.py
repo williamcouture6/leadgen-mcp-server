@@ -797,7 +797,10 @@ async def list_contacts_to_personalize(
     On filtre côté Python plutôt que via une jointure PostgREST compliquée :
     1) On récupère les contacts avec email + status='new' ou 'ready'.
     2) On joint manuellement avec companies.research_json.
-    3) On exclut ceux qui ont déjà un message outbound NON abandonné (tout
+    3) On exclut ceux qui ont déjà un message outbound VIVANT — et, depuis le
+       2026-09-10, toute ENTREPRISE dont un contact en a un : `max_per_company`
+       ne vaut qu'à l'intérieur d'un lot, donc deux lots consécutifs
+       repiochaient chez la même boîte (PROGAZON en avait reçu quatre) NON abandonné (tout
        status sauf 'failed' — voir le commentaire sur la requête messages).
     4) On garde les top-N contacts par company selon priorité.
     """
@@ -946,8 +949,23 @@ async def _retenir(
     # lit la sélection. Déduire l'exclusion des contacts de la page raterait
     # exactement le cas dangereux — celui où l'entreprise a déjà reçu son
     # courriel.
-    freres = await db.select(
+    #
+    # ⚠️ `select_all` ET PAS `select`. PostgREST coupe TOUTE réponse à 1000
+    # lignes sans rien signaler (voir supabase_client), et cette lecture-ci
+    # grossit avec la file : les pages sont accumulées, donc jusqu'à
+    # MAX_PAGES_SELECTION * taille_page entreprises candidates. Au ratio mesuré
+    # de 1,27 contact par entreprise, la coupe mord vers 790 entreprises en
+    # file — ~2,5 fois celle d'aujourd'hui.
+    #
+    # Ce que la troncature ferait, et personne ne le verrait : `company_par_contact`
+    # amputé, donc (1) une entreprise déjà démarchée redevient éligible — le
+    # défaut même que ce bloc referme — et (2) un contact de la page tombé hors
+    # des 1000 n'a plus son propre message interrogé, donc il est RE-RÉDIGÉ.
+    # Le second est une régression par rapport à l'ancienne version, qui
+    # interrogeait directement les ids de la page.
+    freres = await db.select_all(
         "contacts",
+        order="id",
         params={
             "select": "id,company_id",
             "company_id": f"in.({','.join(company_ids)})",
@@ -958,11 +976,12 @@ async def _retenir(
     # `status=not.in.(failed)` : un message ABANDONNÉ ne gèle ni son contact ni
     # son entreprise. 'failed' est la façon PRÉVUE de retirer un brouillon à la
     # main ; bloquer dessus gèlerait toute la boîte au lieu de la libérer.
-    existing_msgs = await db.select(
+    existing_msgs = await db.select_all(
         "messages",
+        order="id",
         params={
             "select": "contact_id",
-            "contact_id": f"in.({','.join(company_par_contact) or 'null'})",
+            "contact_id": f"in.({','.join(company_par_contact)})",
             "direction": "eq.outbound",
             "status": "not.in.(failed)",
         },

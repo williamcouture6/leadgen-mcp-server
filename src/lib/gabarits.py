@@ -141,9 +141,24 @@ def bras_eligibles_texte(
     NULL — et non une chaîne vide — quand la consigne est inintelligible : une
     chaîne vide se lirait comme « aucun bras éligible », qui est une réponse ;
     NULL dit « on ne sait pas », qui est la vérité.
+
+    🔴 L'ORDRE EST CANONIQUE, ET C'EST UNE OBLIGATION DE LA BASE. La contrainte
+    `messages_bras_eligibles_domaine` (0055) exige `^A?B?C?D?$`, donc les
+    lettres dans l'ordre de `GABARITS`. Or `bras_demandes` PRÉSERVE l'ordre de
+    l'appelant — `dict.fromkeys` dédoublonne, il ne trie pas. Une consigne
+    `"DC"`, parfaitement licite au regard de la docstring de ce module qui
+    présente le paramètre comme une LISTE de bras, produisait donc `'DC'` :
+    refusé à l'insert, pour CHAQUE contact du lot, tous les jours. Et l'alerte
+    de famine aurait crié « la file est bouchée » au lieu de « la consigne est
+    dans le mauvais ordre ».
+
+    ⚠️ On trie ICI et nulle part ailleurs. `bras_eligibles` garde l'ordre de
+    l'appelant parce que c'est lui qui décide quel bras sort au rang 0 :
+    « CD » sert C en premier, « DC » sert D. Canoniser le tirage changerait les
+    courriels envoyés ; canoniser le texte rangé ne change que sa forme.
     """
     eligibles = bras_eligibles(template_choice, metier_connu=metier_connu)
-    return "".join(eligibles) or None
+    return "".join(b for b in GABARITS if b in eligibles) or None
 
 
 def bras_du_lot(template_choice: str, rang: int, *, metier_connu: bool = True) -> str:
