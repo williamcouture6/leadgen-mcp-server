@@ -185,6 +185,7 @@ async def _find_parent_outbound(
         )
         if rows:
             return rows[0]
+    lead_email = _adresse_normalisee(lead_email)
     if lead_email:
         rows = await db.select(
             "messages",
@@ -201,7 +202,36 @@ async def _find_parent_outbound(
     return None
 
 
+def _adresse_normalisee(email: str | None) -> str | None:
+    """Détoure et met en minuscules. Rend None si rien d'exploitable.
+
+    🔴 LE DÉTOURAGE PASSE AVANT LE TEST DE VACUITÉ. `"   "` est une chaîne
+    VRAIE : sans cet ordre, la requête partirait avec un filtre `eq.   ` et
+    PostgREST peut rendre une ligne arbitraire — on apparierait la réponse d'un
+    inconnu au contact de quelqu'un d'autre.
+
+    📏 LA CASSE. PostgREST `eq` est sensible à la casse. Un prospect qui répond
+    depuis `Jean@Domaine.CA` alors que la base porte `jean@domaine.ca` tomberait
+    en « entrant orphelin », resterait `new`, et pourrait recevoir un DEUXIÈME
+    courriel froid après avoir déjà répondu.
+
+    ⚠️ Ceci normalise le côté ENTRANT. Le côté BASE n'est pas garanti — mesuré
+    le 2026-09-13, 0 des 417 adresses porte une majuscule, mais rien ne
+    l'impose. Le jour où un scrape en stocke une, il faudra passer à un
+    appariement insensible à la casse côté SQL (attention : `ilike` traite `%`
+    et `_` comme des jokers, et `_` est fréquent dans une adresse).
+
+    ⚠️ ET ÇA NE RÈGLE PAS l'autre moitié du défaut : `lead_email` vient du FROM
+    de la réponse, pas de l'adresse de campagne. Le patron qui répond depuis son
+    gmail personnel reste introuvable, quelle que soit la casse.
+    """
+    if not email:
+        return None
+    return email.strip().lower() or None
+
+
 async def _find_contact_by_email(email: str) -> dict[str, Any] | None:
+    email = _adresse_normalisee(email)
     if not email:
         return None
     rows = await db.select(
