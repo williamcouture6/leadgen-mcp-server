@@ -4,8 +4,15 @@ Il vit à deux endroits que rien ne relie mécaniquement :
 
   · `src/tools/send.py` → `CONTACT_STATUTS_DEMARCHABLES` (Python), qui décide
     si un courriel PART ;
-  · `supabase/migrations/0062_…sql` → le `count(*) filter (…)` de `ct_agg`, qui
-    décide si `v_pourquoi_pas_de_courriel` annonce « rien ne s'y oppose ».
+  · la DERNIÈRE migration qui redéfinit `v_pourquoi_pas_de_courriel` → le
+    `count(*) filter (…)` de `ct_agg`, qui décide si la vue annonce « rien ne
+    s'y oppose ».
+
+🔴 LA MIGRATION SE TROUVE PAR NUMÉRO LE PLUS HAUT, JAMAIS EN DUR. Ce fichier
+pointait sur la `0062` ; la `0065` a redéfini la vue trois jours plus tard, et
+le test aurait continué de lire une définition morte — vert pour toujours,
+aveugle au fichier qui fait réellement foi. C'est la même classe de défaut que
+celle qu'il surveille : une référence figée vers quelque chose qui bouge.
 
 🔴 CE QUE COÛTE UN DÉSACCORD. Si le SQL est plus permissif que Python, la vue
 promet un courriel qui ne partira jamais : une entreprise reste éternellement
@@ -31,9 +38,32 @@ import pytest
 
 # tests/ → mcp-server/ → le dépôt `infra` qui contient supabase/
 RACINE_INFRA = Path(__file__).resolve().parents[2]
-MIGRATION = RACINE_INFRA / "supabase" / "migrations" / (
-    "0062_v_pourquoi_pas_de_courriel_contacts_joignables.sql"
-)
+MIGRATIONS = RACINE_INFRA / "supabase" / "migrations"
+
+
+def _derniere_definition_de_la_vue() -> Path | None:
+    """Le fichier de migration le plus RÉCENT qui redéfinit la vue.
+
+    Les migrations sont numérotées et rejouées dans l'ordre : c'est donc la
+    dernière qui fait foi. Trier les noms suffit — ils sont préfixés d'un
+    numéro à quatre chiffres, zéro-paddé, depuis le début du dépôt.
+
+    ⚠️ On filtre sur le CONTENU (`create … view public.v_pourquoi_pas_de_courriel`)
+    et pas seulement sur le nom de fichier : une migration peut toucher la vue
+    sans le dire dans son nom, et une autre peut porter son nom sans la
+    redéfinir (un simple `comment on view`, par exemple).
+    """
+    candidates = [
+        p for p in sorted(MIGRATIONS.glob("[0-9][0-9][0-9][0-9]_*.sql"))
+        if re.search(
+            r"create\s+(or\s+replace\s+)?view\s+public\.v_pourquoi_pas_de_courriel",
+            p.read_text(encoding="utf-8"), re.IGNORECASE,
+        )
+    ]
+    return candidates[-1] if candidates else None
+
+
+MIGRATION = _derniere_definition_de_la_vue() if MIGRATIONS.is_dir() else None
 
 
 def _statuts_du_sql(texte: str) -> frozenset[str]:
@@ -56,10 +86,10 @@ def _statuts_du_sql(texte: str) -> frozenset[str]:
 
 
 @pytest.mark.skipif(
-    not MIGRATION.exists(),
+    MIGRATION is None,
     reason=(
-        "migration absente — `mcp-server` est déployé seul sur Railway, sans le "
-        "dépôt `infra` autour. Le test n'a de sens qu'en local, où les deux "
+        "migrations absentes — `mcp-server` est déployé seul sur Railway, sans "
+        "le dépôt `infra` autour. Le test n'a de sens qu'en local, où les deux "
         "coexistent."
     ),
 )
@@ -70,7 +100,7 @@ def test_le_sql_et_python_disent_le_meme_triplet() -> None:
 
     assert sql == set(CONTACT_STATUTS_DEMARCHABLES), (
         "DÉSACCORD entre la vue SQL et send.py.\n"
-        f"  SQL    (0062, ct_agg)                  : {sorted(sql)}\n"
+        f"  SQL    ({MIGRATION.name}, ct_agg)      : {sorted(sql)}\n"
         f"  Python (send.CONTACT_STATUTS_DEMARCHABLES) : "
         f"{sorted(CONTACT_STATUTS_DEMARCHABLES)}\n"
         "Corriger les DEUX, jamais ce test. Et si le triplet change, refaire "
