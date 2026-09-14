@@ -28,6 +28,7 @@ import json
 import os
 import re
 import secrets
+import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -711,10 +712,52 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
                         "from_email": payload.lead_email,
                         "provider": "instantly",
                         "provider_message_id": payload.provider_message_id_inbound,
+                        # 🔴 LE MESSAGE BRUT, ET C'EST ICI QU'IL COMPTE LE PLUS.
+                        # Cet entrant est celui qu'on n'a PAS su rattacher —
+                        # donc le seul qui puisse nous apprendre comment le
+                        # rattacher. Le rattachement par le fil est cassé par
+                        # construction : `send.py` range l'ID DU LEAD dans
+                        # `provider_message_id`, alors qu'une réponse référence
+                        # l'ID DU COURRIEL (`in_reply_to_uuid`). Deux sortes
+                        # d'identifiants comparées avec `=` : ça ne peut jamais
+                        # correspondre. Il reste donc l'appariement par adresse,
+                        # qui rate précisément le cas typique — le prospect qui
+                        # répond de son gmail perso.
+                        #
+                        # ⚠️ On ne peut pas deviner quel champ d'Instantly porte
+                        # le lead de campagne : mesuré le 2026-09-14, 0 des 156
+                        # messages n'a jamais été poussé, donc AUCUNE réponse
+                        # n'existe pour le dire. En gardant le brut, la première
+                        # vraie réponse livre elle-même les noms de champs.
+                        # Requête prévue :
+                        #   select raw_payload from messages
+                        #   where direction='inbound' and contact_id is null;
+                        "raw_payload": payload.raw_payload,
                     },
                 )
                 orphan_id = ins_orphan[0]["id"] if ins_orphan else None
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                # 🔴 CE SILENCE A CACHE UNE PANNE TOTALE PENDANT DES MOIS.
+                # `messages.contact_id` etait NOT NULL, donc CET INSERT — celui
+                # d'un entrant SANS contact, par definition — echouait TOUJOURS
+                # en 23502. L'exception etait avalee sans un mot : de chaque
+                # reponse qu'on ne savait pas rattacher, il ne restait que le
+                # ping Slack, et le corps du courriel n'existait nulle part.
+                # Verifie en production le 2026-09-14 en tapant l'API avec
+                # exactement cette ligne ; corrige par la migration 0067, qui
+                # remplace le NOT NULL par « un SORTANT exige un contact ».
+                #
+                # On garde le `except` — perdre la trace ne doit pas faire
+                # perdre l'ALERTE, qui est ce qui compte pour William. Mais on
+                # le fait PARLER : un echec muet ici est invisible, et c'est
+                # exactement ce qui s'est passe.
+                reponse = getattr(exc, "response", None)
+                corps = (getattr(reponse, "text", "") or "")[:300] if reponse is not None else ""
+                logging.getLogger("wf7").error(
+                    "entrant orphelin NON enregistre pour %s : %s %s — l'alerte "
+                    "Slack part quand meme, mais le corps du courriel est perdu",
+                    payload.lead_email, exc, corps,
+                )
                 orphan_id = None
             # L'EXTRAIT voyage avec l'alerte. Sans lui, William lit « contact
             # introuvable » et doit ouvrir Outlook pour savoir si c'est un oui
@@ -769,6 +812,9 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         "from_email": payload.lead_email,
         "provider": "instantly",
         "provider_message_id": payload.provider_message_id_inbound,
+        # Le brut ici aussi : comparer un entrant qu'on a SU rattacher à un
+        # orphelin est ce qui dira quel champ les distingue.
+        "raw_payload": payload.raw_payload,
     }
     if parent_message_id:
         # in_reply_to stocke le Message-ID header — on n'a pas l'header, on
