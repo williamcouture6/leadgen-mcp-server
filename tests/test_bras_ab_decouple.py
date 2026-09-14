@@ -32,12 +32,19 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "test")
 
 
-def _backlog_a_rang_inverse() -> list[dict]:
+# Rangs d'arrivée NON MONOTONES, à dessein (relevé par un conseil le
+# 2026-09-13). Avec `3 - i`, trier par rang d'arrivée est indistinguable
+# d'inverser la liste : remplacer le `sorted()` de `/wf4/run` par un
+# `reversed()` laissait les tests verts. Avec cet ordre-là, non.
+RANGS = [2, 0, 3, 1]
+
+
+def _backlog_a_rang_melange() -> list[dict]:
     """Le lot tel que `_retenir` le rend : trié par priorité décroissante.
 
-    `Ent0` est le meilleur potentiel (premier de la liste) mais le DERNIER
-    arrivé (`rang_arrivee = 3`). Si le bras suivait la position dans la liste,
-    Ent0 prendrait A. Il doit prendre D.
+    `Ent0` est le meilleur potentiel (premier de la liste) mais le 3ᵉ arrivé.
+    L'ordre d'arrivée est Ent1, Ent3, Ent0, Ent2 — ni celui de la liste, ni son
+    inverse.
     """
     return [
         {
@@ -47,7 +54,7 @@ def _backlog_a_rang_inverse() -> list[dict]:
                 "google_rating": 4.8, "google_reviews_count": 40,
                 "research_json": {"services_offered": ["Déneigement résidentiel"]},
             },
-            "rang_arrivee": 3 - i,
+            "rang_arrivee": RANGS[i],
         }
         for i in range(4)
     ]
@@ -92,19 +99,19 @@ async def test_le_bras_suit_l_ordre_d_arrivee_pas_le_potentiel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     vus: list[tuple[str, str]] = []
-    http_api = _socle(monkeypatch, _backlog_a_rang_inverse(), vus)
+    http_api = _socle(monkeypatch, _backlog_a_rang_melange(), vus)
     from src.http_api import RunWf4In
 
     await http_api.run_wf4(RunWf4In(track="agence-ia", template_choice="ABCD"))
 
-    # Parcouru dans l'ordre d'ARRIVÉE : Ent3 est arrivé le premier.
-    assert [n for n, _ in vus] == ["Ent3", "Ent2", "Ent1", "Ent0"], (
-        f"le lot est parcouru dans l'ordre de la file triée : {vus}"
+    # Ordre d'ARRIVÉE : ni l'ordre de la liste (Ent0…Ent3), ni son inverse.
+    assert [n for n, _ in vus] == ["Ent1", "Ent3", "Ent0", "Ent2"], (
+        f"le lot n'est pas parcouru dans l'ordre d'arrivée : {vus}"
     )
     # Et le compteur distribue les quatre bras dans cet ordre-là.
     assert [b for _, b in vus] == ["A", "B", "C", "D"], vus
-    # Donc le MEILLEUR potentiel (Ent0, premier de la liste) prend D, pas A.
-    assert dict(vus)["Ent0"] == "D"
+    # Donc le MEILLEUR potentiel (Ent0, premier de la liste) prend C, pas A.
+    assert dict(vus)["Ent0"] == "C"
 
 
 async def test_le_compteur_continue_entre_les_lots(
@@ -116,7 +123,7 @@ async def test_le_compteur_continue_entre_les_lots(
     reprend au troisième bras.
     """
     vus: list[tuple[str, str]] = []
-    http_api = _socle(monkeypatch, _backlog_a_rang_inverse(), vus)
+    http_api = _socle(monkeypatch, _backlog_a_rang_melange(), vus)
     from src import http_api as api_mod
     from src.http_api import RunWf4In
 
@@ -128,6 +135,8 @@ async def test_le_compteur_continue_entre_les_lots(
     await http_api.run_wf4(RunWf4In(track="agence-ia", template_choice="ABCD"))
 
     assert [b for _, b in vus] == ["C", "D", "A", "B"], vus
+    # Et toujours dans l'ordre d'arrivée.
+    assert [n for n, _ in vus] == ["Ent1", "Ent3", "Ent0", "Ent2"], vus
 
 
 async def test_la_prod_crie_si_l_etiquette_disparait(
@@ -141,7 +150,7 @@ async def test_la_prod_crie_si_l_etiquette_disparait(
     """
     sans_etiquette = [
         {k: v for k, v in e.items() if k != "rang_arrivee"}
-        for e in _backlog_a_rang_inverse()
+        for e in _backlog_a_rang_melange()
     ]
     vus: list[tuple[str, str]] = []
     http_api = _socle(monkeypatch, sans_etiquette, vus)
@@ -151,3 +160,42 @@ async def test_la_prod_crie_si_l_etiquette_disparait(
         await http_api.run_wf4(RunWf4In(track="agence-ia", template_choice="ABCD"))
 
     assert any("rang_arrivee" in m for m in caplog.messages), caplog.messages
+
+
+async def test_un_contact_saute_ne_consomme_pas_de_bras(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """La combinaison que rien ne couvrait (conseil du 2026-09-13).
+
+    Les tests venus de `main` prouvent que le compteur n'avance qu'à l'écriture
+    d'un brouillon — mais leurs fixtures n'ont pas de `rang_arrivee`, donc ils
+    tournent dans le chemin dégradé, pas dans la configuration de production.
+    Ici les deux moitiés jouent ensemble : parcours par arrivée ET saut.
+
+    `Ent3`, deuxième servi, échoue. Le bras B qu'il aurait pris doit revenir au
+    suivant — sinon un gabarit se fait sauter à chaque lot raté, et l'écart
+    entre les quatre bras dérive sans que rien ne le dise.
+    """
+    vus: list[tuple[str, str]] = []
+    http_api = _socle(monkeypatch, _backlog_a_rang_melange(), vus)
+    from src.http_api import RunWf4In
+
+    async def personalize_avec_saut(contact, company, *, template_choice, **kw):
+        vus.append((company["name"], template_choice))
+        rate = company["name"] == "Ent3"
+        return SimpleNamespace(
+            status="skipped_no_email" if rate else "ok",
+            message_id=None if rate else "m",
+            template_used=None if rate else template_choice,
+            duration_ms=1, error_text=None,
+        )
+
+    monkeypatch.setattr(http_api, "_personalize_one", personalize_avec_saut)
+
+    await http_api.run_wf4(RunWf4In(track="agence-ia", template_choice="ABCD"))
+
+    assert [n for n, _ in vus] == ["Ent1", "Ent3", "Ent0", "Ent2"], vus
+    # Ent3 a consommé B sans rien écrire : B revient à Ent0.
+    assert [b for _, b in vus] == ["A", "B", "B", "C"], (
+        f"le bras d'un contact sauté a été perdu : {vus}"
+    )

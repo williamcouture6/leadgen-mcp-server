@@ -3032,9 +3032,31 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
     #
     # Parcourir dans l'ordre d'ARRIVÉE règle les deux : le compteur garde sa
     # répartition égale entre les lots, et le bras cesse de dépendre du score.
-    # L'ordre du parcours n'a aucune autre conséquence — les brouillons d'un
-    # même lot partent le même jour.
-    for entry in sorted(backlog, key=lambda e: e.get("rang_arrivee", 0)):
+    #
+    # ⚠️ CE N'EST PAS SANS CONSÉQUENCE, contrairement à ce qu'affirmait le
+    # message de fusion (relevé par un conseil le 2026-09-13). Les `messages`
+    # sont insérés dans l'ordre du parcours, et WF-6 tire ses brouillons en
+    # `created_at.asc` sous un plafond quotidien (`send.py`). Dès que la file de
+    # brouillons approuvés dépasse ce plafond — 109 en attente aujourd'hui —
+    # l'ordre d'envoi RÉEL est l'ordre d'arrivée, pas celui du potentiel.
+    #
+    # Ce qui est préservé : le potentiel décide toujours QUI entre dans le lot,
+    # et c'est l'essentiel du gain. Ce qui est perdu : la tête de file n'en sort
+    # plus la première. Le rendre ne demanderait pas de toucher ici — il
+    # faudrait que `send.py` ordonne sur le potentiel plutôt que sur
+    # `created_at`. Décision en attente, tracée plutôt que tue.
+    def _rang_parcours(entree: dict[str, Any]) -> int:
+        """Le rang d'arrivée, ou 0 s'il est absent ou d'un type inattendu.
+
+        Le garde-fou ci-dessus TOLÈRE une étiquette mal formée : il crie et
+        laisse passer. Un `key` naïf lèverait alors `TypeError` en comparant un
+        `None` à un `int` — 500 sur /wf4/run et lot entier perdu, juste après
+        avoir écrit dans le journal que la dégradation était survivable.
+        """
+        rang = entree.get("rang_arrivee")
+        return rang if isinstance(rang, int) and not isinstance(rang, bool) else 0
+
+    for entry in sorted(backlog, key=_rang_parcours):
         contact = entry["contact"]
         company = entry["company"]
         # Compte AVANT la generation : meme si le draft echoue ensuite, le fait

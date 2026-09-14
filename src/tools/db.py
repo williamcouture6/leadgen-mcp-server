@@ -924,7 +924,19 @@ async def _select_par_tranches(
         tranche = ids[debut:debut + TAILLE_TRANCHE_IN]
         filtre = {**params, cle: f"in.({','.join(tranche)})"}
         if order is None:
-            lignes.extend(await db.select(table, params=filtre))
+            lot = await db.select(table, params=filtre)
+            lignes.extend(lot)
+            # Une tranche qui revient EXACTEMENT pleine a très probablement été
+            # coupée par PostgREST, qui tronque sans erreur ni en-tête. On ne
+            # peut pas le distinguer d'un hasard, mais le crier coûte une ligne
+            # de journal et évite le mode de panne le plus cher du projet :
+            # celui qu'on ne voit pas.
+            if len(lot) >= PLAFOND_POSTGREST:
+                logging.getLogger("wf4").warning(
+                    "%s : une tranche de %d lignes revient au plafond PostgREST "
+                    "— la réponse est probablement TRONQUÉE, il manque des lignes",
+                    table, len(lot),
+                )
             continue
         # Tranche paginée : on reste sur `select`, mais on redemande tant que
         # la page revient pleine. Une page courte dit la fin — donc un faux
@@ -959,7 +971,7 @@ async def _retenir(
     track: str,
     require_research: bool,
 ) -> list[dict[str, Any]]:
-    """Les contacts d'une page qui méritent un courriel, dans l'ordre de la file.
+    """Les contacts qui méritent un courriel, dans l'ordre de PRIORITÉ.
 
     Séparée de la lecture pour que celle-ci puisse tourner en boucle. Prend la
     liste ACCUMULÉE et non la dernière page : les déduplications par entreprise
@@ -1051,6 +1063,13 @@ async def _retenir(
         "contacts",
         cle="company_id",
         ids=company_ids,
+        # ⚠️ NON paginée, à dessein. Une ligne manquante ici vaudrait un
+        # DEUXIÈME courriel froid à la même boîte — mais une tranche fait 120
+        # entreprises, et la base mesure 1,27 contact par entreprise (max 13) :
+        # ~150 lignes, loin du plafond de 1000. La paginer casserait le faux
+        # `select` de `test_une_entreprise_un_courriel`, qui distingue les deux
+        # requêtes sur `contacts` par la présence de `limit`. La garde de
+        # `_select_par_tranches` crie si une tranche revient pleine.
         params={"select": "id,company_id"},
     )
     company_par_contact = {f["id"]: f["company_id"] for f in freres}
@@ -1124,7 +1143,9 @@ async def _retenir(
 
     # Dédup global sur email : si plusieurs companies pointent vers le même email
     # (cas chaînes où Google Places retourne plusieurs succursales), garder
-    # uniquement la première company rencontrée pour ce email.
+    # uniquement la première company rencontrée pour ce email. Depuis le tri
+    # par potentiel, « première » veut dire LA MIEUX NOTÉE, et non plus la plus
+    # ancienne : à courriel partagé, c'est le meilleur lead qui le garde.
     seen_emails: set[str] = set()
     for company_id in seen_companies:
         group = eligible[company_id]
@@ -1158,13 +1179,16 @@ def _poser_rang_arrivee(
 ) -> list[dict[str, Any]]:
     """Numérote les retenus dans leur ordre d'ARRIVÉE, sans changer leur ordre d'envoi.
 
-    🔴 C'est ce rang, et lui seul, qui tire le gabarit du test A/B — jamais la
-    position dans la file triée. `lib/gabarits.bras_du_lot` porte l'invariant :
-    « l'alternance se fait par rang dans le lot, jamais par une propriété du
-    contact », parce qu'un bras corrélé à autre chose mesure cette autre chose.
-    Le tri par potentiel a précisément créé cette corrélation : sans ce
-    découplage, le bras A prendrait les rangs 0, 4, 8… soit les meilleurs
-    potentiels du lot, à chaque envoi, dans le même sens.
+    🔴 C'est la clé de tri du PARCOURS de `/wf4/run` : le lot y est traversé
+    dans l'ordre d'arrivée, et c'est ce qui décorrèle le gabarit A/B du score.
+    Le bras lui-même vient d'ailleurs — `rang_du_bras`, un compteur lu en base
+    qui continue d'un lot à l'autre. Les deux sont nécessaires : le compteur
+    seul reste corrélé (à 10 brouillons par lot, le décalage vaut 2 modulo 4,
+    donc le meilleur lead alternerait entre A et C sans jamais tomber sur B
+    ni D), et l'ordre d'arrivée seul ne répartit pas également les quatre bras.
+
+    ⚠️ Ne retire pas le `sorted()` de `/wf4/run` en croyant qu'il ne sert à
+    rien : il EST le découplage.
 
     La liste rendue garde l'ordre de priorité (l'ordre d'ENVOI) ; seule
     l'étiquette `rang_arrivee` change.
