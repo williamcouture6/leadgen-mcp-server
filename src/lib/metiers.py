@@ -68,6 +68,20 @@ RACINES: dict[str, tuple[str, ...]] = {
     "paysagement": (
         "paysag", "amenagement paysager", "plate-bande", "plates-bande",
         "platebande", "haie", "soutenement",
+        # 🔧 Ajoutees le 2026-09-13. Trois fiches portaient une fenetre VIDE
+        # (joignables zero mois sur douze, donc invisibles pour toujours) parce
+        # qu'aucune racine n'appariait leurs libelles : seuls `pavage` et
+        # `excavation` sortaient, et ces metiers douze-mois n'ouvrent rien.
+        # Choisies sur MESURE contre les libelles reels, pas a l'intuition --
+        # les faux positifs ecartes sont documentes dans
+        # tests/test_racines_paysagement_trous.py.
+        "tourbe",           # 47 libelles, aucun faux positif
+        "plantation",       # 64 libelles
+        # 🔴 INDISPENSABLE A PART, malgre l'apparence de redondance :
+        # l'appariement est ancre sur un debut de mot, donc `plantation` ne
+        # mord PAS dans « transplantation ». Ne pas « simplifier » en la
+        # retirant.
+        "transplantation",
     ),
     "tonte": ("tonte", "pelouse", "gazon", "tondre"),
     # « pression » (34 fiches au 2026-08-30) -> lavage de vitres (decision William,
