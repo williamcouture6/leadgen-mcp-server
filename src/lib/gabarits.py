@@ -144,7 +144,14 @@ def tete_fixe_servable_pour_entreprise(company: Mapping[str, Any]) -> bool:
     research = company.get("research_json") or {}
     services = research.get("services_offered") or []
     return tete_fixe_servable(
-        metiers_reconnus=bool(classer_services(services).metiers),
+        # 🔴 `industry` DEPUIS LE 2026-09-14. Sans lui, une fiche dont le
+        # métier ne vient QUE du secteur (« Entreprises Mobile », 0 service,
+        # secteur « entrepreneur en déneigement ») était jugée démarchable
+        # par `fenetre_saisonniere_ouverte` — qui, elle, le passait — et
+        # privée de C et D ici, pour un métier pourtant connu.
+        metiers_reconnus=bool(
+            classer_services(services, company.get("industry")).metiers
+        ),
         citation_autorisee=bloc_avis_autorise(
             company.get("google_rating"), company.get("google_reviews_count")
         ),

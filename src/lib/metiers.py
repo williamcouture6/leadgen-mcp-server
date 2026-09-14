@@ -896,11 +896,11 @@ def resoudre_metiers(
     Déterministe et rejouable : deux appels avec les mêmes entrées rendent le
     même résultat, ce qu'un classement par LLM ne garantit pas.
 
-    ⚠️ `industry` est ACCEPTÉ MAIS IGNORÉ. Le repli existe
-    (`metier_depuis_industry`) et n'est appelé par personne — décision William
-    du 2026-09-02. Le paramètre reste dans la signature pour que le
-    débranchement soit vérifiable par un test plutôt que constaté par une
-    absence. Voir le bloc de commentaires avant le calcul des fenêtres.
+    🔧 `industry` COMPLÈTE le classement depuis le 2026-09-14 — il ne l'ignore
+    plus. Cette docstring disait le contraire jusqu'à ce jour-là, et elle est
+    la raison pour laquelle cinq appelants sont restés sans le passer : on lit
+    le commentaire, on conclut « paramètre inerte », on ne le branche pas. Voir
+    `classer_services`, qui fait le travail.
     """
     classement = classer_services(services_offered, industry)
     compte = classement.compte
@@ -920,13 +920,21 @@ def resoudre_metiers(
     dominant = metiers[0]
     source = classement.source
 
-    # 🔴 LE REPLI SUR `industry` EXISTE MAIS N'EST PAS BRANCHÉ — décision
-    # William du 2026-09-02. NE PAS LE REBRANCHER SANS LUI DEMANDER.
+    # 🔧 CE BLOC RACONTE POURQUOI LE SECTEUR A ÉTÉ DÉBRANCHÉ LE 2026-09-02, et
+    # il est gardé parce que la raison, elle, vaut toujours. Mais le secteur
+    # COMPLÈTE le classement depuis le 2026-09-14 : lire ce qui suit comme une
+    # règle en vigueur serait un contresens.
     #
-    # ⚠️ La spec du 2026-08-27 le prévoit pourtant : elle décrit `metier_source`
-    # comme « services_offered · industry (repli) · inconnu ». Il a été écrit le
-    # 2026-09-02, mesuré, puis débranché le jour même. Sans cette note, la
-    # prochaine session le rebranchera en croyant réparer un oubli.
+    # Ce qui a changé : le repli de 2026-09-02 REMPLAÇAIT le classement quand
+    # les services ne rendaient rien ; le complément de 2026-09-14 s'AJOUTE, en
+    # rang de dernier arrivé, et ne devient dominant que s'il est SEUL.
+    #
+    # ⚠️ Donc « Niwa Paysagiste », décrite plus bas comme le cas qu'on refusait
+    # de contacter, EST joignable aujourd'hui : sa fenêtre s'ouvre par son
+    # secteur. Ce qui la protège n'est plus l'exclusion, c'est le poids : son
+    # courriel continue de parler de pavé uni, ce qu'elle vend vraiment, parce
+    # que le secteur ne prend jamais le lexique. L'objection de William —
+    # « deviner son métier » — est répondue par là, pas par le refus.
     #
     # CE QU'IL FAISAIT : « Niwa Paysagiste », sourcée sur le mot-clé
     # `paysagiste`, n'a aucun libellé où la racine `paysag` apparaît — sa seule

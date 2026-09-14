@@ -172,7 +172,9 @@ def variantes_du_meme_metier(
 
 
 def metier_de_la_scene(
-    services_offered: list[str] | None, aujourdhui: date
+    services_offered: list[str] | None,
+    aujourdhui: date,
+    industry: str | None = None,
 ) -> str | None:
     """Le métier dont l'ouvreur parle RÉELLEMENT.
 
@@ -181,14 +183,17 @@ def metier_de_la_scene(
     fois, pour que le message enregistre ce que le courriel a dit et non ce qu'un
     recalcul croirait.
     """
-    r = resoudre_metiers(services_offered, aujourdhui)
+    r = resoudre_metiers(services_offered, aujourdhui, industry)
     if r.scene:
         return r.scene
     return r.dominant if r.metiers else None
 
 
 def bloc_metiers_resolus(
-    services_offered: list[str] | None, aujourdhui: date, gabarit: str | None = None
+    services_offered: list[str] | None,
+    aujourdhui: date,
+    gabarit: str | None = None,
+    industry: str | None = None,
 ) -> str:
     """Ce que le rédacteur reçoit sur les métiers. **Il ne classe rien.**
 
@@ -225,7 +230,11 @@ def bloc_metiers_resolus(
     ⚠️ Sur le vrai chemin, `_format_input_for_llm` passe toujours la lettre :
     ces deux replis ne servent qu'aux appelants d'appoint.
     """
-    r = resoudre_metiers(services_offered, aujourdhui)
+    # ⚠️ `industry` ENTRE ICI DEPUIS LE 2026-09-14. Sans lui, le rédacteur
+    # lisait « Aucun métier reconnu » et écrivait un ouvreur générique à une
+    # entreprise dont la porte de contact, elle, connaissait parfaitement le
+    # métier — deux vérités dans le même passage du pipeline.
+    r = resoudre_metiers(services_offered, aujourdhui, industry)
 
     # 🔴 Le lexique se SÉPARE en deux, et les souder était un défaut trouvé par
     # le conseil final.
@@ -254,7 +263,11 @@ def bloc_metiers_resolus(
     #     le MOMENT qui est mauvais. La scène retombe sur le dominant, et le
     #     hors-saison se signale.
     hors_saison = r.scene is None and bool(r.metiers)
-    scene = metier_de_la_scene(services_offered, aujourdhui)
+    # ⚠️ `industry` ICI AUSSI, et c'est l'appel qui a échappé à la première
+    # passe : il ne nomme ni `resoudre_metiers` ni `classer_services`, donc il
+    # ne ressemblait pas aux cinq autres. Sans lui, tout le bloc parlait du
+    # métier — et cette ligne-là écrivait « Aucun métier reconnu » par-dessus.
+    scene = metier_de_la_scene(services_offered, aujourdhui, industry)
 
     if scene is None:
         lignes += [
@@ -562,6 +575,7 @@ def _format_input_for_llm(
                 research.get("services_offered"),
                 aujourdhui or date.today(),
                 gabarit=template_choice,
+                industry=company.get("industry"),
             ),
             "\n" + bloc_faits_verifies(
                 company.get("google_rating"),
@@ -583,7 +597,8 @@ def _format_input_for_llm(
                 # dans ce cas.
                 phrase_du_rush=lexique_pour(
                     next(iter(classer_services(
-                        research.get("services_offered")).metiers), None)
+                        research.get("services_offered"),
+                        company.get("industry")).metiers), None)
                 ).phrase_du_rush,
             ),
         ]
@@ -805,6 +820,16 @@ async def personalize(payload: PersonalizeIn) -> PersonalizeOut:
         duration_ms=int((time.monotonic() - started) * 1000),
         model=payload.model,
         usage=usage,
-        metiers=list(resoudre_metiers(services_offered, aujourdhui).metiers),
-        metier_scene=metier_de_la_scene(services_offered, aujourdhui),
+        # ⚠️ Ces deux champs s'écrivent dans `messages` : ils disent de quoi
+        # le courriel a parlé. Sans `industry`, ils resteraient vides pour une
+        # entreprise dont le métier vient du secteur — et la mesure par métier
+        # l'aurait comptée comme « aucun métier », sans que rien ne le signale.
+        metiers=list(
+            resoudre_metiers(
+                services_offered, aujourdhui, payload.company.get("industry")
+            ).metiers
+        ),
+        metier_scene=metier_de_la_scene(
+            services_offered, aujourdhui, payload.company.get("industry")
+        ),
     )

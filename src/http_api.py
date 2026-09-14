@@ -2316,7 +2316,14 @@ def _tombe_sur_le_repli_du_lexique(company_row: dict[str, Any]) -> bool:
     """
 
     research = company_row.get("research_json") or {}
-    return resoudre_metiers(research.get("services_offered"), date.today()).dominant is None
+    # ⚠️ `industry` compte depuis le 2026-09-14 : sans lui, ce compteur
+    # accuserait WF-3 de ne pas avoir creusé pour des fiches dont le métier
+    # est parfaitement connu — par leur secteur.
+    return resoudre_metiers(
+        research.get("services_offered"),
+        date.today(),
+        company_row.get("industry"),
+    ).dominant is None
 
 
 # 🔧 `_bras_ab` a déménagé dans `lib/gabarits.bras_du_lot` le 2026-09-01, avec
@@ -3453,7 +3460,14 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             # annonce dans le corps est vrai. Sans elles ici, ils arrivent a
             # None et TOUT corps portant une note est bloque -- fail-closed,
             # mais aucun courriel ne part.
-            "select": "research_json,track,google_rating,google_reviews_count",
+            # ⚠️ `industry` : le juge classe les métiers comme le rédacteur,
+            # et depuis le 2026-09-14 le secteur y entre. Sans la colonne
+            # ici, il lit « aucun métier » sous un courriel qui en nomme un,
+            # et son contrôle de saison part sur la mauvaise base.
+            "select": (
+                "research_json,track,industry,"
+                "google_rating,google_reviews_count"
+            ),
             "id": f"eq.{company_id}",
             "limit": "1",
         },
@@ -3546,6 +3560,10 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             tentatives=msg.get("compliance_tentatives"),
             google_rating=google_rating,
             google_reviews_count=google_reviews_count,
+            # Le secteur classe les metiers comme chez le redacteur depuis le
+            # 2026-09-14 : sans lui, le juge et l'auteur du courriel ne voient
+            # pas la meme entreprise.
+            industry=(company_rows[0].get("industry") if company_rows else None),
             # Le TRIPLET, pas le seul corps de tri. Sans ca, deux tiers du
             # contenu partent sans avoir ete inspectes par personne.
             followups=msg.get("followups") or None,

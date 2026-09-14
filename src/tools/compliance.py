@@ -88,6 +88,7 @@ def _message_utilisateur_juge(
     google_rating: float | None = None,
     google_reviews_count: int | None = None,
     followups: dict[str, str] | None = None,
+    industry: str | None = None,
 ) -> str:
     """Ce que le juge voit. Extrait en fonction pure pour être testable sans
     appeler Anthropic — un bloc qui disparaît du prompt doit casser un test,
@@ -129,7 +130,8 @@ def _message_utilisateur_juge(
             nb_services=len((research_json or {}).get('services_offered') or []),
             phrase_du_rush=lexique_pour(
                 next(iter(classer_services(
-                    (research_json or {}).get('services_offered')).metiers), None)
+                    (research_json or {}).get('services_offered'),
+                    industry).metiers), None)
             ).phrase_du_rush,
         )}\n\n"
         f"## Destinataire (contact vérifié — source de vérité de l'identité)\n"
@@ -165,6 +167,7 @@ def _llm_judge(
     google_rating: float | None = None,
     google_reviews_count: int | None = None,
     followups: dict[str, str] | None = None,
+    industry: str | None = None,
 ) -> dict[str, Any]:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -173,7 +176,7 @@ def _llm_judge(
     system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
     user = _message_utilisateur_juge(
         body, subject, research_json, social_proof, contact,
-        google_rating, google_reviews_count, followups,
+        google_rating, google_reviews_count, followups, industry,
     )
     resp = client.messages.create(
         model=model,
@@ -240,6 +243,7 @@ async def compliance_check(
     google_rating: float | None = None,
     google_reviews_count: int | None = None,
     followups: dict[str, str] | None = None,
+    industry: str | None = None,
 ) -> ComplianceCheckOut:
     """Lance les 2 layers de compliance sur un draft donné.
 
@@ -317,20 +321,21 @@ async def compliance_check(
     # avril et jugé en mai doit être jugé sur MAI. Le décalage est réel — la
     # file attend parfois plusieurs jours entre WF-4 et WF-5.
     # ⚠️ `industry` N'EST PAS PASSÉ ICI, alors que `db.fenetre_saisonniere_ouverte`
-    # le passe. Trois lentilles d'un conseil de relecture ont examiné l'écart le
-    # 2026-09-07 et conclu la même chose : **inerte**, parce que
-    # `resoudre_metiers` accepte le paramètre et l'ignore (le repli
-    # `metier_depuis_industry` est écrit mais débranché, décision William du
-    # 2026-09-02, gardée par `test_le_repli_sur_industry_reste_debranche`).
+    # 🔴 L'ÉCART EST REFERMÉ LE 2026-09-14, et l'ancien commentaire disait
+    # l'inverse : « `resoudre_metiers` accepte le paramètre et l'ignore ». Ce
+    # n'est plus vrai depuis que le secteur COMPLÈTE le classement (a7cd38f) —
+    # la phrase était juste la veille et fausse le lendemain, ce qui est
+    # exactement comment un commentaire se met à mentir.
     #
-    # Et le piège n'est pas silencieux : rebrancher le repli fait ROUGIR ce
-    # test-là. La divergence est donc laissée telle quelle plutôt que corrigée
-    # à l'aveugle — la colonne `industry` n'est même pas dans le SELECT qui
-    # alimente ce chemin, l'aligner demanderait de la plomber jusqu'ici pour un
-    # paramètre que personne ne lit.
+    # Ce qui restait à faire était la plomberie décrite ici : `industry` n'était
+    # pas dans le SELECT de la route. Il y est. Sans lui, le juge classait
+    # « aucun métier » sous un courriel qui en nomme un — pour les fiches dont
+    # le métier ne vient QUE du secteur — et son contrôle de saison partait sur
+    # la mauvaise base.
     _r = resoudre_metiers(
         ((research_json or {}).get("services_offered")) or [],
         date.today(),
+        industry,
     )
     # 🔴 LE CONTRÔLE DE SAISON NE VAUT QUE POUR C ET D.
     #
@@ -434,7 +439,7 @@ async def compliance_check(
         try:
             llm_verdict = await asyncio.to_thread(
                 _llm_judge, body, subject, research_json, social_proof, contact, model,
-                2500, google_rating, google_reviews_count, followups,
+                2500, google_rating, google_reviews_count, followups, industry,
             )
         except Exception as e:  # noqa: BLE001
             llm_verdict = {"error": f"LLM judge failed: {type(e).__name__}: {e}"}
