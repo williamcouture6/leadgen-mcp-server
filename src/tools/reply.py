@@ -356,16 +356,26 @@ async def _add_to_suppression(
         return False
 
 
-async def _update_contact_status(contact_id: str, status: str) -> bool:
+async def _update_contact_status(
+    contact_id: str, status: str, *, raison: str | None = None
+) -> bool:
     """Retourne True si l'écriture est passée, False si l'exception a été
     avalée. Les appelants qui inscrivent une action au journal DOIVENT lire ce
     retour — une action journalisée sur une écriture ratée est un mensonge.
     Plus aucun appelant ne l'ignore depuis le 2026-08-26 : `unsubscribe` était
     la dernière, et sa voisine `_add_to_suppression` rend elle aussi un booléen
     désormais (trouvaille C6 du conseil PT1)."""
+    # 🔴 `raison` N'EST ÉCRITE QUE SI ELLE EST DONNÉE. Envoyer
+    # `disqualified_reason: None` à chaque appel effacerait la raison d'un
+    # contact écarté plus tôt — cette fonction sert aussi aux transitions
+    # ordinaires (`replied`, `contacted`). Un champ qui se vide tout seul est
+    # pire que pas de champ du tout.
+    patch: dict[str, Any] = {"status": status}
+    if raison:
+        patch["disqualified_reason"] = raison
     try:
         await db.update(
-            "contacts", {"status": status},
+            "contacts", patch,
             filters={"id": f"eq.{contact_id}"},
         )
         return True
@@ -993,7 +1003,17 @@ async def handle_reply(payload: HandleReplyIn) -> HandleReplyOut:
         # envoi, pendant que la trace affirme la porte fermée.
         actions.append(
             "contact_disqualified"
-            if await _update_contact_status(contact_id, "disqualified")
+            if await _update_contact_status(
+                contact_id, "disqualified",
+                # 🔴 LA RAISON QU'IL EST LE PLUS GRAVE DE PERDRE. Un refus
+                # explicite touche au CONSENTEMENT : sans trace, on ne peut ni
+                # prouver pourquoi on ne réécrit pas, ni empêcher qu'une
+                # session future « rouvre » ce contact en croyant réparer une
+                # erreur de scraping. Le texte nomme la source (WF-7) pour
+                # qu'on distingue un refus du prospect d'une décision de
+                # William ou d'un doublon fermé par la mécanique.
+                raison="reponse du prospect: pas interesse (classe par WF-7)",
+            )
             else "contact_disqualified_failed"
         )
         # Soft suppression : on évite de les re-contacter dans 6 mois.

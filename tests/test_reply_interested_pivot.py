@@ -741,7 +741,17 @@ async def test_le_contact_reste_disqualifie_et_la_conversation_froide(monkeypatc
     out = await reply.handle_reply(_payload(_REFUS_DOUX))
 
     assert "contact_disqualified" in out.actions_taken
-    assert ("contacts", {"status": "disqualified"}) in vu["updates"]
+    # 🔧 Le patch porte AUSSI `disqualified_reason` depuis le 2026-09-14
+    # (migration 0068) : on ne peut plus comparer le dictionnaire entier.
+    # L'assertion garde sa force — elle exige toujours une écriture sur
+    # `contacts` avec ce statut — et vérifie en plus que la raison voyage,
+    # sinon la colonne resterait vide et le défaut serait rouvert.
+    dq = [patch for table, patch in vu["updates"]
+          if table == "contacts" and patch.get("status") == "disqualified"]
+    assert dq, f"aucune disqualification écrite : {vu['updates']}"
+    assert dq[0].get("disqualified_reason"), (
+        f"disqualifié SANS raison : {dq[0]}"
+    )
     conversations = [row for table, row in vu["inserts"] if table == "conversations"]
     assert len(conversations) == 1
     assert conversations[0]["state"] == "cold"
@@ -781,7 +791,17 @@ async def test_une_disqualification_ratee_ne_sinscrit_pas_comme_faite(monkeypatc
     assert "contact_disqualified" not in out.actions_taken
     # L'écriture a bien été TENTÉE : le test doit rougir sur le journal, pas sur
     # une branche qui aurait simplement cessé d'écrire.
-    assert ("contacts", {"status": "disqualified"}) in vu["updates"]
+    # 🔧 Le patch porte AUSSI `disqualified_reason` depuis le 2026-09-14
+    # (migration 0068) : on ne peut plus comparer le dictionnaire entier.
+    # L'assertion garde sa force — elle exige toujours une écriture sur
+    # `contacts` avec ce statut — et vérifie en plus que la raison voyage,
+    # sinon la colonne resterait vide et le défaut serait rouvert.
+    dq = [patch for table, patch in vu["updates"]
+          if table == "contacts" and patch.get("status") == "disqualified"]
+    assert dq, f"aucune disqualification écrite : {vu['updates']}"
+    assert dq[0].get("disqualified_reason"), (
+        f"disqualifié SANS raison : {dq[0]}"
+    )
     # Le ping, lui, part quand même — c'est le seul moyen que William le voie.
     assert "slack_not_interested" in out.actions_taken
 
