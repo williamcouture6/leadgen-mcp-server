@@ -32,14 +32,18 @@ FEVRIER = date(2027, 2, 10)
             True,
             False,
             1,
-            False,
-            "repli d'avis + un seul service : « autant X que Y » est impossible "
-            "et « tu en couvres beaucoup » est faux",
+            True,
+            "🔴 RENVERSÉ LE 2026-09-14 : le repli d'avis avec un seul service "
+            "rendait C et D inservables, faute de phrase. William en a écrit "
+            "une — la 3ᵉ version du bloc 2, sur une supposition. Le motif du "
+            "refus a disparu.",
         ),
         (True, False, 2, True, "repli, mais deux services suffisent à l'énumération"),
         (True, True, 1, True, "un seul service, mais la citation d'avis passe : "
                               "l'énumération de repli ne sert pas"),
-        (False, False, 1, False, "les deux manques à la fois"),
+        (False, False, 1, False, "sans métier, rien ne rachète : c'est le seul "
+                                 "refus qui reste"),
+        (False, True, 9, False, "ni la note ni l'abondance ne remplacent {METIER}"),
     ],
 )
 def test_le_predicat(
@@ -81,7 +85,8 @@ def _company(services: list[str], note: float | None, avis: int | None) -> dict:
     "services,note,avis,servable",
     [
         (["Déneigement résidentiel", "Tonte de pelouse"], 4.8, 47, True),
-        (["Déneigement résidentiel"], 3.2, 4, False),  # repli + un seul service
+        # 🔴 `True` depuis le 2026-09-14 : la 3ᵉ version du bloc 2 existe.
+        (["Déneigement résidentiel"], 3.2, 4, True),
         (["Plomberie résidentielle", "Débouchage"], 4.9, 80, False),  # aucun métier
     ],
 )

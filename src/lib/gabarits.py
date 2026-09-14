@@ -90,23 +90,31 @@ def tete_fixe_servable(
     1. **Aucun métier reconnu** → `{METIER}` n'a rien à recevoir. Le rédacteur
        laisserait un blanc, ou piocherait un service au hasard.
 
-    2. **Citation d'avis refusée ET un seul service** → la version de repli de
+    2. ~~**Citation d'avis refusée ET un seul service**~~ → **LEVÉE le
+       2026-09-14.** Ce refus existait parce que la version de repli de
        `{ANCRE_CD}` demande « je vois que tu fais {ENUMERATION_SERVICES} » sous
-       la forme « autant X que Y pis Z », puis « On comprend que tu en couvres
-       beaucoup! ». Avec un seul libellé, la forme est impossible et la phrase
-       est fausse. Mesuré le 2026-09-07 : **6 entreprises** sur les 474
-       joignables ce jour-là.
+       la forme « autant X que Y pis Z » : avec un seul libellé la forme est
+       impossible et « On comprend que tu en couvres beaucoup! » est faux.
+
+       On refusait donc le GABARIT faute de PHRASE. William a écrit la phrase
+       manquante — une 3ᵉ version du bloc 2, bâtie sur une supposition :
+       « J'imagine qu'à la première bordée, ça rentre pas mal tout en même
+       temps! » (`lexique_metiers.phrase_du_rush`, une par métier). Le motif du
+       refus a disparu, le refus avec.
 
     A et B n'ont pas ce problème : leur ouvreur est GÉNÉRÉ, il s'adapte.
 
-    ⚠️ Ça coûte quelque chose, et c'est écrit dans le test : ces entreprises ne
-    peuvent plus tirer C ni D, donc la population des quatre bras n'est pas
-    exactement la même. Le biais est petit (~2 %), connu, et il évite un
-    courriel que le prospect verrait faux.
+    ⚠️ **NE PAS REJOUER LE RATTRAPAGE DE `messages.bras_eligibles` APRÈS CE
+    COMMIT.** Il se sert de cette fonction pour reconstituer un tirage PASSÉ ;
+    il est déjà appliqué (156/156 lignes le 2026-09-14, dont 4 en `AB`). Le
+    rejouer maintenant retirerait ces 4 lignes de leur vérité : au moment du
+    tirage, C et D leur étaient bel et bien refusés.
     """
-    if not metiers_reconnus:
-        return False
-    return citation_autorisee or nb_services >= 2
+    # 🔴 `citation_autorisee` et `nb_services` NE DÉCIDENT PLUS RIEN, et les
+    # paramètres restent pour que les deux appelants et le rattrapage gardent
+    # leur signature. Ne pas les retirer sans relire la note ci-dessus.
+    del citation_autorisee, nb_services
+    return bool(metiers_reconnus)
 
 
 def tete_fixe_servable_pour_entreprise(company: Mapping[str, Any]) -> bool:

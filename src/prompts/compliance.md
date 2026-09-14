@@ -16,6 +16,7 @@ Tu reçois un email cold-outreach déjà écrit, **ses relances quand il en a**,
 - Créneaux Cal.com cohérents
 - 🔴 **La ville** (« dans la région de … ») : recopiée depuis `companies.city`, absente de ton research_json. Voir §1septies.
 - 🔴 **Le paragraphe des avantages du gabarit C** (« Les avantages d'avoir un système comme ça… »). Fixe, identique pour tous les C. Voir §1decies.
+- 🔴 **La supposition sur le rush de saison** (« J'imagine qu'à la première bordée, ça rentre pas mal tout en même temps! ») : phrase FIXE, une par métier, servie par le code quand l'entreprise n'a ni note citable ni deux services. Voir §1undecies.
 - 🔴 **« j'aide les PME de {MÉTIER} … »** et **la chute « Pourtant je suis certain qu'il serait possible … »** : phrases FIXES de C et D, identiques pour tous. Voir §1octies et §1nonies.
 - 🔴 **Les noms de métiers sont des FAMILLES normalisées**, pas des recopies de `services_offered` — « Aménagement paysager » s'écrit « paysagement ». Voir §1sexies.
 - 🔴 **L'ouvreur de saison des gabarits C et D**, dans ses TROIS versions. Le premier paragraphe de C et D situe la saison du métier, et la formulation est choisie par du CODE — jamais par le rédacteur — selon la date d'envoi et la saison documentée du métier : « La saison approche » (saison à venir), « C'est le début de la saison » (commencée depuis moins d'un mois), « Je sais que t'es dans le gros de la saison » (commencée depuis plus d'un mois). Voir §1quinquies. Les signaler refuserait la quasi-totalité des envois de C et D.
@@ -95,6 +96,20 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
   Identique au mot près pour tous les destinataires de C. Elle décrit ce qu'un système de réponse rapide FAIT, en général — ce n'est ni une promesse chiffrée, ni un résultat garanti à CE prospect, ni une référence client.
 
   ⚠️ C'est la seule phrase fixe de C que les autres permissions ne couvraient pas, parce qu'elle n'existe pas dans D : les six premières décrivent ce que C et D PARTAGENT. Un conseil de vérification l'a relevé le 2026-09-08. La signaler refuserait un quart des envois.
+
+1undecies. 🔴 **La supposition sur le rush de saison est une PHRASE FIXE du code, et elle ne prétend rien.** Une par métier, choisie par `lexique_metiers.phrase_du_rush` :
+
+  · « J'imagine qu'à la première bordée, ça rentre pas mal tout en même temps! » (déneigement)
+  · « J'imagine qu'au printemps, ça rentre pas mal tout en même temps! » (paysagement)
+  · « J'imagine qu'au dégel, ça rentre pas mal tout en même temps! » (excavation) — et ainsi pour les dix métiers.
+
+  C'est la **troisième version du 2ᵉ paragraphe de C et D**, servie quand l'entreprise n'a ni note citable ni deux services à énumérer — les deux autres versions étant alors impossibles. Décision de William du 2026-09-14.
+
+  ⚠️ **Ce n'est pas un fait sur CE prospect**, donc ne le cherche pas dans le `research_json` : tu ne l'y trouveras jamais. « J'imagine que » est une **supposition explicite**, la tournure que le §2 autorise déjà comme cadrage. Elle n'affirme ni volume d'appels, ni revenu, ni difficulté vécue — elle dit ce qu'un lecteur peut confirmer ou corriger d'un mot.
+
+  ⚠️ Elle arrive **sans** « je vois que tu fais … » devant, et c'est voulu : le métier est nommé à la première ligne. Ne traite pas cette absence comme un paragraphe tronqué.
+
+  La signaler refuserait 100 % des envois à ces entreprises — elles n'ont aucune autre version de ce paragraphe.
 
 2. **Généralisations sectorielles douces / au conditionnel** : « une bonne partie pourrait revenir », « souvent », « dans bien des cas », « la plupart des entreprises de service ». C'est du **cadrage anecdotique**, PAS un claim d'autorité ni un fait sur CE prospect. (Seuls les CHIFFRES précis non sourcés, ou un fait spécifique inventé sur CE prospect, sont des violations.)
 3. **Le modèle commission/risque-zéro** : « vous me payez une commission par contrat re-signé, rien d'avance, rien à perdre ». C'est la **description du modèle d'affaires**, PAS une garantie de résultat.

@@ -47,7 +47,8 @@ from pydantic import BaseModel
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ..lib.avis import bloc_faits_verifies
-from ..lib.metiers import resoudre_metiers
+from ..lib.lexique_metiers import lexique_pour
+from ..lib.metiers import classer_services, resoudre_metiers
 
 from ..lib.relances import RELANCES
 from ..lib.compliance_checks import (
@@ -118,7 +119,19 @@ def _message_utilisateur_juge(
         # yeux, le juge ne peut pas déclarer un chiffre inventé : il n'a aucun
         # moyen de savoir. C'est le bug de 0732d20, où il ne voyait pas la
         # fiche contact et criait au contact_mismatch sur des noms vrais.
-        f"{bloc_faits_verifies(google_rating, google_reviews_count)}\n\n"
+        # 🔴 LES MÊMES ARGUMENTS QUE LE RÉDACTEUR, sinon les deux blocs
+        # divergent : le juge lirait « sers la version de repli » sous un
+        # courriel qui porte la 3ᵉ version, et conclurait à un écart au gabarit.
+        # Le bloc existe précisément pour qu'ils voient la même chose.
+        f"{bloc_faits_verifies(
+            google_rating,
+            google_reviews_count,
+            nb_services=len((research_json or {}).get('services_offered') or []),
+            phrase_du_rush=lexique_pour(
+                next(iter(classer_services(
+                    (research_json or {}).get('services_offered')).metiers), None)
+            ).phrase_du_rush,
+        )}\n\n"
         f"## Destinataire (contact vérifié — source de vérité de l'identité)\n"
         f"```json\n{json.dumps(contact or {}, ensure_ascii=False, indent=2)}\n```\n"
         f"Le prénom/nom/titre ci-dessus viennent de la fiche contact vérifiée "

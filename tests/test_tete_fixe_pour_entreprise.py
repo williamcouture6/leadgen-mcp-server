@@ -50,14 +50,22 @@ def test_metier_reconnu_et_citation_autorisee() -> None:
 
 
 def test_metier_reconnu_citation_refusee_un_seul_service() -> None:
-    """🔴 Le cas mesuré le 2026-09-07 sur 6 entreprises.
+    """🔴 LE CAS QUI A CHANGÉ DE RÉPONSE le 2026-09-14.
 
-    Sans citation d'avis, le repli de `{ANCRE_CD}` écrit « autant X que Y pis Z »
-    puis « tu en couvres beaucoup! ». Avec UN libellé, la forme est impossible et
-    la phrase est fausse. C et D deviennent inservables.
+    Mesuré le 2026-09-07 sur 6 entreprises, 7 le 2026-09-14 : sans citation
+    d'avis, le repli de `{ANCRE_CD}` écrit « autant X que Y pis Z » puis « tu en
+    couvres beaucoup! ». Avec UN libellé, la forme est impossible.
+
+    On refusait le GABARIT faute de PHRASE, et ces entreprises ne pouvaient
+    tirer que A ou B — ~2 % du test A/B amputé. William a écrit la phrase
+    manquante (3ᵉ version du bloc 2, sur une supposition), donc le refus tombe.
+
+    ⚠️ Ce test garde la trace du renversement au lieu d'être supprimé : le jour
+    où quelqu'un relit `bras_eligibles` et voit 4 lignes en `AB`, la raison est
+    ici.
     """
     fiche = _fiche(["Déneigement résidentiel"], **AVIS_REFUSE)
-    assert tete_fixe_servable_pour_entreprise(fiche) is False
+    assert tete_fixe_servable_pour_entreprise(fiche) is True
 
 
 def test_metier_reconnu_citation_refusee_deux_services() -> None:

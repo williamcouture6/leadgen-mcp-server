@@ -27,6 +27,10 @@ PROMPT = (Path(__file__).parent.parent / "src/prompts/compliance.md").read_text(
 RANG_LATIN = [
     "1", "1bis", "1ter", "1quater", "1quinquies",
     "1sexies", "1septies", "1octies", "1nonies", "1decies",
+    # 🔴 Le 2026-09-14 : la supposition sur le rush de saison, 3ᵉ version du
+    # 2ᵉ paragraphe de C et D. Allonger cette liste fait PARTIE d'ajouter une
+    # permission — sans ça le test tombe, ce qui est exactement le but.
+    "1undecies",
 ]
 
 

@@ -115,8 +115,63 @@ def formater_note(google_rating: float) -> str:
     return f"{round(float(google_rating), 1):.1f}".replace(".", ",")
 
 
+LN = chr(10)
+
+
+def _consigne_de_repli(nb_services: int | None, phrase_du_rush: str | None) -> str:
+    """Quelle version du 2ᵉ paragraphe servir quand la note ne se cite pas.
+
+    🔴 IL Y EN A TROIS DEPUIS LE 2026-09-14, et la troisième est née d'un trou
+    qu'on fermait jusque-là en REFUSANT le gabarit. La version de repli demande
+    « je vois que tu fais autant X que Y pis Z » : avec un seul service, la
+    forme est impossible et « on comprend que tu en couvres beaucoup! » est
+    faux. `tete_fixe_servable` écartait donc C et D pour ces entreprises — 7 en
+    base, soit ~2 % du test A/B qui ne pouvaient tirer que A ou B.
+
+    William a choisi la supposition (« J'imagine qu'à la première bordée, ça
+    rentre pas mal tout en même temps! ») parmi trois formes lues côte à côte.
+    Elle marche parce qu'elle n'affirme rien sur l'entreprise : c'est sa
+    tournure habituelle, et la seule des trois qui ne répète pas le métier déjà
+    nommé à la première ligne.
+
+    ⚠️ `nb_services is None` = l'appelant ne sait pas. On rend alors l'ancienne
+    consigne : elle est vraie dans le cas général, et fabriquer une supposition
+    sans savoir combien de services existent l'enverrait à une entreprise qui a
+    de quoi énumérer.
+    """
+    repli_ordinaire = (
+        "  Sers la version de repli du bloc 2 : la phrase d'argument reste, "
+        "la citation chiffrée saute."
+    )
+    if nb_services is None or nb_services >= 2 or not phrase_du_rush:
+        return repli_ordinaire
+    return (
+        f"  ⚠️ **Un seul service ({nb_services}) : l'énumération de repli est "
+        "IMPOSSIBLE.**"
+        + LN
+        + "  Sers la TROISIÈME version du bloc 2, celle de la supposition. Sa "
+        "première phrase"
+        + LN
+        + "  est écrite — recopie-la telle quelle :"
+        + LN
+        + f"      {phrase_du_rush}"
+        + LN
+        + "  Puis enchaîne sur « Pourtant je suis certain qu'il serait "
+        "possible… », mot pour"
+        + LN
+        + "  mot comme dans les deux autres versions. N'écris PAS « je vois que "
+        "tu fais … » :"
+        + LN
+        + "  le métier est déjà nommé à la première ligne."
+    )
+
+
 def bloc_faits_verifies(
-    google_rating: float | None, google_reviews_count: int | None
+    google_rating: float | None,
+    google_reviews_count: int | None,
+    *,
+    nb_services: int | None = None,
+    phrase_du_rush: str | None = None,
 ) -> str:
     """Le bloc court et distinct, servi au rédacteur et au juge.
 
@@ -133,8 +188,9 @@ def bloc_faits_verifies(
         return (
             f"{entete}\n"
             "- Avis Google : **aucune note et aucun avis en base pour cette entreprise.**\n"
-            "  N'écris AUCUN chiffre d'étoiles ni d'avis. Sers la version de repli du\n"
-            "  bloc 2 : la phrase d'argument reste, la citation chiffrée saute."
+            "  N'écris AUCUN chiffre d'étoiles ni d'avis."
+            + LN
+            + _consigne_de_repli(nb_services, phrase_du_rush)
         )
 
     note = formater_note(google_rating) if google_rating is not None else "aucune note"
@@ -154,8 +210,9 @@ def bloc_faits_verifies(
             f"  ❌ Sous le plancher de qualité ({PLANCHER_NB_AVIS} avis et "
             f"{formater_note(PLANCHER_NOTE)} étoiles).\n"
             "  N'écris AUCUN chiffre d'étoiles ni d'avis : lui renvoyer sa propre\n"
-            "  mauvaise note en pleine face ruine le courriel. Sers la version de\n"
-            "  repli du bloc 2 — la phrase d'argument reste, la citation saute."
+            "  mauvaise note en pleine face ruine le courriel."
+            + LN
+            + _consigne_de_repli(nb_services, phrase_du_rush)
         )
 
     return (

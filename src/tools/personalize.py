@@ -31,6 +31,7 @@ from ..lib.metiers import (
     MOMENT_A_VENIR,
     MOMENT_DEBUT,
     MOMENT_EN_COURS,
+    classer_services,
     resoudre_metiers,
 )
 from . import research as research_tools
@@ -563,7 +564,27 @@ def _format_input_for_llm(
                 gabarit=template_choice,
             ),
             "\n" + bloc_faits_verifies(
-                company.get("google_rating"), company.get("google_reviews_count")
+                company.get("google_rating"),
+                company.get("google_reviews_count"),
+                # 🔴 LE NOMBRE DE SERVICES DÉCIDE DE LA 3ᵉ VERSION DU BLOC 2.
+                # Sans lui, `bloc_faits_verifies` ne sait pas que l'énumération
+                # de repli est impossible et demande une forme (« autant X que
+                # Y ») que la fiche ne peut pas produire.
+                nb_services=len(research.get("services_offered") or []),
+                # ⚠️ Le DOMINANT, jamais la scène — et ce n'est pas un oubli.
+                # Le dominant ne dépend pas de la date : le juge, qui relit le
+                # courriel plus tard, en retrouve exactement la même phrase.
+                # Sur les 7 entreprises concernées les deux coïncident (elles
+                # n'ont qu'un métier), donc l'écart ne se voit qu'au rejeu.
+                # `metiers[0]` EST le dominant — `Classement` n'expose pas
+                # d'attribut `dominant`, contrairement à `MetiersResolus`. Le
+                # tuple vide (aucun métier reconnu) rend le lexique de repli,
+                # dont la phrase ne partira jamais : C et D sont déjà refusés
+                # dans ce cas.
+                phrase_du_rush=lexique_pour(
+                    next(iter(classer_services(
+                        research.get("services_offered")).metiers), None)
+                ).phrase_du_rush,
             ),
         ]
 

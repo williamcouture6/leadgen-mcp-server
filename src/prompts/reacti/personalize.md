@@ -218,7 +218,7 @@ Compté en mois, il aurait basculé un mois trop tôt sur la troisième version 
 et décembre, c'est 138 des 141 joignables de l'hiver. La fenêtre se compte en
 mois, la phrase en jours.
 
-## `{ANCRE_CD}` — deux versions, selon les Faits vérifiés
+## `{ANCRE_CD}` — trois versions, selon les Faits vérifiés
 
 **Si la citation est AUTORISÉE :**
 ```
@@ -235,6 +235,32 @@ que tu en couvres beaucoup! Pourtant je suis certain qu'il serait possible de
 te simplifier la vie avec la gestion de tes clients et t'en amener plus en
 même temps.
 ```
+
+**Si elle ne l'est PAS et qu'il n'y a qu'UN SEUL service** (ou aucun) :
+```
+{PHRASE_DU_RUSH} Pourtant je suis certain qu'il serait possible de te
+simplifier la vie avec la gestion de tes clients et t'en amener plus en même
+temps.
+```
+
+🔴 **Cette troisième version est ADOPTÉE — décision William du 2026-09-14**, qui
+l'a lue à côté de deux autres formes et a répondu « la 2 ». Elle ne se retouche
+pas plus que les deux premières.
+
+**Tu n'écris PAS `{PHRASE_DU_RUSH}` toi-même** : le bloc « Faits vérifiés » te la
+sert toute faite, une par métier, et te dit quand l'employer. Recopie-la.
+Exemples de ce qu'il sert : « J'imagine qu'à la première bordée, ça rentre pas
+mal tout en même temps! » (déneigement), « J'imagine qu'au printemps, ça rentre
+pas mal tout en même temps! » (paysagement).
+
+⚠️ **Ce paragraphe-là NE COMMENCE PAS par « Avec ton entreprise, je vois que tu
+fais … ».** Les deux autres versions le font parce qu'elles apportent un fait
+neuf — une note, une liste de services. Ici il n'y a rien à apporter : le métier
+est **déjà nommé à la première ligne**, le redire sonne comme un gabarit.
+
+**Pourquoi elle existe.** Sans elle, ces entreprises ne recevaient ni C ni D du
+tout : `tete_fixe_servable` leur refusait le gabarit, faute de phrase possible.
+7 entreprises en base au 2026-09-14, et elles ne pouvaient tirer que A ou B.
 
 ⚠️ La version de repli ne se contente pas de RETIRER le chiffre : elle met les
 **services réels** à la place. Un repli générique viderait le seul paragraphe
@@ -272,11 +298,16 @@ regroupent, le reste se rattache avec « pis » :
 Quand aucun métier ne revient deux fois, la forme reste « autant X que Y pis
 Z » et rien ne change.
 
-🔴 **Si tu reçois C ou D, `services_offered` porte au moins deux libellés** —
-sinon le code ne t'aurait pas donné ce gabarit. La forme « autant X que Y » est
-donc toujours possible. Tu n'as **jamais** à l'adapter à un service unique, et
-tu ne dois surtout pas gonfler une liste courte en découpant un libellé en deux
-pour atteindre le compte : ce serait inventer des services.
+🔴 **Ne gonfle JAMAIS une liste courte pour atteindre le compte.** Découper un
+libellé en deux pour pouvoir écrire « autant X que Y », ce serait inventer des
+services. Quand la liste est trop courte pour l'énumération, la troisième
+version ci-dessus existe précisément pour ça — et le bloc « Faits vérifiés » te
+dit laquelle des trois employer. Tu n'as donc jamais à improviser.
+
+⚠️ Cette consigne disait, jusqu'au 2026-09-14 : « Si tu reçois C ou D,
+`services_offered` porte au moins deux libellés — sinon le code ne t'aurait pas
+donné ce gabarit. » C'était vrai tant que le code REFUSAIT C et D aux fiches à
+un seul service. Ça ne l'est plus.
 
 ⚠️ La phrase du milieu change entre les deux versions et c'est voulu : « tes
 clients aiment ton travail » découle d'une note, « tu en couvres beaucoup »
