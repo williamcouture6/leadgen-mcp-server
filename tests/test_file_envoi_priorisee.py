@@ -73,7 +73,13 @@ def _monde(
             return []
         return []
 
+    async def fake_select_all(table, *, order=None, params=None, **kw):
+        # `select_all` pagine pour ne pas se faire couper à 1000 lignes
+        # (AC1c) ; pour un faux, il rend la même chose que `select`.
+        return await fake_select(table, params)
+
     monkeypatch.setattr(real_db, "select", fake_select)
+    monkeypatch.setattr(real_db, "select_all", fake_select_all)
 
 
 async def test_la_tete_de_file_passe_devant_un_meilleur_score(

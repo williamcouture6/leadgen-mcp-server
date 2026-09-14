@@ -97,3 +97,42 @@ def test_lalternance_couvre_tous_les_bras_eligibles() -> None:
     eligibles = bras_eligibles("ABCD")
     servis = {bras_du_lot("ABCD", rang) for rang in range(8)}
     assert servis == set(eligibles)
+
+
+@pytest.mark.parametrize("consigne", ["DC", "BA", "CA", "DCBA", "DB"])
+def test_le_texte_range_est_toujours_dans_lordre_canonique(consigne) -> None:
+    """🔴 La contrainte `messages_bras_eligibles_domaine` exige `^A?B?C?D?$` —
+    les lettres dans l'ordre. Or `bras_demandes` PRÉSERVE l'ordre de
+    l'appelant : `dict.fromkeys` dédoublonne, il ne trie pas.
+
+    Une consigne `"DC"` — parfaitement licite au regard de la docstring, qui
+    présente le paramètre comme une LISTE de bras — produisait donc
+    `bras_eligibles='DC'`, refusé par la base. Chaque contact du lot levait à
+    l'insert, `drafts == 0`, `failed == limit`, zéro brouillon tous les jours.
+    Et l'alerte de famine aurait crié « la file est bouchée », pas « la
+    consigne est dans le mauvais ordre ».
+
+    ⚠️ L'ORDRE D'ALTERNANCE, LUI, RESTE CELUI DE L'APPELANT : `"DC"` doit
+    servir D au rang 0. Seul le texte RANGÉ EN BASE est canonique — voir le
+    test suivant.
+    """
+    import re
+
+    from src.lib.gabarits import bras_eligibles_texte
+
+    texte = bras_eligibles_texte(consigne)
+    assert texte is not None
+    assert re.fullmatch(r"A?B?C?D?", texte), (
+        f"{consigne!r} rend {texte!r}, que la contrainte SQL refuse"
+    )
+    assert len(texte) >= 1
+
+
+def test_lordre_dalternance_reste_celui_de_lappelant() -> None:
+    """Contrôle négatif du test précédent : canoniser le TEXTE ne doit pas
+    canoniser le TIRAGE. Demander « CD » sert C en premier, « DC » sert D."""
+    from src.lib.gabarits import bras_du_lot, bras_eligibles
+
+    assert bras_du_lot("DC", 0) == "D"
+    assert bras_du_lot("CD", 0) == "C"
+    assert bras_eligibles("DC") == ("D", "C")

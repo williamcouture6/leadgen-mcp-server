@@ -63,7 +63,7 @@ CONTACTS = [
 @pytest.fixture
 def base(monkeypatch):
     """Remplace les trois lectures Supabase de la sélection."""
-    async def _select(table, params=None):
+    async def _select(table, params=None, schema=None):
         if table == "contacts":
             return [dict(c) for c in CONTACTS]
         if table == "companies":

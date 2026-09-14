@@ -65,6 +65,17 @@ class _BaseDeuxFreres:
             {"id": "c9", "company_id": "co9"},
         ]
 
+    async def select_all(self, table: str, *, order: str,
+                         params: dict[str, Any] | None = None,
+                         page_size: int = 1000, schema: str | None = None):
+        """Les lectures non bornees passent par select_all (plafond PostgREST).
+
+        Ce faux ne pagine pas : il rend tout d un coup. La pagination elle-meme
+        est tenue par tests/test_supabase_plafond_1000.py ; ici on verifie
+        seulement que l appelant demande bien la lecture NON BORNEE.
+        """
+        return await self.select(table, params or {})
+
     async def select(self, table: str, params: dict[str, Any]) -> list[dict[str, Any]]:
         if table == "contacts" and "limit" in params:
             deb = int(params.get("offset", 0))
@@ -139,4 +150,50 @@ async def test_un_brouillon_retire_libere_lentreprise(monkeypatch, _decembre) ->
     retenus = {x["contact"]["id"] for x in lot}
     assert retenus == {"c2", "c9"}, (
         f"un brouillon retire ne doit bloquer personne, obtenu {retenus}"
+    )
+
+
+class _BaseQuiTronque(_BaseDeuxFreres):
+    """PostgREST coupe TOUTE reponse a 1000 lignes, sans rien signaler.
+
+    Ce faux coupe a 1 pour rendre le defaut visible sur un petit decor : si le
+    code appelait `select` au lieu de `select_all`, la lecture des freres
+    perdrait des lignes et l entreprise deja demarchee redeviendrait eligible —
+    en silence, le defaut meme que ce module referme.
+    """
+
+    PLAFOND = 1
+
+    async def select(self, table: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        lignes = await super().select(table, params)
+        return lignes[: self.PLAFOND]
+
+    async def select_all(self, table: str, *, order: str, params=None,
+                         page_size: int = 1000, schema: str | None = None):
+        # La vraie `select_all` pagine et ne perd rien : on rend tout.
+        return await _BaseDeuxFreres.select(self, table, params or {})
+
+
+@pytest.mark.asyncio
+async def test_la_lecture_des_freres_ne_se_fait_pas_couper(monkeypatch, _decembre) -> None:
+    """🔴 Le plafond de 1000 lignes de PostgREST, applique a la lecture des freres.
+
+    Mesure du 2026-09-13 : 1,27 contact par entreprise, donc la coupe mord vers
+    790 entreprises en file — environ 2,5 fois celle d aujourd hui. Elle ne
+    previent pas : la liste revient simplement plus courte.
+
+    Deux consequences, toutes deux muettes : une entreprise deja demarchee
+    redevient eligible, et un contact de la page tombe hors des 1000 n a plus
+    son propre message interrogé, donc il est RE-REDIGE — une regression par
+    rapport a la version qui interrogeait directement les ids de la page.
+    """
+    faux = _BaseQuiTronque()
+    monkeypatch.setattr(db_tools, "db", faux)
+
+    lot = await db_tools.list_contacts_to_personalize(limit=10, track="agence-ia")
+
+    retenus = {x["contact"]["id"] for x in lot}
+    assert "c2" not in retenus, (
+        "la lecture des freres s est fait couper : l entreprise deja servie "
+        "est redevenue eligible"
     )

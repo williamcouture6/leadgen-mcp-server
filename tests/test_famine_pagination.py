@@ -60,6 +60,17 @@ class _FausseBase:
             for i in range(total)
         ]
 
+    async def select_all(self, table: str, *, order: str,
+                         params: dict[str, Any] | None = None,
+                         page_size: int = 1000, schema: str | None = None):
+        """Les lectures non bornees passent par select_all (plafond PostgREST).
+
+        Ce faux ne pagine pas : il rend tout d un coup. La pagination elle-meme
+        est tenue par tests/test_supabase_plafond_1000.py ; ici on verifie
+        seulement que l appelant demande bien la lecture NON BORNEE.
+        """
+        return await self.select(table, params or {})
+
     async def select(self, table: str, params: dict[str, Any]) -> list[dict[str, Any]]:
         if table == "contacts" and "company_id" in params:
             # La lecture des FRERES : tous les contacts des entreprises

@@ -817,7 +817,10 @@ async def list_contacts_to_personalize(
     On filtre côté Python plutôt que via une jointure PostgREST compliquée :
     1) On récupère les contacts avec email + status='new' ou 'ready'.
     2) On joint manuellement avec companies.research_json.
-    3) On exclut ceux qui ont déjà un message outbound NON abandonné (tout
+    3) On exclut ceux qui ont déjà un message outbound VIVANT — et, depuis le
+       2026-09-10, toute ENTREPRISE dont un contact en a un : `max_per_company`
+       ne vaut qu'à l'intérieur d'un lot, donc deux lots consécutifs
+       repiochaient chez la même boîte (PROGAZON en avait reçu quatre) NON abandonné (tout
        status sauf 'failed' — voir le commentaire sur la requête messages).
     4) On garde les top-N contacts par company selon priorité.
     """
@@ -1055,42 +1058,39 @@ async def _retenir(
     # lit la sélection. Déduire l'exclusion des contacts de la page raterait
     # exactement le cas dangereux — celui où l'entreprise a déjà reçu son
     # courriel.
-    # ⚠️ Par TRANCHES : ce filtre porte sur toutes les entreprises de la file
-    # lue en entier (345 contacts au 2026-09-09, et ça grossit). Un `in.(...)`
-    # d'un seul bloc finirait en URL trop longue, donc en 414 muet — et un
-    # frère manquant ici, c'est une entreprise qui reçoit un deuxième courriel.
-    freres = await _select_par_tranches(
+    #
+    # ⚠️ `select_all` ET PAS `select`. PostgREST coupe TOUTE réponse à 1000
+    # lignes sans rien signaler (voir supabase_client), et cette lecture-ci
+    # grossit avec la file : les pages sont accumulées, donc jusqu'à
+    # MAX_PAGES_SELECTION * taille_page entreprises candidates. Au ratio mesuré
+    # de 1,27 contact par entreprise, la coupe mord vers 790 entreprises en
+    # file — ~2,5 fois celle d'aujourd'hui.
+    #
+    # Ce que la troncature ferait, et personne ne le verrait : `company_par_contact`
+    # amputé, donc (1) une entreprise déjà démarchée redevient éligible — le
+    # défaut même que ce bloc referme — et (2) un contact de la page tombé hors
+    # des 1000 n'a plus son propre message interrogé, donc il est RE-RÉDIGÉ.
+    # Le second est une régression par rapport à l'ancienne version, qui
+    # interrogeait directement les ids de la page.
+    freres = await db.select_all(
         "contacts",
-        cle="company_id",
-        ids=company_ids,
-        # ⚠️ NON paginée, à dessein. Une ligne manquante ici vaudrait un
-        # DEUXIÈME courriel froid à la même boîte — mais une tranche fait 120
-        # entreprises, et la base mesure 1,27 contact par entreprise (max 13) :
-        # ~150 lignes, loin du plafond de 1000. La paginer casserait le faux
-        # `select` de `test_une_entreprise_un_courriel`, qui distingue les deux
-        # requêtes sur `contacts` par la présence de `limit`. La garde de
-        # `_select_par_tranches` crie si une tranche revient pleine.
-        params={"select": "id,company_id"},
+        order="id",
+        params={
+            "select": "id,company_id",
+            "company_id": f"in.({','.join(company_ids)})",
+        },
     )
     company_par_contact = {f["id"]: f["company_id"] for f in freres}
 
     # `status=not.in.(failed)` : un message ABANDONNÉ ne gèle ni son contact ni
     # son entreprise. 'failed' est la façon PRÉVUE de retirer un brouillon à la
     # main ; bloquer dessus gèlerait toute la boîte au lieu de la libérer.
-    existing_msgs = await _select_par_tranches(
+    existing_msgs = await db.select_all(
         "messages",
-        cle="contact_id",
-        # 🔴 TOUS LES FRÈRES, pas les contacts de la page. `send.py` fait passer
-        # un contact poussé en `status='contacted'` : le frère DÉJÀ SERVI a donc
-        # quitté la file que lit la sélection. Interroger seulement la page
-        # raterait exactement le cas dangereux — l'entreprise qui a déjà reçu
-        # son courriel. C'est le cœur du test `test_une_entreprise_un_courriel`.
-        ids=list(company_par_contact),
-        # `order` → tranche PAGINÉE (et non `select_all`, à dessein : les faux
-        # `select` des tests ne connaissent pas `select_all`). Voir la docstring.
         order="id",
         params={
             "select": "contact_id",
+            "contact_id": f"in.({','.join(company_par_contact)})",
             "direction": "eq.outbound",
             "status": "not.in.(failed)",
         },

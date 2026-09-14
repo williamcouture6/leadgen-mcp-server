@@ -212,3 +212,53 @@ async def test_un_contact_saute_ne_consomme_pas_de_bras(monkeypatch) -> None:
     # Quatre brouillons ecrits sur six contacts : les quatre bras, une fois
     # chacun. Avec l ancien `enumerate`, on aurait eu A, C, A, C.
     assert servis == ["A", "B", "C", "D"]
+
+
+async def test_les_compteurs_de_sortie_ne_dependent_pas_de_lecriture(monkeypatch) -> None:
+    """🔴 Le rang et les compteurs de sortie sont DEUX choses.
+
+    En insérant `if res.message_id: rang += 1` juste après `if res.status ==
+    "ok": drafts += 1`, la chaîne `elif/else` qui pendait au STATUT s'est
+    retrouvée rebranchée sur l'ÉCRITURE. Python n'y voit rien, et la suite non
+    plus.
+
+    Conséquence en mode `persist=False` — le mode QA annoncé par `RunWf4In` :
+    chaque contact rend `status="ok"` sans `message_id`, donc `drafts += 1` ET
+    `failed += 1`. Un lot parfaitement sain se déclare entièrement en échec, et
+    `processed != drafts + skipped + failed`.
+    """
+    from src import http_api
+    from src.tools import db as db_tools
+
+    async def _backlog(*, limit, max_per_company, track):
+        return [
+            {"contact": {"id": f"c{i}", "email": f"c{i}@test.invalid", "company_id": f"e{i}"},
+             "company": {"id": f"e{i}", "name": f"E{i}", "track": track, "research_json": {}}}
+            for i in range(4)
+        ]
+
+    async def _compteur(track: str) -> int:
+        return 0
+
+    async def _personalize_one(contact_row, company_row, *, template_choice, **kw):
+        # persist=False : le rédacteur réussit, mais rien n'est inséré.
+        return http_api.PersonalizeContactOut(
+            contact_id=contact_row["id"], status="ok", message_id=None,
+        )
+
+    monkeypatch.setattr(db_tools, "list_contacts_to_personalize", _backlog)
+    monkeypatch.setattr(http_api, "_personalize_one", _personalize_one)
+    monkeypatch.setattr(http_api, "_bras_deja_servis", _compteur)
+    monkeypatch.setattr(http_api, "_tete_fixe_servable", lambda company: True)
+    monkeypatch.setattr(http_api, "_tombe_sur_le_repli_du_lexique", lambda company: False)
+    monkeypatch.setattr(http_api, "_load_client_references", lambda: [])
+
+    out = await http_api._run_wf4(
+        http_api.RunWf4In(limit=4, template_choice="ABCD", track="agence-ia", persist=False)
+    )
+
+    assert out.failed == 0, f"un lot sain se declare {out.failed} echecs"
+    assert out.drafts_created == 4
+    assert out.processed == out.drafts_created + out.skipped + out.failed, (
+        f"processed={out.processed} != {out.drafts_created}+{out.skipped}+{out.failed}"
+    )

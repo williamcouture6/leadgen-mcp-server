@@ -27,7 +27,7 @@ async def test_le_select_des_companies_ramene_les_avis(monkeypatch: pytest.Monke
     le reste du câblage lit `None` en silence."""
     captures: dict[str, str] = {}
 
-    async def fake_select(table: str, params: dict[str, Any] | None = None) -> list[dict]:
+    async def fake_select(table: str, params: dict[str, Any] | None = None, schema=None) -> list[dict]:
         params = params or {}
         if table == "contacts":
             return [{"id": "ct-1", "company_id": "co-1", "email": "a@ex.ca", "status": "new"}]
