@@ -95,7 +95,7 @@ class SendMessageIn(BaseModel):
 
 class SendMessageOut(BaseModel):
     message_id: str
-    status: str  # ok | skipped_warmup | skipped_not_eligible | skipped_suppressed | skipped_platform_domain | error
+    status: str  # ok | skipped_warmup | skipped_not_eligible | skipped_suppressed | skipped_platform_domain | skipped_contact_inactif | error
     provider_message_id: str | None = None
     skipped_reason: str | None = None
     error_text: str | None = None
@@ -190,6 +190,20 @@ async def _is_suppressed(email: str | None, domain: str | None) -> tuple[bool, s
 # Core
 # ----------------------------------------------------------------------
 
+# 🔴 LA définition de « pas encore démarché », partagée par la garde 3a et par
+# le flip vers `contacted`. Les deux DOIVENT lire la même chose : si la garde
+# refusait un statut que le flip considère encore démarchable (ou l'inverse),
+# un message pourrait être refusé pour un contact que le code vient lui-même de
+# juger envoyable. Ne pas réinliner ce triplet.
+#
+# 📏 C'est une liste BLANCHE : tout ce qui n'y figure pas bloque l'envoi.
+# `contact_status` compte aujourd'hui dix valeurs ; les sept autres
+# (`contacted`, `replied`, `qualified`, `booked`, `disqualified`, `opted_out`,
+# `bounced`) désignent toutes quelqu'un à qui on a déjà écrit, qui a déjà
+# répondu, ou qu'on a écarté.
+CONTACT_STATUTS_DEMARCHABLES: frozenset[str] = frozenset({"new", "ready", "researching"})
+
+
 async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     """Push UN draft à Instantly. Idempotent par message_id : si la message
     n'est plus en status='draft', on skip (évite double-push si retry n8n).
@@ -273,7 +287,10 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
     contact_rows = await db.select(
         "contacts",
         params={
-            "select": "id,first_name,last_name,email,company_id",
+            # `status` n'est PAS décoratif : il porte la garde 3a ci-dessous.
+            # Le retirer la rendrait inerte (elle lirait None et laisserait tout
+            # passer) — c'est tenu par test_send_garde_contact_inactif.py.
+            "select": "id,first_name,last_name,email,company_id,status",
             "id": f"eq.{contact_id}",
             "limit": "1",
         },
@@ -290,6 +307,52 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
         params={"select": "name,domain", "id": f"eq.{contact['company_id']}", "limit": "1"},
     ) if contact.get("company_id") else []
     company = company_rows[0] if company_rows else {}
+
+    # 3a) Defense — le contact doit encore être démarchable.
+    #
+    # 🔴 CETTE GARDE A MANQUÉ PENDANT TOUT LE PROJET. `send.py` ÉCRIT
+    # `contacts.status` après un push, mais ne l'avait jamais LU avant. Mettre
+    # un contact en `disqualified` ne bloquait donc rien : mesuré le
+    # 2026-09-10, un brouillon vers l'adresse personnelle de William est resté
+    # armé alors que le contact était disqualifié depuis une heure. Il avait
+    # fallu passer par `suppression_list` pour le neutraliser vraiment.
+    #
+    # 📏 LISTE BLANCHE, jamais liste noire. Un push est irréversible et part
+    # vers l'extérieur : sur une permission, on refuse par défaut. Une valeur
+    # ajoutée un jour à l'enum `contact_status` sera bloquée tant que personne
+    # ne l'aura autorisée, au lieu de passer en silence.
+    #
+    # ✅ Le triplet est celui du flip `contacted` plus bas — la garde et le
+    # flip partagent ainsi UNE définition de « pas encore démarché ».
+    #
+    # ⚠️ Il ne peut pas bloquer une reprise : le flip vers `contacted` n'a lieu
+    # qu'après que le message ait quitté `draft`, et l'étape 1 écarte déjà tout
+    # message non-`draft`.
+    #
+    # ⚠️ `None` = la colonne est absente de la projection, donc la garde ne
+    # SAIT pas — on laisse passer, les autres gardes tiennent. Une valeur
+    # présente mais inconnue, elle, bloque.
+    statut_contact = contact.get("status")
+    if statut_contact is not None and statut_contact not in CONTACT_STATUTS_DEMARCHABLES:
+        motif = f"contact.status={statut_contact!r} (démarchables : " +                 ", ".join(sorted(CONTACT_STATUTS_DEMARCHABLES)) + ")"
+        # Terminal, comme suppression_list : un skip qui laisse le message en
+        # `draft` le ferait squatter la tête de la file FIFO à chaque passe.
+        if not payload.dry_run:
+            try:
+                await db.update(
+                    "messages",
+                    {"status": "failed", "compliance_notes": (
+                        (msg.get("compliance_notes") or "")
+                        + f" | send_blocked: contact_inactif ({statut_contact})"
+                    ).strip(" |")},
+                    filters={"id": f"eq.{payload.message_id}"},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return SendMessageOut(
+            message_id=payload.message_id, status="skipped_contact_inactif",
+            skipped_reason=motif,
+        )
 
     # 3b) Defense — suppression list (post-draft, pre-push). Un opt-out reçu
     # après la création du draft doit bloquer ici.
@@ -398,7 +461,7 @@ async def send_one_message(payload: SendMessageIn) -> SendMessageOut:
                 "contacts",
                 params={"select": "status", "id": f"eq.{contact['id']}", "limit": "1"},
             )
-            if cur and cur[0].get("status") in ("new", "ready", "researching"):
+            if cur and cur[0].get("status") in CONTACT_STATUTS_DEMARCHABLES:
                 await db.update(
                     "contacts", {"status": "contacted"},
                     filters={"id": f"eq.{contact['id']}"},
@@ -453,6 +516,7 @@ class RunWf6Out(BaseModel):
     skipped_warmup: int
     skipped_suppressed: int
     skipped_platform_domain: int = 0
+    skipped_contact_inactif: int = 0
     skipped_other: int
     errors: int
     daily_cap: int
@@ -620,6 +684,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
 
     items: list[RunWf6Item] = []
     pushed = sk_cap = sk_warm = sk_supp = sk_plat = sk_other = errors = 0
+    sk_inactif = 0
 
     if effective_limit <= 0:
         return RunWf6Out(
@@ -699,6 +764,12 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
             sk_supp += 1
         elif res.status == "skipped_platform_domain":
             sk_plat += 1
+        elif res.status == "skipped_contact_inactif":
+            # Refus VOLONTAIRE et fail-closed, comme
+            # `skipped_followups_manquants` juste en dessous — surtout pas
+            # `errors`, sinon n8n remonte une panne d'envoi que personne ne
+            # peut nommer.
+            sk_inactif += 1
         elif res.status in ("skipped_not_eligible", "skipped_followups_manquants"):
             # 🔧 `skipped_followups_manquants` est un refus VOLONTAIRE et
             # fail-closed, pas une panne. Le compter en `errors` le faisait
@@ -736,6 +807,7 @@ async def run_wf6(payload: RunWf6In) -> RunWf6Out:
         skipped_warmup=sk_warm,
         skipped_suppressed=sk_supp,
         skipped_platform_domain=sk_plat,
+        skipped_contact_inactif=sk_inactif,
         skipped_other=sk_other,
         errors=errors,
         daily_cap=daily_cap,
