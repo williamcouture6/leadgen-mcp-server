@@ -65,6 +65,26 @@ def _webhook_url(category: str | None = None) -> str | None:
     return url or None
 
 
+def voie_du_canal(category: Category | None = None) -> str | None:
+    """Le NOM de la variable d'env par laquelle cette catégorie partirait.
+
+    `is_configured` dit oui/non ; celle-ci dit PAR OÙ. La nuance compte pour le
+    healthcheck du canal d'erreurs : un repli sur `SLACK_WEBHOOK_URL` poste bien
+    quelque chose — donc « configuré » est vrai — mais dans le canal fourre-tout
+    et non dans #alertes. Un vert sans cette précision laisserait croire que les
+    pannes du pipeline arrivent là où on les regarde.
+
+    Rend `None` quand rien ne résout : `notify` serait alors un no-op silencieux.
+    """
+    if category:
+        env_name = _CATEGORY_ENV.get(category)
+        if env_name and os.environ.get(env_name, "").strip():
+            return env_name
+    if os.environ.get(SLACK_WEBHOOK_ENV, "").strip():
+        return SLACK_WEBHOOK_ENV
+    return None
+
+
 def is_configured(category: Category | None = None) -> bool:
     """Un webhook est-il résolvable pour cette catégorie (var dédiée ou fallback) ?
 

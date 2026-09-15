@@ -125,6 +125,32 @@ async def post_alert(payload: AlertIn) -> dict[str, Any]:
     return {"ok": ok, "category": payload.category}
 
 
+@app.get("/alert/healthcheck", dependencies=[Depends(_require_auth)])
+async def alert_healthcheck() -> dict[str, Any]:
+    """Le canal d'alerte est-il joignable — SANS casser quoi que ce soit ?
+
+    🔴 Ce qui a rendu cet endpoint nécessaire, le 2026-09-14 : le chemin
+    d'alerte était mort depuis toujours et rien ne pouvait le dire. `/alert`
+    répond `ok: true` même quand aucun webhook n'est résolu (`notify` sans URL
+    est un no-op muet), et les autres healthchecks ne regardent que `leads` et
+    `bookings`. La seule façon de tester #alertes était de provoquer une vraie
+    panne.
+
+    ⚠️ Ceci ne couvre que la MOITIÉ SERVEUR. L'autre moitié vit dans n8n : le
+    workflow d'erreur `Zp68S5Kjc2boLCAh` doit être **actif**, sinon n8n refuse
+    de l'exécuter et aucune requête n'arrive jamais ici. Voir
+    `n8n/workflows/README.md`.
+    """
+    from .lib import slack as slack_lib
+
+    via = slack_lib.voie_du_canal("errors")
+    return {
+        "ok": via is not None,
+        "slack_errors_configured": via is not None,
+        "via": via,
+    }
+
+
 # Les motifs de `suppression_list` qui SONT un retrait de consentement, par
 # opposition aux autres lignes de la même table : `hard_bounce` (adresse morte,
 # posée par WF-6b), `manual` / `competitor` / `dncl` (nos décisions à nous). Ces
