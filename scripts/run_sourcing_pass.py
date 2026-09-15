@@ -12,6 +12,15 @@ Usage :
     python scripts/run_sourcing_pass.py --city Montréal --sector cafe --icp commerce_local
     python scripts/run_sourcing_pass.py --max-pages 1      # 1 page seulement (20 résultats)
     python scripts/run_sourcing_pass.py --dry-run          # n'insère rien
+    python scripts/run_sourcing_pass.py --track OPT        # piste gelée (historique)
+
+⚠️ `--track` gouverne DEUX choses : le catalogue où la cible est choisie, ET
+la valeur écrite dans `companies.track` à l'insert. Jusqu'au 2026-09-15 le
+script ne passait rien du tout : il sourçait le catalogue `OPT`, gelé depuis
+le pivot du 2026-06-07, et surtout il TAGUAIT `OPT` toutes les fiches qu'il
+insérait. Ces fiches sont invisibles pour WF-4, qui filtre `agence-ia` — le
+sourcing paraissait réussi, les entreprises étaient bien en base, et rien
+n'allait jamais les démarcher.
 """
 from __future__ import annotations
 
@@ -38,7 +47,7 @@ PAGINATION_DELAY_SECONDS = 2.5
 async def pick_target(args: argparse.Namespace) -> tuple[str, str, str]:
     if args.city and args.sector and args.icp:
         return args.city, args.sector, args.icp
-    target = await db.next_sourcing_target()
+    target = await db.next_sourcing_target(track=args.track)
     if target is None:
         print("Aucune cible disponible (toutes en cooldown 30j). Stop.")
         sys.exit(0)
@@ -53,10 +62,15 @@ async def main() -> None:
     parser.add_argument("--icp", default=None, help="commerce_local | services_pro | manufacturier")
     parser.add_argument("--max-pages", type=int, default=3, help="1..3 (Google retourne ~60 max)")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--track", default="agence-ia",
+        help="piste : agence-ia (vivante, défaut) | OPT (gelée). Gouverne le "
+             "catalogue de cibles ET le tag écrit dans companies.track.",
+    )
     args = parser.parse_args()
 
     city, sector, icp = await pick_target(args)
-    print(f"\n>>> Sourcing pass : {city} | {sector} | {icp} | max_pages={args.max_pages} | dry={args.dry_run}")
+    print(f"\n>>> Sourcing pass : {city} | {sector} | {icp} | track={args.track} | max_pages={args.max_pages} | dry={args.dry_run}")
 
     run_id: str | None = None
     if not args.dry_run:
@@ -109,6 +123,9 @@ async def main() -> None:
                         google_types=place.google_types,
                         google_rating=place.google_rating,
                         google_reviews_count=place.google_reviews_count,
+                        # Sans ça, `CompanyIn.track` retombe sur son défaut
+                        # `'OPT'` et la fiche devient invisible pour WF-4.
+                        track=args.track,
                         raw_payload=place.raw_payload,
                     )
                 )

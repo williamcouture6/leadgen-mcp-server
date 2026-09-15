@@ -29,8 +29,13 @@ mcp: FastMCP = FastMCP(
 # ----------------------------------------------------------------------
 
 @mcp.tool(name="db_next_sourcing_target")
-async def next_sourcing_target() -> dict | None:
+async def next_sourcing_target(track: str = "agence-ia") -> dict | None:
     """Retourne la prochaine cible (city, sector, icp_segment) à scraper.
+
+    `track` vise la piste VIVANTE par défaut. Ce paramètre n'existait pas
+    jusqu'au 2026-09-15 : le tool appelait la fonction à nu, donc sourçait le
+    catalogue `'OPT'`, gelé depuis le pivot du 2026-06-07 — et l'appelant
+    n'avait aucun moyen de rectifier.
 
     Prend dans le catalogue ICP × top villes QC la cible LA PLUS AFFAMÉE :
     jamais scrapée d'abord, puis la plus anciennement vue, l'ordre du
@@ -41,7 +46,7 @@ async def next_sourcing_target() -> dict | None:
     ⚠️ Ce n'est PLUS « itère le catalogue, prends le premier hors cooldown » :
     cette règle affamait la queue du catalogue (voir `db.next_sourcing_target`).
     """
-    target = await db_tools.next_sourcing_target()
+    target = await db_tools.next_sourcing_target(track=track)
     return target.model_dump() if target else None
 
 

@@ -262,8 +262,15 @@ class InsertCompanyOut(BaseModel):
 # Logique
 # ----------------------------------------------------------------------
 
-async def next_sourcing_target(track: str = "OPT") -> NextTargetOut | None:
+async def next_sourcing_target(track: str = "agence-ia") -> NextTargetOut | None:
     """Retourne la prochaine cible (city, sector) du catalogue `track`, ou None.
+
+    Le défaut vise la piste VIVANTE, comme `RunWf1In.track` et
+    `/sourcing/next-target`. Il valait `'OPT'` jusqu'au 2026-09-15 : deux
+    appelants nus — le tool MCP et `scripts/run_sourcing_pass.py` — sourçaient
+    donc le catalogue GELÉ depuis le pivot du 2026-06-07, et aucun des deux
+    n'offrait le moyen de le corriger. Un défaut qui vise la piste morte
+    n'attend qu'un appelant distrait.
 
     Stratégie — la plus affamée d'abord :
     1. On écarte tout ce qui a été scrapé il y a moins de `COOLDOWN_DAYS`.
