@@ -32,9 +32,14 @@ mcp: FastMCP = FastMCP(
 async def next_sourcing_target() -> dict | None:
     """Retourne la prochaine cible (city, sector, icp_segment) à scraper.
 
-    Itère le catalogue ICP × top villes QC et applique un cooldown de 30 jours
-    via la table `sourcing_runs`. Retourne `None` si toutes les cibles sont
-    en cooldown.
+    Prend dans le catalogue ICP × top villes QC la cible LA PLUS AFFAMÉE :
+    jamais scrapée d'abord, puis la plus anciennement vue, l'ordre du
+    catalogue tranchant les égalités. Un cooldown de 30 jours, mémorisé par
+    `sourcing_runs`, écarte ce qui vient d'être fait. Retourne `None` si
+    toutes les cibles sont en cooldown.
+
+    ⚠️ Ce n'est PLUS « itère le catalogue, prends le premier hors cooldown » :
+    cette règle affamait la queue du catalogue (voir `db.next_sourcing_target`).
     """
     target = await db_tools.next_sourcing_target()
     return target.model_dump() if target else None

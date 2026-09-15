@@ -265,33 +265,88 @@ class InsertCompanyOut(BaseModel):
 async def next_sourcing_target(track: str = "OPT") -> NextTargetOut | None:
     """Retourne la prochaine cible (city, sector) du catalogue `track`, ou None.
 
-    Stratégie :
-    1. On itère le catalogue dans l'ordre de priorité.
-    2. Pour chaque (city, sector), on regarde le `max(created_at)` dans sourcing_runs.
-    3. Si jamais scrapé OU >30j → on retourne cette cible.
-    4. Sinon, on passe à la suivante.
-    """
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=COOLDOWN_DAYS)).isoformat()
+    Stratégie — la plus affamée d'abord :
+    1. On écarte tout ce qui a été scrapé il y a moins de `COOLDOWN_DAYS`.
+    2. Parmi le reste, une cible JAMAIS scrapée passe avant tout.
+    3. Entre deux cibles déjà scrapées, la plus ancienne passe la première.
+    4. À égalité, l'ordre de priorité du catalogue tranche.
 
-    # On charge toutes les runs récentes en une seule query pour éviter N requêtes.
-    recent = await db.select(
+    🔴 NE PAS revenir à « la première cible du catalogue hors cooldown ».
+    C'était la règle jusqu'au 2026-09-14, et elle rendait la queue du catalogue
+    INATTEIGNABLE — pas « servie tard » : jamais. Avec un run par jour et un
+    cooldown de 30 jours, le curseur avance d'un cran par jour mais retombe à
+    zéro dès que la tête ressort de la fenêtre : il ne dépasse jamais l'indice
+    `COOLDOWN_DAYS`. Donc `COOLDOWN_DAYS + 1` entrées tournent en rond — 31 ici
+    — et TOUT ce qui suit meurt, soit 39 des 70 cibles du catalogue actuel.
+    Mesuré en prod ce jour-là : 41 des 70 cibles `agence-ia` jamais scrapées
+    une seule fois, dont six villes entières (Longueuil, Sherbrooke, Saguenay,
+    Lévis, Trois-Rivières, Terrebonne), pendant que WF-1 re-mâchait Montréal
+    chaque matin. Le coût se chiffre : sur l'historique complet, un PREMIER
+    passage sur une cible rend 90,5 % de fiches neuves, un re-passage 9,4 %.
+    Régression couverte par `tests/test_sourcing_famine_de_cible.py`.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=COOLDOWN_DAYS)
+
+    # Historique COMPLET, pas seulement la fenêtre de cooldown : classer par
+    # ancienneté demande de savoir quand chaque cible a été vue la dernière
+    # fois, y compris il y a six mois. `select_all` pagine — un `select` nu se
+    # ferait couper à 1000 lignes le jour où l'historique les dépasse.
+    # `order` est un argument NOMMÉ OBLIGATOIRE de select_all, et il doit
+    # porter sur une colonne UNIQUE : la pagination par offset saute ou double
+    # des lignes si deux d'entre elles se valent. D'où `id` et non
+    # `created_at.desc` — l'ordre de lecture n'a de toute façon aucune
+    # importance ici, le maximum par cible étant recalculé plus bas.
+    runs = await db.select_all(
         "sourcing_runs",
-        params={
-            "select": "city,sector,created_at",
-            "created_at": f"gte.{cutoff}",
-            "order": "created_at.desc",
-        },
+        order="id",
+        params={"select": "city,sector,created_at"},
     )
-    recent_keys = {(r["city"], r["sector"]) for r in recent}
+    dernier: dict[tuple[str, str], datetime] = {}
+    for r in runs:
+        cle = (r["city"], r["sector"])
+        vu = _en_datetime(r.get("created_at"))
+        if vu is None:
+            continue
+        if cle not in dernier or vu > dernier[cle]:
+            dernier[cle] = vu
+
+    meilleure: tuple[str, str, str] | None = None
+    meilleur_rang: tuple[int, float] | None = None
 
     for city, sector, icp in _all_targets(track):
-        if (city, sector) in recent_keys:
-            continue
-        reason: Literal["never_scraped", "cooldown_expired"] = (
-            "cooldown_expired" if recent else "never_scraped"
-        )
-        return NextTargetOut(city=city, sector=sector, icp_segment=icp, reason=reason)
-    return None
+        vu = dernier.get((city, sector))
+        if vu is not None and vu >= cutoff:
+            continue  # cooldown encore actif
+        # (0, …) = jamais scrapée, passe avant toute cible déjà vue.
+        rang = (0, 0.0) if vu is None else (1, vu.timestamp())
+        if meilleur_rang is None or rang < meilleur_rang:
+            meilleur_rang, meilleure = rang, (city, sector, icp)
+
+    if meilleure is None:
+        return None
+    city, sector, icp = meilleure
+    reason: Literal["never_scraped", "cooldown_expired"] = (
+        "never_scraped" if (city, sector) not in dernier else "cooldown_expired"
+    )
+    return NextTargetOut(city=city, sector=sector, icp_segment=icp, reason=reason)
+
+
+def _en_datetime(valeur: Any) -> datetime | None:
+    """`created_at` PostgREST → datetime aware. Rend None sur une valeur illisible.
+
+    Une ligne d'historique illisible ne doit pas faire tomber le sourcing du
+    jour : au pire elle est ignorée, la cible repasse pour « jamais scrapée »
+    et coûte un doublon — jamais une exception dans le cron de 10 h.
+    """
+    if isinstance(valeur, datetime):
+        return valeur if valeur.tzinfo else valeur.replace(tzinfo=timezone.utc)
+    if not isinstance(valeur, str) or not valeur:
+        return None
+    try:
+        d = datetime.fromisoformat(valeur.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
 async def start_sourcing_run(payload: StartRunIn) -> StartRunOut:

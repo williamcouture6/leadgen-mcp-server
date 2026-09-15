@@ -6,7 +6,7 @@ Serveur MCP custom (FastMCP, Python) qui expose les outils unifiés du pipeline 
 
 | Tool | Description |
 |---|---|
-| `db.next_sourcing_target` | Retourne le prochain `(city, sector)` à sourcer (cooldown 30j) |
+| `db.next_sourcing_target` | Retourne le `(city, sector)` le plus affamé à sourcer — jamais scrapé d'abord, puis le plus ancien (cooldown 30j) |
 | `db.start_sourcing_run` | Crée un `sourcing_runs` en `status=running` |
 | `db.complete_sourcing_run` | Marque un run `completed` ou `failed`, met à jour métriques |
 | `db.insert_company` | Insert avec dédup 3 clés (`google_place_id`, `neq`, `dedup_key`) |
