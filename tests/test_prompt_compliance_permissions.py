@@ -51,7 +51,15 @@ def test_chaque_renvoi_pointe_vers_une_permission_qui_existe() -> None:
     """Un renvoi vers §1X qui n'existe pas envoie le juge dans le vide, et il
     retombe alors sur la règle générale — celle qui refuse."""
     ancres = set(_ancres())
-    renvois = set(re.findall(r"§(1[a-z]*)", PROMPT))
+    # 🔴 IL Y AVAIT UN VRAI CARACTERE BACKSPACE ICI, corrige le 2026-09-14.
+    # La frontiere de mot avait ete mangee par un echappement et remplacee par
+    # U+0008. Le motif cherchait donc un backspace apres la reference ; le
+    # prompt n'en contient aucun, donc `renvois` valait TOUJOURS l'ensemble
+    # vide et l'assertion comparait le vide au vide. Ce test passait au vert
+    # depuis toujours sans rien regarder. Mesure au moment du correctif : la
+    # vraie frontiere trouve 10 renvois, tous vers des ancres existantes --
+    # le prompt est sain, mais ce garde ne pouvait pas le prouver.
+    renvois = set(re.findall(r"§(1[a-z]*)\b", PROMPT))
     manquants = sorted(renvois - ancres)
     assert not manquants, f"renvois vers des permissions inexistantes : {manquants}"
 

@@ -54,25 +54,41 @@ def _webhook_url(category: str | None = None) -> str | None:
 
     Ordre : env catégorie spécifique → SLACK_WEBHOOK_URL fallback → None.
     None = pas configuré, notify devient no-op silencieux.
-    """
-    if category:
-        env_name = _CATEGORY_ENV.get(category)
-        if env_name:
-            url = os.environ.get(env_name, "").strip()
-            if url:
-                return url
-    url = os.environ.get(SLACK_WEBHOOK_ENV, "").strip()
-    return url or None
+
+    🔴 L'ORDRE N'EST PAS ÉCRIT ICI, et c'est volontaire. Il vit une seule fois,
+    dans `voie_du_canal` ; cette fonction ne fait que lire la variable que
+    l'autre nomme. Le jour où la règle change (un niveau de repli de plus, une
+    normalisation), elle change à UN endroit.
+
+    Pourquoi ce sens-là et pas l'inverse : `/alert/healthcheck` doit annoncer
+    par quelle variable un message PARTIRAIT. On ne peut pas retrouver le nom
+    d'une variable à partir de son URL — donc c'est la résolution par nom qui
+    est primitive. Une relecture du 2026-09-14 a mesuré que cette résolution
+    existait en QUATRE copies dans le dépôt et que l'une avait déjà divergé
+    (`/wf9/healthcheck` avait perdu le `.strip()`, et annonçait configuré un
+    canal par lequel rien ne partait). La duplication n'était pas un risque, elle
+    était un fait."""
+    env_name = voie_du_canal(category)
+    if env_name is None:
+        return None
+    return os.environ.get(env_name, "").strip() or None
 
 
-def voie_du_canal(category: Category | None = None) -> str | None:
+def voie_du_canal(category: str | None = None) -> str | None:
     """Le NOM de la variable d'env par laquelle cette catégorie partirait.
 
     `is_configured` dit oui/non ; celle-ci dit PAR OÙ. La nuance compte pour le
     healthcheck du canal d'erreurs : un repli sur `SLACK_WEBHOOK_URL` poste bien
     quelque chose — donc « configuré » est vrai — mais dans le canal fourre-tout
-    et non dans #alertes. Un vert sans cette précision laisserait croire que les
-    pannes du pipeline arrivent là où on les regarde.
+    et non dans le canal des pannes de pipeline. Un vert sans cette précision
+    laisserait croire que les pannes arrivent là où on les regarde.
+
+    ⚠️ Ne pas écrire « #alertes » ici : dans le vocabulaire de ce module,
+    #alertes est la destination de la catégorie `alerts` (réponses orphelines,
+    erreurs de classifieur), pas de `errors`, qui est le canal des PANNES du
+    pipeline. Les deux catégories et les deux variables sont distinctes ;
+    les confondre enverrait quelqu'un chercher ses pings de panne au mauvais
+    endroit.
 
     Rend `None` quand rien ne résout : `notify` serait alors un no-op silencieux.
     """

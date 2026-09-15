@@ -151,10 +151,44 @@ async def test_le_rappel_exige_ACTIF_et_pas_seulement_le_champ(monkeypatch):
     (502 sur /wf4/run) n'a produit aucun ping.
 
     Un rappel qui nomme un critère insuffisant est pire qu'aucun rappel : il
-    fait cocher. Le mot ACTIF doit rester dans le texte."""
+    fait cocher.
+
+    ⚠️ La garde ne peut PAS être « le mot ACTIF est dans le texte » : une
+    relecture a mesuré que `"ACTIF" in "…workflow INACTIF"` vaut True, et que
+    `"ACTIF" in "…peu importe qu'il soit ACTIF ou non"` aussi. Une phrase qui
+    dit le CONTRAIRE passerait. La garde porte donc sur le NOMBRE de critères,
+    qui sont des données (`_CRITERES_DETTE_ERRORWF`) : en retirer un devient un
+    changement de code, pas une retouche de prose."""
+    import re
+
+    from src.http_api import _CRITERES_DETTE_ERRORWF as criteres
+
+    assert len(criteres) == 2, (
+        "retirer un critère doit casser ici — c'est le défaut du 2026-08-31"
+    )
     texte = await _resume(_socle(monkeypatch))
-    assert "ACTIF" in texte, "le rappel doit exiger que le handler soit ACTIF"
+    for critere in criteres:
+        assert critere in texte, f"critère absent du rappel : {critere[:40]}…"
+
+    # Les gardes de mot SANS contre-oblique (une contre-oblique b a déjà été
+    # mangée ici, écrivant un vrai caractère de contrôle) : la classe négative
+    # ferme la collision avec INACTIF, sans laquelle une phrase purement
+    # explicative suffirait à satisfaire le test.
+    assert re.search("(?<![A-Z])ACTIF(?![A-Z])", texte), (
+        "l'exigence d'activation doit rester — et « INACTIF » ne compte pas"
+    )
+    assert "affiche bien" not in texte, (
+        "l'ancienne formulation — celle qui faisait cocher sur le seul champ"
+    )
+    assert texte.index("Zp68S5Kjc2boLCAh") < texte.index("ACTIF"), (
+        "le champ d'abord, l'activation ensuite : l'ordre du diagnostic"
+    )
     assert "/alert/healthcheck" in texte, "et nommer le contrôle côté serveur"
+    assert "/alert/healthcheck" in {
+        getattr(r, "path", None) for r in __import__(
+            "src.http_api", fromlist=["app"]
+        ).app.routes
+    }, "le rappel renvoie vers une route qui doit EXISTER, pas vers un 404"
 
 
 async def test_la_dette_du_workflow_d_erreur_s_eteint_avec_la_variable(monkeypatch):

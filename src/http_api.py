@@ -127,7 +127,7 @@ async def post_alert(payload: AlertIn) -> dict[str, Any]:
 
 @app.get("/alert/healthcheck", dependencies=[Depends(_require_auth)])
 async def alert_healthcheck() -> dict[str, Any]:
-    """Le canal d'alerte est-il joignable — SANS casser quoi que ce soit ?
+    """Le canal d'alerte est-il CONFIGURÉ — sans rien poster pour le savoir ?
 
     🔴 Ce qui a rendu cet endpoint nécessaire, le 2026-09-14 : le chemin
     d'alerte était mort depuis toujours et rien ne pouvait le dire SANS LAISSER
@@ -146,10 +146,21 @@ async def alert_healthcheck() -> dict[str, Any]:
 
     Les autres healthchecks, eux, ne regardent que `leads` et `bookings`.
 
-    ⚠️ Ceci ne couvre que la MOITIÉ SERVEUR. L'autre moitié vit dans n8n : le
-    workflow d'erreur `Zp68S5Kjc2boLCAh` doit être **actif**, sinon n8n refuse
-    de l'exécuter et aucune requête n'arrive jamais ici. Voir
-    `n8n/workflows/README.md`.
+    ⚠️ CE QU'IL NE PROUVE PAS — trois choses, à ne pas lire comme vertes :
+
+    1. Que n8n appellera `/alert`. Le workflow d'erreur `Zp68S5Kjc2boLCAh` doit
+       être **ACTIF** ; inactif, n8n refuse de l'exécuter et aucune requête
+       n'arrive jamais ici. Ça ne se lit que sur le VPS — voir
+       `n8n/workflows/README.md` (dépôt parent) pour les deux commandes.
+    2. Que l'URL du webhook est VIVANTE. Une variable posée mais révoquée
+       (webhook régénéré et pas recollé dans Railway, canal archivé, URL
+       tronquée) reste verte ici pour toujours, pendant que Slack rend 404 et
+       que `notify` rend False. C'est la panne que ce contrôle ne voit pas, et
+       la seule façon de la voir est un vrai `POST /alert`.
+    3. Que quelqu'un REGARDE le canal.
+
+    Autrement dit : rouge ici veut dire « cassé, à coup sûr » ; vert veut dire
+    « rien ne s'y oppose côté variables ». Ce n'est pas la même promesse.
     """
     from .lib import slack as slack_lib
 
@@ -409,6 +420,25 @@ def _instant(horodatage: Any) -> datetime | None:
 # Sentinelle de tri pour « date de désabonnement inconnue » : plus petite que
 # toute date réelle, donc reléguée en fin de liste (le tri est décroissant).
 _JAMAIS = datetime.min.replace(tzinfo=timezone.utc)
+
+
+# Les DEUX critères de la dette du chemin d'alerte, sortis du littéral EXPRÈS.
+#
+# 🔴 Ils sont des DONNÉES et non de la prose parce que le défaut qu'ils
+# réparent est précisément d'en avoir eu un seul. Le 2026-08-31, la dette a été
+# déclarée soldée sur le critère (1) : le champ pointait au bon endroit, c'était
+# vrai, et le chemin d'alerte était mort quand même — n8n refuse d'exécuter un
+# workflow d'erreur inactif. Le plantage réel du 2026-09-09 (502 sur
+# `/wf4/run`) n'a produit aucun ping.
+#
+# En prose, retirer un critère est une retouche de phrase que personne ne voit
+# passer. En donnée, c'est une modification de CODE, et un test la casse.
+_CRITERES_DETTE_ERRORWF: tuple[str, str] = (
+    "(1) le champ « Error Workflow » du résumé quotidien ET de WF-7 poll vaut "
+    "bien Zp68S5Kjc2boLCAh",
+    "(2) ce workflow d'erreur est ACTIF — n8n refuse d'exécuter un workflow "
+    "d'erreur inactif et ne le dit que dans ses journaux",
+)
 
 
 def _dette_reglee(variable: str) -> bool:
@@ -1395,14 +1425,14 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         # si ce résumé arrive, le rappel arrive avec lui ; s'il n'arrive pas,
         # c'est précisément le défaut dont il parle.
         dettes.append(
-            "⚠️ *Dette PT3* — le chemin d'alerte n'est pas déclaré vérifié. DEUX "
-            "choses à voir, pas une : (1) le champ « Error Workflow » du résumé "
-            "vaut bien Zp68S5Kjc2boLCAh, ET (2) ce workflow d'erreur est ACTIF — n8n "
-            "refuse d'exécuter un workflow d'erreur inactif et ne le dit que dans "
-            "ses journaux. Le critère (1) seul a été coché le 2026-08-31 et la "
-            "dette déclarée soldée : elle ne l'était pas, une panne réelle du "
+            "⚠️ *Dette PT3* — le chemin d'alerte n'est pas déclaré vérifié. "
+            + f"{len(_CRITERES_DETTE_ERRORWF)} choses à voir, pas une : "
+            + ", ET ".join(_CRITERES_DETTE_ERRORWF)
+            + ". Le critère (1) seul a été coché le 2026-08-31 et la dette "
+            "déclarée soldée : elle ne l'était pas, une panne réelle du "
             "2026-09-09 n'a produit aucun ping. Les deux commandes sont dans "
-            "n8n/workflows/README.md ; côté serveur, GET /alert/healthcheck."
+            "n8n/workflows/README.md (dépôt parent) ; côté serveur, "
+            "GET /alert/healthcheck."
         )
 
     if dettes:
@@ -4581,9 +4611,12 @@ async def wf9_healthcheck() -> dict[str, Any]:
         "ok": True,
         "granola_key_configured": bool(os.environ.get(granola_lib.GRANOLA_API_KEY_ENV)),
         "anthropic_key_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
-        "slack_bookings_configured": bool(
-            os.environ.get("SLACK_WEBHOOK_BOOKINGS")
-            or os.environ.get(slack_lib.SLACK_WEBHOOK_ENV)
-        ),
+        # Passe par `is_configured` comme ses voisins (/wf7 l.4165, /wf8 l.4273)
+        # et NON par un `os.environ.get` recopié : la copie qui vivait ici avait
+        # perdu le `.strip()` de `_webhook_url`, donc une variable à `"   "`
+        # (copier-coller raté dans Railway) la faisait annoncer « configuré »
+        # pendant que `notify` retombait sur le repli ou ne partait pas.
+        # Trouvé en relecture le 2026-09-14.
+        "slack_bookings_configured": slack_lib.is_configured("bookings"),
         "max_fetch_attempts": MAX_FETCH_ATTEMPTS,
     }

@@ -78,7 +78,7 @@ RACINES: dict[str, tuple[str, ...]] = {
         "tourbe",           # 47 libelles, aucun faux positif
         "plantation",       # 64 libelles
         # 🔴 INDISPENSABLE A PART, malgre l'apparence de redondance :
-        # l'appariement est ancre sur un debut de mot, donc `plantation` ne
+        # l'appariement est ancre sur un debut de mot, donc `\bplantation` ne
         # mord PAS dans « transplantation ». Ne pas « simplifier » en la
         # retirant.
         "transplantation",
