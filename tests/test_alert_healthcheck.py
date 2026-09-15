@@ -8,10 +8,15 @@ workflows a trouvé le chemin d'alerte MORT : `[OPS] Error Handler -> Slack`
     Workflow "Zp68S5Kjc2boLCAh" is not active and cannot be executed
 
 Une vraie panne (502 sur `/wf4/run`, le 2026-09-09) n'avait donc produit AUCUN
-ping. Le trou avait tenu parce qu'il n'existait aucun moyen de vérifier le
-chemin d'alerte **autrement qu'en cassant quelque chose pour voir** : les autres
-healthchecks disent `slack_leads_configured` et `slack_bookings_configured`,
-jamais `errors`.
+ping. Le trou avait tenu parce que vérifier le chemin d'alerte **laissait une
+trace** : il fallait soit casser quelque chose pour voir, soit poster un vrai
+message par `/alert`. Un contrôle qui salit le canal qu'il contrôle ne se fait
+pas. Et les autres healthchecks disent `slack_leads_configured` et
+`slack_bookings_configured`, jamais `errors`.
+
+⚠️ `/alert` ne ment pas — `notify` ne rend `True` que sur un `200 ok` de Slack.
+Ce qu'il ne fait pas, c'est se laisser interroger gratuitement, séparer les
+causes d'un `ok: false`, ou nommer le canal atteint.
 
 ⚠️ Ce healthcheck couvre la MOITIÉ SERVEUR du chemin (la variable d'env est-elle
 posée). La moitié n8n — le workflow d'erreur est-il ACTIF — ne se voit que sur
@@ -59,9 +64,13 @@ def test_le_fallback_compte_mais_se_dit(client, monkeypatch) -> None:
 
 
 def test_rien_de_configure_est_rouge(client, monkeypatch) -> None:
-    """Le cas qui doit crier : `/alert` répondrait `ok: true` en jetant le
-    message, parce que `notify` sans URL ne lève pas. Seul ce healthcheck
-    distingue « posté » de « avalé »."""
+    """Le cas qui doit crier.
+
+    `/alert` le verrait aussi — `notify` sans URL rend `False`, pas `True` —
+    mais son `ok: false` confond « rien de configuré » avec « Slack a refusé »
+    et « réseau coupé ». Seul `via: null` désigne la cause qui se répare dans
+    les variables d'environnement. Et surtout : le constater par `/alert`
+    coûte un message posté."""
     monkeypatch.delenv("SLACK_WEBHOOK_ERRORS", raising=False)
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     body = client.get("/alert/healthcheck", headers=AUTH).json()

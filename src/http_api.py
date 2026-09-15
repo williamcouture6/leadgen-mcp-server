@@ -130,11 +130,21 @@ async def alert_healthcheck() -> dict[str, Any]:
     """Le canal d'alerte est-il joignable — SANS casser quoi que ce soit ?
 
     🔴 Ce qui a rendu cet endpoint nécessaire, le 2026-09-14 : le chemin
-    d'alerte était mort depuis toujours et rien ne pouvait le dire. `/alert`
-    répond `ok: true` même quand aucun webhook n'est résolu (`notify` sans URL
-    est un no-op muet), et les autres healthchecks ne regardent que `leads` et
-    `bookings`. La seule façon de tester #alertes était de provoquer une vraie
-    panne.
+    d'alerte était mort depuis toujours et rien ne pouvait le dire SANS LAISSER
+    DE TRACE. `/alert` est honnête — `notify` ne rend `True` que sur un `200 ok`
+    de Slack — mais pour l'interroger il faut **poster un vrai message**. Un
+    contrôle qui salit le canal qu'il contrôle est un contrôle qu'on ne fait
+    pas ; c'est celui-là qui n'a jamais été fait.
+
+    Deux choses que `/alert` ne dit pas non plus, et que celui-ci dit :
+      - son `ok: false` confond trois causes — rien de configuré, Slack qui
+        refuse, réseau coupé. `via` isole la première, la seule qui se répare
+        dans les variables d'environnement.
+      - il ne nomme pas le canal. Un repli sur `SLACK_WEBHOOK_URL` poste bien
+        quelque chose : `ok: true`, message parti — dans le fourre-tout et non
+        dans #alertes. Vert et faux en même temps.
+
+    Les autres healthchecks, eux, ne regardent que `leads` et `bookings`.
 
     ⚠️ Ceci ne couvre que la MOITIÉ SERVEUR. L'autre moitié vit dans n8n : le
     workflow d'erreur `Zp68S5Kjc2boLCAh` doit être **actif**, sinon n8n refuse
