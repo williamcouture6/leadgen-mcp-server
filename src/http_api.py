@@ -1395,10 +1395,14 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         # si ce résumé arrive, le rappel arrive avec lui ; s'il n'arrive pas,
         # c'est précisément le défaut dont il parle.
         dettes.append(
-            "⚠️ *Dette PT3* — vérifier dans n8n que le champ « Error Workflow » du "
-            "résumé quotidien affiche bien [OPS] Error Handler → Slack. L'id "
-            "weHbzb97xdjo2OEd vient de wf-9 et n'est vérifiable QUE dans le menu "
-            "n8n. S'il pointe à côté, ce résumé peut mourir en silence."
+            "⚠️ *Dette PT3* — le chemin d'alerte n'est pas déclaré vérifié. DEUX "
+            "choses à voir, pas une : (1) le champ « Error Workflow » du résumé "
+            "vaut bien Zp68S5Kjc2boLCAh, ET (2) ce workflow d'erreur est ACTIF — n8n "
+            "refuse d'exécuter un workflow d'erreur inactif et ne le dit que dans "
+            "ses journaux. Le critère (1) seul a été coché le 2026-08-31 et la "
+            "dette déclarée soldée : elle ne l'était pas, une panne réelle du "
+            "2026-09-09 n'a produit aucun ping. Les deux commandes sont dans "
+            "n8n/workflows/README.md ; côté serveur, GET /alert/healthcheck."
         )
 
     if dettes:

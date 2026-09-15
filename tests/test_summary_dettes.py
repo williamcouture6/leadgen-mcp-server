@@ -133,11 +133,28 @@ async def test_une_lecture_en_echec_de_la_condition_est_dite(monkeypatch):
 
 async def test_la_dette_du_workflow_d_erreur_est_rappelee_par_defaut(monkeypatch):
     """Elle n'a pas de condition d'apparition : elle est vraie tant que
-    personne n'a ouvert le menu n8n. Fail-safe — variable absente ⇒ rappel."""
+    personne ne l'a vérifiée. Fail-safe — variable absente ⇒ rappel."""
     http_api = _socle(monkeypatch)
     texte = await _resume(http_api)
     assert _MARQUE_DETTE_B in texte
-    assert "weHbzb97xdjo2OEd" in texte, "l'id à comparer doit être dans le rappel"
+    assert "Zp68S5Kjc2boLCAh" in texte, "l'id du handler doit être dans le rappel"
+
+
+async def test_le_rappel_exige_ACTIF_et_pas_seulement_le_champ(monkeypatch):
+    """🔴 LE DÉFAUT QUE CE RAPPEL A LAISSÉ PASSER, mesuré le 2026-09-14.
+
+    Le texte d'origine ne demandait qu'une chose : que le champ « Error
+    Workflow » pointe au bon endroit. Il pointait au bon endroit. La dette a
+    donc été déclarée soldée le 2026-08-31 — et le chemin d'alerte était mort
+    quand même, parce que n8n 2.36 REFUSE d'exécuter un workflow d'erreur
+    inactif et ne le dit que dans ses journaux. Le plantage réel du 2026-09-09
+    (502 sur /wf4/run) n'a produit aucun ping.
+
+    Un rappel qui nomme un critère insuffisant est pire qu'aucun rappel : il
+    fait cocher. Le mot ACTIF doit rester dans le texte."""
+    texte = await _resume(_socle(monkeypatch))
+    assert "ACTIF" in texte, "le rappel doit exiger que le handler soit ACTIF"
+    assert "/alert/healthcheck" in texte, "et nommer le contrôle côté serveur"
 
 
 async def test_la_dette_du_workflow_d_erreur_s_eteint_avec_la_variable(monkeypatch):
