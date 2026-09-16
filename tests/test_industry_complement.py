@@ -34,6 +34,14 @@ fenêtre s'ouvre grâce au secteur, mais le courriel continue de parler de pavé
 uni et de trottoirs — ce qu'elle vend vraiment. Inverser ce poids ferait écrire
 à un pavageur qu'on veut lui parler de plates-bandes.
 
+🔧 PORTÉE RÉDUITE LE 2026-09-15 : le secteur ne parle plus que si aucun
+métier **saisonnier** n'a été trouvé dans les services. Les deux cas nommés
+ci-dessus (Niwa, Spray Green) sont préservés — aucun de leurs services ne
+donne de saison. Ce qui disparaît, c'est le métier ajouté à une fiche qui
+avait déjà sa saison : le rédacteur le nommait, et le juge bloquait. Voir
+`classer_services` pour la mesure (9 fiches touchées sur 708, 0 devient
+injoignable).
+
 🔴 RIEN N'EST RECLASSÉ EN BASE PAR CE FICHIER. La colonne est un cache : ces
 14 fiches ne bougeront qu'au rejeu de `scripts/backfill_metiers.py`, qui est une
 décision de William.
@@ -102,16 +110,51 @@ def test_spray_green_le_secteur_ne_fait_que_confirmer() -> None:
 # ── Le secteur ne doit jamais dominer les services ─────────────────────────
 
 def test_le_secteur_ne_devient_dominant_que_s_il_est_seul() -> None:
+    """🔧 AFFINÉ LE 2026-09-15 — l'intention est INCHANGÉE, sa portée a rétréci.
+
+    La règle de ce fichier était « le secteur complète, sans jamais dominer ».
+    Elle laissait le métier du secteur ENTRER dans la liste même quand les
+    services avaient déjà donné une saison — et le rédacteur, lui, nomme tous
+    les métiers de la liste, pas seulement le dominant. Protéger le dominant ne
+    protégeait donc pas le courriel.
+
+    Mesuré le 2026-09-15, premier passage de WF-5 sur la copie AC1 : sur 3
+    blocages, 2 venaient de là. Terrassement S.H. ne déclare que du
+    terrassement et de l'aménagement paysager ; trouvée par « entrepreneur en
+    déneigement », elle recevait le métier, et son courriel lui parlait de
+    déneigement. Le juge bloquait pour fait inventé — à raison.
+
+    La règle est maintenant : **le secteur ne parle que si aucun métier
+    SAISONNIER n'a été trouvé.** C'est exactement sa raison d'être — ouvrir une
+    fenêtre quand il n'y en a aucune. Quand les services en donnent déjà une,
+    il n'ajoute plus une information, il en ajoute une fausse.
+    """
     seul = classer_services([], industry="paysagiste")
     assert seul.metiers == ("paysagement",)
     assert seul.source == "industry"
 
-    accompagne = classer_services(
+    # Les services donnent une SAISON (déneigement) : le secteur se tait.
+    saison_trouvee = classer_services(
         ["Déneigement résidentiel", "Déneigement commercial"],
         industry="paysagiste",
     )
-    assert accompagne.metiers[0] == "déneigement", accompagne.metiers
-    assert "paysagement" in accompagne.metiers
+    assert saison_trouvee.metiers[0] == "déneigement", saison_trouvee.metiers
+    assert "paysagement" not in saison_trouvee.metiers, (
+        "le secteur a parlé alors qu'une saison était déjà connue"
+    )
+
+    # 🔴 LE CAS NIWA, celui pour lequel le mécanisme existe, et qui continue de
+    # marcher. Ses libellés ne donnent que `pavage` — un métier SANS saison,
+    # qui n'ouvre aucune fenêtre. Le secteur est alors le seul moyen d'en avoir
+    # une, et il la donne SANS voler le dominant : le courriel continue de
+    # parler de pavé uni, ce qu'elle vend vraiment.
+    sans_saison = classer_services(
+        ["Pavage", "Trottoirs", "Terrasses sur mesure"], industry="paysagiste"
+    )
+    assert "paysagement" in sans_saison.metiers, sans_saison.metiers
+    assert sans_saison.metiers[0] == "pavage", (
+        "le secteur a volé le dominant, donc le lexique du courriel"
+    )
 
 
 def test_un_secteur_deja_reconnu_ne_compte_pas_deux_fois() -> None:

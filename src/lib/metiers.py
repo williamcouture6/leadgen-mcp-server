@@ -105,9 +105,11 @@ RACINES: dict[str, tuple[str, ...]] = {
         # dependent.
         "chaux",
     ),
-    # « pression » (34 fiches au 2026-08-30) -> lavage de vitres (decision William,
-    # 2026-08-30) : meme client, meme saison d'avril, meme equipement.
-    "lavage de vitres": ("vitre", "fenetre", "pression"),
+    # « pression » -> lavage de vitres (decision William, 2026-08-30) : meme
+    # client, meme saison d'avril, meme equipement. Le raisonnement tient
+    # toujours ; c'est le MOT SEUL qui ne tenait pas. Il vit maintenant dans
+    # `RACINES_MOTIFS`, accompagne. Decision du 2026-09-15.
+    "lavage de vitres": ("vitre", "fenetre"),
     "extermination": ("extermin", "parasitaire", "vermine", "punaise", "fourmi", "rongeur"),
     "ménage": ("menage", "entretien menager", "nettoyage residentiel"),
     "piscine": ("piscine", "spa"),
@@ -260,8 +262,38 @@ ECRASE: dict[str, tuple[str, ...]] = {
     "piscine": ("excavation",),
 }
 
+# Les racines qui ne peuvent PAS s'ecrire comme un simple prefixe, parce que
+# le mot ne compte QUE s'il est accompagne. Compilees telles quelles, sans
+# `re.escape` — ce sont des motifs, pas des mots.
+#
+# 🔴 « PRESSION » SEUL NE COMPTE PLUS — decision William du 2026-09-15, sur
+# mesure. Le mot avait ete pose le 2026-08-30 pour le *lavage a pression*, et
+# cette intention reste juste. Mais la racine nue attrapait aussi ce qui n'a
+# rien a voir :
+#
+#     « Application de scellant sous pression »  ->  laveuse de vitres
+#
+# Consequence observee le 2026-09-15 : Pavage Gadbois etait classee en lavage
+# de vitres, le redacteur lui ecrivait donc un courriel sur les vitres, et le
+# juge de conformite le BLOQUAIT pour fait invente. Le redacteur n'inventait
+# rien — il obeissait a un dictionnaire qui se trompait.
+#
+# 📏 La mesure qui a dicte le motif : sur les 53 libelles de la base contenant
+# « pression », 51 sont de vrais lavages et portent TOUS « lavage » ou
+# « nettoyage ». Les deux intrus — « Test de pression » et « Application de
+# scellant sous pression » — n'en portent aucun. Les mots intercales varient
+# (« a », « a la », « a haute », « sous », « exterieur a »), d'ou les quelques
+# mots de latitude plutot qu'une liste de formes figees.
+#
+# ⚠️ « repression d'insectes » ne matchait DEJA pas — la frontiere de mot s'en
+# chargeait. Un test le verifie, pour qu'un futur motif ne le casse pas.
+RACINES_MOTIFS: dict[str, tuple[str, ...]] = {
+    "lavage de vitres": (r"\b(?:lav|nettoy)\w*(?:\s+\S+){0,3}\s+pression\b",),
+}
+
 _RACINES_RE: dict[str, tuple[re.Pattern[str], ...]] = {
     metier: tuple(re.compile(r"\b" + re.escape(r)) for r in racines)
+    + tuple(re.compile(m) for m in RACINES_MOTIFS.get(metier, ()))
     for metier, racines in RACINES.items()
 }
 
@@ -688,6 +720,46 @@ class Classement:
     """`services_offered` ou `inconnu`."""
 
 
+def metiers_nommes(texte: str | None) -> frozenset[str]:
+    """Quelles familles de métiers ce TEXTE LIBRE nomme-t-il ?
+
+    Le pendant de `classer_services`, pour l'autre sens de la question. Celle-ci
+    part de `services_offered` et demande « que VEND cette entreprise ? ».
+    Celle-là part du corps d'un courriel et demande « de quoi PARLE-T-ON ? ».
+    Le contrôle d'ancrage compare les deux : ce qui est dit sans être vendu est
+    inventé.
+
+    🔴 ELLE N'APPLIQUE PAS `ECRASE`, ET C'EST TOUT L'INTÉRÊT.
+    `ECRASE` est la règle de DOMINANCE : quand deux métiers cohabitent, l'un
+    efface l'autre pour décider du LEXIQUE du courriel. C'est juste pour choisir
+    de quoi parler, et faux pour constater ce qui est dit — un métier inventé
+    que `ECRASE` ferait disparaître passerait le contrôle sans laisser de trace.
+    Ici on veut TOUT ce qui est nommé, dominant ou pas.
+
+    ⚠️ Les `EXCLUSIONS`, elles, s'appliquent : elles disent qu'un mot n'est PAS
+    le métier qu'il a l'air d'être (« clôture de piscine » ne fait pas un
+    pisciniste). Sur un texte long, une seule phrase d'exclusion désarme la
+    famille pour tout le corps. C'est volontairement l'erreur du côté PRUDENT :
+    ce contrôle refuse des brouillons, donc il doit préférer laisser passer un
+    cas douteux plutôt qu'en accuser un innocent.
+
+    Déterministe et sans date, comme `classer_services` : deux appels sur le
+    même texte rendent le même résultat.
+    """
+    if not isinstance(texte, str) or not texte.strip():
+        return frozenset()
+    plat = _sans_accents(texte)
+    apparies = {
+        metier
+        for metier, motifs in _RACINES_RE.items()
+        if any(m.search(plat) for m in motifs)
+    }
+    for metier, phrases in EXCLUSIONS.items():
+        if metier in apparies and any(p in plat for p in phrases):
+            apparies.discard(metier)
+    return frozenset(apparies)
+
+
 def classer_services(
     services_offered: list[str] | None, industry: str | None = None
 ) -> Classement:
@@ -776,7 +848,58 @@ def classer_services(
     # 🔧 LE SECTEUR, EN COMPLÉMENT (2026-09-14).
     metier_du_secteur = metier_depuis_industry(industry)
     secteur_a_servi = False
-    if metier_du_secteur is not None and metier_du_secteur not in compte:
+    # 🔴 LE SECTEUR NE PARLE QUE SI AUCUNE SAISON N'A ETE TROUVEE — decision
+    # William du 2026-09-15, en corrigeant un effet de bord de son propre
+    # branchement de la veille.
+    #
+    # `industry` n'est pas ce que l'entreprise VEND : c'est le mot-cle tape pour
+    # la trouver sur Google Maps. Il a ete branche le 2026-09-14 pour un vrai
+    # besoin — ouvrir une fenetre a une fiche qui n'en avait aucune. Ce besoin
+    # demeure. Ce qui change, c'est qu'il ne parle plus par-dessus des services
+    # qui ont deja donne une saison :
+    #
+    #     Terrassement S.H. — services : terrassement, amenagement paysager
+    #     trouvee par « entrepreneur en deneigement » -> + deneigement
+    #     -> le courriel lui parlait de deneigement -> le juge BLOQUAIT
+    #
+    # ⚠️ PROTEGER LE DOMINANT NE PROTEGEAIT PAS LE COURRIEL. La regle du 14
+    # s'appuyait sur « le secteur ne devient jamais dominant, donc le lexique est
+    # sauf ». Faux : le redacteur nomme TOUS les metiers de la liste, pas
+    # seulement le dominant. C'est l'enumeration qui trahissait, pas la scene.
+    #
+    # 📏 LE CRITERE EST LA SAISON, PAS LA PRESENCE. Deux regles ont ete mesurees
+    # l'une contre l'autre sur les 708 fiches, avec `db.fenetre_saisonniere_ouverte`
+    # — la fonction de PRODUCTION, jamais une copie :
+    #
+    #   · « le secteur se tait des que les services parlent » : corrige les 5
+    #     faux deneigeurs, mais rend Niwa Paysagiste et Nettoyeur de la Cite
+    #     INJOIGNABLES A VIE. Il ne leur restait que `pavage` et `menage`, des
+    #     metiers sans saison — et une fiche dont aucun metier n'a de saison est
+    #     ecartee (regle William du 2026-09-02). Niwa est precisement le cas pour
+    #     lequel le mecanisme avait ete cree : la regle se retournait contre son
+    #     propre motif.
+    #
+    #   · « le secteur se tait des qu'une SAISON est trouvee » — RETENUE. Meme
+    #     correction des 5, et **0 fiche perdue**. C'est aussi la formulation qui
+    #     colle a la raison d'etre du mecanisme : il existe pour OUVRIR une
+    #     fenetre, donc il n'a rien a dire quand une fenetre existe deja.
+    #
+    # 📏 Effet mesure de la regle retenue, 7 fiches sur 708 :
+    #   · 5 perdent aout-decembre en perdant un « deneigement » qu'elles ne
+    #     declarent nulle part (Terrassement S.H., Amenagement GF, Amenagement
+    #     Denis et fils, Groupe A1, D & R Maintenance). RESULTAT VOULU : les
+    #     demarcher en novembre pour du deneigement etait l'incoherence a retirer.
+    #   · 1 est mieux classee (Pavage Gadbois passe a la saison du deneigement,
+    #     qu'elle declare vraiment) ; 1 ne bouge pas.
+    #   · 0 devient injoignable.
+    #
+    # ⚠️ Une premiere mesure annoncait « 2 fiches perdent aout-decembre, Niwa ne
+    # perd rien ». Elle etait FAUSSE deux fois : elle reimplementait la regle de
+    # saison au lieu d'appeler la fonction de production, et elle comparait deux
+    # etats du code DEJA corrige. Mesurer avec sa propre copie de la regle ne
+    # mesure que sa copie.
+    _aucune_saison_trouvee = not any(m in SAISONS for m in compte)
+    if metier_du_secteur is not None and _aucune_saison_trouvee:
         compte[metier_du_secteur] = 1
         # 🔴 RANG DE DERNIER ARRIVÉ, jamais 0. Le tri plus bas départage les
         # égalités par l'ordre d'apparition : mettre le secteur en tête lui
