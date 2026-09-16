@@ -63,12 +63,29 @@ MASQUE_IDS_SEULS = "places.id,nextPageToken"
 # plus rien de neuf une fois découpées.
 SEUIL_SUBDIVISION = 8
 
-# On arrête un niveau qui rapporte moins que ça, en proportion du cumul.
+# Un niveau est « faible » quand il rapporte moins que ça, en proportion du cumul.
 # 🔴 LA RÈGLE EST « ON DÉCOUPE TANT QUE DÉCOUPER RAPPORTE », JAMAIS UNE
 # PROFONDEUR FIXE. Mesuré : la tonte sature au niveau 4 (+7 entreprises) alors
 # que le déneigement montait encore (+41). Un niveau posé en dur servirait trop
 # l'un et affamerait l'autre.
 GAIN_MIN_RELATIF = 0.03
+
+# 🔴 COMBIEN DE PALIERS FAIBLES D'AFFILÉE AVANT DE CONCLURE. **DEUX, PAS UN.**
+#
+# Le gain par niveau N'EST PAS MONOTONE, et c'est mesuré : sur Montréal, le
+# 2026-09-15, les niveaux ont rendu +147, puis **+17**, puis **+43**. Un seul
+# palier faible ne prouve donc rien — il peut précéder le meilleur niveau de la
+# passe.
+#
+# Ce que la version à un seul palier a coûté, mesuré le 2026-09-16 sur le
+# premier balayage réel : Sherbrooke, Saguenay et Trois-Rivières se sont
+# arrêtées au NIVEAU 1, après 5 tuiles et 7 appels — un balayage de surface sur
+# des villes de 140 000 à 170 000 habitants.
+#
+# ⚠️ Ne pas « optimiser » en revenant à un seul palier parce que deux coûtent
+# des appels : ces appels sont à 0 $ au masque identifiants-seuls, et une
+# entreprise jamais trouvée l'est pour toujours.
+PALIERS_FAIBLES_POUR_CONCLURE = 2
 
 # Plancher de taille de tuile. En deçà, on interroge des pâtés de maisons.
 TUILE_MIN_DEGRES = 0.008  # ~0,9 km en latitude
@@ -196,6 +213,7 @@ async def balayer(
     actifs = [rect]
     niveau = 0
     tuiles = 0
+    faibles = 0   # paliers faibles consécutifs
     while actifs and niveau <= niveau_max:
         avant = len(cumul)
         prochains: list[tuple[float, float, float, float]] = []
@@ -217,9 +235,15 @@ async def balayer(
                 f"  -> cumul {len(cumul):5d}  (+{gain})"
             )
         # On s'arrête quand découper cesse de rapporter — pas à une profondeur
-        # fixe. Le test du niveau 0 est exempté : il n'a rien à quoi se comparer.
+        # fixe, et pas au PREMIER palier faible : voir
+        # PALIERS_FAIBLES_POUR_CONCLURE. Le niveau 0 est exempté, il n'a rien à
+        # quoi se comparer.
         if niveau > 0 and gain < max(1, int(GAIN_MIN_RELATIF * len(cumul))):
-            break
+            faibles += 1
+            if faibles >= PALIERS_FAIBLES_POUR_CONCLURE:
+                break
+        else:
+            faibles = 0
         if cpt.plafond_atteint():
             break
         actifs = prochains
@@ -332,7 +356,12 @@ async def main() -> None:
     ap = argparse.ArgumentParser(description="Balayage géographique de l'inventaire")
     ap.add_argument("--region", action="append", help="par défaut : toutes")
     ap.add_argument("--secteur", action="append", help="par défaut : tout le catalogue")
-    ap.add_argument("--niveau-max", type=int, default=5)
+    ap.add_argument(
+        "--niveau-max", type=int, default=7,
+        help="plafond de profondeur. 5 avait COUPÉ Montréal le 2026-09-16 "
+             "alors qu'elle montait encore ; c'est la règle des deux "
+             "paliers faibles qui doit arrêter la passe, pas ce plafond.",
+    )
     ap.add_argument("--track", default="agence-ia")
     ap.add_argument("--dry-run", action="store_true", help="n'écrit rien en base")
     args = ap.parse_args()
