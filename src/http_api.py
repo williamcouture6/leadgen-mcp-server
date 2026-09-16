@@ -1365,6 +1365,22 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
     if a_juger:
         text += f"\n🔎 {a_juger} entreprises que le temps ne réparera pas"
 
+    # ------------------------------------- Inventaire de sourcing (famine)
+    # La ligne est TOUJOURS affichée, l'alerte ne part que si ça va mal. Les deux
+    # sont séparées à dessein : le résumé dit l'état, #alertes réveille. Mettre
+    # la famine dans le seul résumé la noierait parmi quinze autres lignes.
+    #
+    # ⚠️ L'alerte ne part que si `post` : un appel de test ne doit pas réveiller
+    # William, sinon on teste en s'interdisant de tester.
+    etat_inv = await _lire_etat_inventaire()
+    verdict_inv = _verdict_inventaire(etat_inv)
+    text += "\n" + _ligne_resume_inventaire(etat_inv, verdict_inv)
+    alerte_inventaire_envoyee: bool | None = None
+    if payload.post:
+        alerte_inventaire_envoyee = await _alerter_famine_inventaire(
+            etat_inv, verdict_inv
+        )
+
     # ------------------------------------------------ PT3 : dettes assumées
     # PT3 laisse deux dettes volontaires, écrites dans docs/go-live-checklist.md.
     # Mais une dette consignée dans un fichier que personne ne rouvre au bon
@@ -1443,7 +1459,17 @@ async def summary_daily(payload: DailySummaryIn) -> dict[str, Any]:
         posted = await slack_lib.notify(
             text=text, context="daily_summary", category=payload.category
         )
-    return {"date": date_str, "totals": totals, "posted": posted, "text": text}
+    return {
+        "date": date_str,
+        "totals": totals,
+        "posted": posted,
+        "text": text,
+        # Rendus pour que le nœud n8n puisse les voir sans relire Slack, et pour
+        # que les tests puissent exercer le verdict sans poster.
+        "inventaire": etat_inv.model_dump(),
+        "inventaire_verdict": verdict_inv,
+        "alerte_inventaire_envoyee": alerte_inventaire_envoyee,
+    }
 
 
 # ---------------- Sourcing ----------------
@@ -2948,6 +2974,292 @@ async def _alerter_famine_wf4(
         logging.getLogger("wf4").error(
             "alerte famine #alertes NON partie — track=%s restants=%s lu=%s",
             track, restants, compte_lu,
+        )
+    return envoyee
+
+
+# ---------------------------------------------------------------------------
+# Famine d'INVENTAIRE (sourcing) — distincte de la famine WF-4 ci-dessus.
+#
+# Celle du dessus dit « le lot est reparti les mains vides ». Celle-ci PRÉVIENT :
+# elle regarde le stock et le rythme, et crie AVANT que la file soit vide.
+# William : « il faut mettre une alerte de famine quand WF-1 va manquer de
+# leads dans la nouvelle table » — au futur, et c'est le bon temps de verbe.
+# ---------------------------------------------------------------------------
+
+# Sous combien de jours de file on crie. 7 = le temps de lancer un balayage et
+# d'en voir le résultat arriver jusqu'à WF-3.
+SEUIL_JOURS_FAMINE = 7
+SEUIL_JOURS_URGENCE = 2
+
+# Sur combien de jours on MESURE le rythme de consommation.
+#
+# 🔴 LE RYTHME SE MESURE, IL NE SE MET PAS EN PARAMÈTRE. Un « 20 par jour » posé
+# en dur mentirait le jour où un lot rend 7 fiches au lieu de 20 — c'est la
+# leçon déjà payée sur le compteur des bras du test A/B, où un offset passé par
+# n8n aurait menti dès le premier lot incomplet.
+FENETRE_MESURE_RYTHME_JOURS = 14
+
+# Au-delà, une passe encore 'running' est morte en vol. Un balayage complet d'une
+# ville prend quelques minutes ; deux heures est déjà très généreux.
+DELAI_BALAYAGE_ORPHELIN_H = 2
+
+
+def _litteral_tableau_pg(valeurs: list[str]) -> str:
+    """Un littéral de tableau Postgres pour un filtre PostgREST `ov.`/`cs.`.
+
+    ⚠️ Les guillemets ne sont PAS décoratifs : nos secteurs contiennent des
+    espaces (`entrepreneur en déneigement`). Sans eux, Postgres lit quatre
+    éléments au lieu d'un, le filtre ne matche rien, et l'alerte annonce une
+    famine parfaitement fausse. Les accents passent par l'encodage d'URL.
+    """
+    echappees = [v.replace("\\", "\\\\").replace('"', '\\"') for v in valeurs]
+    return "{" + ",".join(f'"{v}"' for v in echappees) + "}"
+
+
+class EtatInventaire(BaseModel):
+    """Photo de l'inventaire, telle que l'alerte et le résumé la lisent."""
+    total: int = 0
+    piochable: int = 0                      # a_traiter ET secteur à préparer
+    # Défauts mutables : Pydantic v2 les copie par instance, pas de piège ici.
+    par_secteur: dict[str, int] = {}
+    secteurs_a_preparer: list[str] = []
+    regions_jamais_balayees: list[str] = []
+    rythme_par_jour: float | None = None    # None = pas encore mesurable
+    jours_de_file: float | None = None
+    balayages_orphelins: int = 0
+    dernier_balayage: str | None = None
+    lu: bool = True                         # False = une lecture est tombée
+
+
+async def _lire_etat_inventaire(track: str = "agence-ia") -> EtatInventaire:
+    """Lit l'inventaire. Ne lève jamais — `lu=False` si une lecture tombe.
+
+    ⚠️ `sb.count` et PAS `len(await select(...))` : PostgREST tronque à 1000
+    lignes SANS erreur ni en-tête, et un compte tronqué dirait « il en reste »
+    pour toujours. Même règle que `_compter_envoyables_restants`.
+    """
+    from . import supabase_client as sb
+
+    etat = EtatInventaire()
+    etat.secteurs_a_preparer = db_tools.secteurs_a_preparer(track=track)
+    try:
+        etat.total = await sb.count(
+            "sourcing_inventaire", params={"track": f"eq.{track}"}
+        )
+        if etat.secteurs_a_preparer:
+            etat.piochable = await sb.count(
+                "sourcing_inventaire",
+                params={
+                    "track": f"eq.{track}",
+                    # Littéral, jamais un paramètre lié : c'est ce que le GIN
+                    # partiel `where etat = 'a_traiter'` exige pour être utilisé.
+                    "etat": "eq.a_traiter",
+                    "trouve_par": "ov."
+                    + _litteral_tableau_pg(etat.secteurs_a_preparer),
+                },
+            )
+        # Le rythme réel de consommation, mesuré. `derniere_tentative` est écrit
+        # par le piocheur à chaque tentative, réussie ou non.
+        depuis = (
+            datetime.now(timezone.utc)
+            - timedelta(days=FENETRE_MESURE_RYTHME_JOURS)
+        ).isoformat()
+        consommees = await sb.count(
+            "sourcing_inventaire",
+            params={
+                "track": f"eq.{track}",
+                "derniere_tentative": f"gte.{depuis}",
+            },
+        )
+        if consommees > 0:
+            etat.rythme_par_jour = consommees / FENETRE_MESURE_RYTHME_JOURS
+            etat.jours_de_file = etat.piochable / etat.rythme_par_jour
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger("inventaire").error("lecture inventaire échouée — %r", e)
+        etat.lu = False
+        return etat
+
+    # Le détail par secteur : la vue existe précisément parce que PostgREST ne
+    # sait pas agréger (PGRST123).
+    try:
+        for ligne in await sb.select(
+            "v_inventaire_par_secteur",
+            params={"select": "secteur,a_traiter", "track": f"eq.{track}"},
+        ):
+            if ligne.get("secteur") in etat.secteurs_a_preparer:
+                etat.par_secteur[ligne["secteur"]] = ligne.get("a_traiter") or 0
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger("inventaire").error("vue par secteur illisible — %r", e)
+
+    # Surveillance des passes — les deux requêtes qui ferment le trou de la 0069.
+    try:
+        limite = (
+            datetime.now(timezone.utc)
+            - timedelta(hours=DELAI_BALAYAGE_ORPHELIN_H)
+        ).isoformat()
+        etat.balayages_orphelins = await sb.count(
+            "sourcing_balayages",
+            params={"statut": "eq.running", "started_at": f"lt.{limite}"},
+        )
+        dernieres = await sb.select(
+            "sourcing_balayages",
+            params={
+                "select": "created_at,region",
+                "track": f"eq.{track}",
+                "order": "created_at.desc",
+                "limit": "1",
+            },
+        )
+        if dernieres:
+            etat.dernier_balayage = dernieres[0].get("created_at")
+        balayees = {
+            (r.get("region") or "")
+            for r in await sb.select_all(
+                "sourcing_balayages",
+                order="id",
+                params={"select": "region", "track": f"eq.{track}"},
+            )
+        }
+        etat.regions_jamais_balayees = [
+            v for v in db_tools.DEFAULT_CITIES if v not in balayees
+        ]
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger("inventaire").error("journal des balayages illisible — %r", e)
+
+    return etat
+
+
+def _verdict_inventaire(etat: EtatInventaire) -> str:
+    """Nomme la situation. Un mot, parce que le message en dépend entièrement.
+
+    🔴 LA DISTINCTION QUI COMPTE EST « PAS ENCORE » vs « PLUS RIEN ».
+    `_doit_alerter_famine` l'a déjà écrite pour WF-4 : zéro sur une file vide est
+    une fin de liste, zéro sur une file pleine est une panne. Ici il y a un
+    troisième zéro, et c'est celui d'AUJOURD'HUI : l'inventaire est vide parce
+    que le balayeur n'existe pas encore. Crier là-dessus tous les matins
+    apprendrait à ignorer l'alerte avant même qu'elle serve à quelque chose.
+    """
+    if not etat.lu:
+        return "illisible"
+    if etat.total == 0 and etat.dernier_balayage is None:
+        return "jamais_balaye"
+    if etat.balayages_orphelins > 0:
+        return "balayage_orphelin"
+    if etat.jours_de_file is None:
+        # Stock connu mais rythme pas encore mesurable : le piocheur n'a pas
+        # encore tourné. On ne peut pas parler en jours, seulement en fiches.
+        return "vide" if etat.piochable == 0 else "rythme_inconnu"
+    if etat.jours_de_file < SEUIL_JOURS_URGENCE:
+        return "urgence"
+    if etat.jours_de_file < SEUIL_JOURS_FAMINE:
+        return "famine"
+    return "ok"
+
+
+def _ligne_resume_inventaire(etat: EtatInventaire, verdict: str) -> str:
+    """La ligne informative du résumé quotidien — toujours affichée."""
+    if verdict == "illisible":
+        return "🗺️ Inventaire : ILLISIBLE (voir les logs)"
+    if verdict == "jamais_balaye":
+        return (
+            "🗺️ Inventaire : vide, aucun balayage n'a jamais tourné — "
+            "état attendu tant que le balayeur n'existe pas"
+        )
+    detail = " · ".join(
+        f"{s} {n}" for s, n in sorted(etat.par_secteur.items(), key=lambda kv: -kv[1])
+    )
+    file = f"{etat.piochable} piochables"
+    if etat.jours_de_file is not None:
+        file += f" (~{etat.jours_de_file:.1f} j au rythme de {etat.rythme_par_jour:.0f}/j)"
+    hors = etat.total - etat.piochable
+    ligne = f"🗺️ Inventaire : {etat.total} connues · {file}"
+    if hors > 0:
+        ligne += f" · {hors} hors préparation saisonnière"
+    if detail:
+        ligne += f"\n    {detail}"
+    return ligne
+
+
+async def _alerter_famine_inventaire(etat: EtatInventaire, verdict: str) -> bool | None:
+    """Crie sur #alertes quand l'inventaire va manquer. None = rien à dire.
+
+    Le message NOMME les chiffres ET l'action. Une alerte qui ne dit pas quoi
+    faire se fait ignorer — c'est déjà la règle de `_alerter_famine_wf4`, qui
+    nomme le nombre de leads restants pour que « 0 draft » soit interprétable.
+    """
+    from .lib import slack as slack_lib
+
+    if verdict in ("ok", "jamais_balaye"):
+        return None
+
+    corps: list[str]
+    if verdict == "illisible":
+        corps = [
+            "🚨 Inventaire de sourcing — état ILLISIBLE (lecture en échec).",
+            "Impossible de dire s'il reste des entreprises à traiter : "
+            "traiter comme une panne.",
+        ]
+    elif verdict == "balayage_orphelin":
+        corps = [
+            f"🚨 Balayage — {etat.balayages_orphelins} passe(s) ouverte(s) depuis "
+            f"plus de {DELAI_BALAYAGE_ORPHELIN_H} h et jamais fermée(s).",
+            "Une passe qui meurt n'écrit pas sa ligne de fermeture : son statut "
+            "reste 'running' pour toujours. C'est exactement le mode de panne "
+            "qui a laissé le sourcing mort cinq semaines à l'été 2026.",
+        ]
+    else:
+        tete = {
+            "urgence": "🚨 Inventaire de sourcing — FILE PRESQUE VIDE",
+            "famine": "⚠️ Inventaire de sourcing — la file se vide",
+            "vide": "🚨 Inventaire de sourcing — PLUS RIEN à piocher",
+            "rythme_inconnu": "⚠️ Inventaire de sourcing — stock faible",
+        }[verdict]
+        corps = [tete]
+        if etat.jours_de_file is not None:
+            corps.append(
+                f"{etat.piochable} entreprise(s) piochable(s), soit ~"
+                f"{etat.jours_de_file:.1f} jour(s) au rythme mesuré de "
+                f"{etat.rythme_par_jour:.0f}/jour."
+            )
+        else:
+            corps.append(
+                f"{etat.piochable} entreprise(s) piochable(s). Le rythme n'est "
+                "pas encore mesurable (aucune hydratation depuis "
+                f"{FENETRE_MESURE_RYTHME_JOURS} jours)."
+            )
+        corps.append(
+            "Piochable = pas encore traitée ET dont la saison se prépare : "
+            + (", ".join(etat.secteurs_a_preparer) or "aucun secteur en fenêtre")
+            + "."
+        )
+        hors = etat.total - etat.piochable
+        if hors > 0:
+            corps.append(
+                f"⚠️ L'inventaire en contient {etat.total} au total, mais {hors} "
+                "sont HORS préparation saisonnière — inutilisables ce mois-ci. "
+                "Un compteur global dirait que tout va bien."
+            )
+        if etat.regions_jamais_balayees:
+            corps.append(
+                "À faire : balayer "
+                + ", ".join(etat.regions_jamais_balayees[:6])
+                + (" …" if len(etat.regions_jamais_balayees) > 6 else "")
+                + "."
+            )
+        else:
+            corps.append(
+                "À faire : toutes les régions du catalogue ont été balayées — "
+                "il faut soit rebalayer plus finement, soit ajouter des régions."
+            )
+
+    envoyee = await slack_lib.notify(
+        text="\n".join(corps), context="famine_inventaire", category="alerts"
+    )
+    if not envoyee:
+        logging.getLogger("inventaire").error(
+            "alerte famine inventaire NON partie — verdict=%s piochable=%s",
+            verdict, etat.piochable,
         )
     return envoyee
 

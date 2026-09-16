@@ -32,7 +32,13 @@ from pydantic import BaseModel, Field
 
 from .. import supabase_client as db
 from ..lib.lead_scoring import MARQUEUR_TETE_DE_FILE, calculer_score, est_tete_de_file
-from ..lib.metiers import SAISONS, colonnes_metiers, resoudre_metiers
+from ..lib.metiers import (
+    SAISONS,
+    colonnes_metiers,
+    fenetre_mois,
+    metier_depuis_industry,
+    resoudre_metiers,
+)
 from ..lib.owner_match import summarize_company_decideur
 from ..lib.pricing import estimated_cost_usd
 
@@ -195,6 +201,64 @@ def _all_targets(track: str = "OPT") -> list[tuple[str, str, str]]:
             for sector in sectors:
                 targets.append((city, sector, icp))
     return targets
+
+
+# Combien de mois d'AVANCE il faut prendre sur l'ouverture d'une fenêtre.
+#
+# 🔴 CE N'EST PAS UN CONFORT, C'EST LE DÉLAI DU PIPELINE. On ne peut pas hydrater
+# et rechercher le jour où la fenêtre s'ouvre : WF-3 traite ~20 fiches/jour, donc
+# 186 entreprises demandent NEUF JOURS de recherche, et WF-4 puis WF-5 passent
+# après. Préparer un métier le mois où sa fenêtre s'ouvre revient à le manquer.
+#
+# ⚠️ À UN MOIS, ET PAS PLUS. Prendre trois mois d'avance ferait traiter en
+# septembre des paysagistes joignables en avril : on paierait la recherche
+# (0,034 $/fiche, mesuré sur 606 runs) six mois avant de s'en servir, et la
+# fiche serait périmée au moment de l'envoi.
+MOIS_AVANCE_PREPARATION = 1
+
+
+def secteurs_a_preparer(
+    aujourdhui: date | None = None, track: str = "agence-ia"
+) -> list[str]:
+    """Les secteurs du catalogue qu'il faut avoir traités MAINTENANT.
+
+    Un secteur est à préparer si la fenêtre saisonnière de son métier est
+    ouverte ce mois-ci, ou le sera dans `MOIS_AVANCE_PREPARATION` mois.
+
+    🔴 LE PONT SECTEUR → MÉTIER PASSE PAR `metier_depuis_industry`, ET C'EST
+    VOLONTAIRE. `SAISONS` est clé par MÉTIER (`déneigement`, `tonte`) alors que
+    le catalogue porte des SECTEURS (`entrepreneur en déneigement`,
+    `tonte de gazon`). Recopier la correspondance ici — en SQL ou en dur —
+    créerait une QUATRIÈME classification concurrente après `classer_services`,
+    `colonnes_metiers` et `metier_depuis_industry`, contre la doctrine « un seul
+    dictionnaire, deux lecteurs » de `lib/metiers.py`. C'est aussi pourquoi ce
+    calcul ne peut PAS vivre dans une vue Postgres.
+
+    ⚠️ Un secteur dont le métier n'est pas reconnu est ÉCARTÉ, pas inclus « au
+    cas où » : l'inclure ferait préparer toute l'année un secteur dont on ne
+    sait rien, et c'est exactement ce que la décision William du 2026-09-14 a
+    tranché en écartant `metier_inconnu` de la démarchabilité.
+
+    ⚠️ `tonte de gazon` et `tonte de pelouse` rendent tous les deux `tonte` :
+    la liste porte donc DEUX libellés pour un seul marché. C'est voulu — ce sont
+    les deux mots-clés réellement présents dans `trouve_par` — mais ne jamais
+    lire `len()` de cette liste comme un nombre de métiers.
+    """
+    jour = aujourdhui or date.today()
+    mois_vises = {
+        ((jour.month - 1 + n) % 12) + 1
+        for n in range(MOIS_AVANCE_PREPARATION + 1)
+    }
+    catalog = _CATALOGS.get(track, SECTOR_CATALOG)
+    retenus: list[str] = []
+    for secteurs in catalog.values():
+        for secteur in secteurs:
+            metier = metier_depuis_industry(secteur)
+            if metier is None:
+                continue
+            if fenetre_mois(metier) & mois_vises:
+                retenus.append(secteur)
+    return sorted(set(retenus))
 
 
 # ----------------------------------------------------------------------
