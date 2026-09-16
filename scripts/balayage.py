@@ -58,10 +58,27 @@ PLACES_URL = "https://places.googleapis.com/v1/places:searchText"
 # 🔴 NE RIEN AJOUTER ICI. Voir l'avertissement du docstring.
 MASQUE_IDS_SEULS = "places.id,nextPageToken"
 
-# En deçà, une tuile n'a rien à cacher : la découper ne rapporterait que des
-# appels. Mesuré le 2026-09-15 — les tuiles à moins de ~8 résultats ne rendaient
-# plus rien de neuf une fois découpées.
-SEUIL_SUBDIVISION = 8
+# En deçà, on ne redécoupe pas une tuile.
+#
+# 🔴 CE SEUIL A ÉTÉ 8, ET C'ÉTAIT FAUX. Le commentaire d'origine affirmait que
+# « les tuiles à moins de ~8 résultats ne rendaient plus rien une fois
+# découpées » — une observation de loin, jamais mesurée, déguisée en constante.
+#
+# Mesure du 2026-09-16, Montréal, déneigement, tout le reste égal :
+#     seuil 8 -> 340 entreprises en 164 appels
+#     seuil 3 -> 371 entreprises en 608 appels     (+31, soit +9 %)
+# Une tuile qui rend 4, 5 ou 6 résultats cache donc bel et bien quelque chose.
+#
+# Pourquoi 3 et pas 1 : une tuile à 0, 1 ou 2 résultats n'a raisonnablement rien
+# derrière, et le plancher de taille (`TUILE_MIN_DEGRES`) ne suffirait pas à
+# borner la descente dans les zones vides. Le vrai argument pour descendre est
+# que les appels sont facturés 0 $ — le seul coût est le temps d'horloge, passé
+# de 79 s à 226 s pour Montréal.
+#
+# ⚠️ Ne pas le remonter « pour aller plus vite ». Le temps d'un balayage ne
+# compte pas : il se fait deux fois par an, à la main. Une entreprise jamais
+# trouvée, elle, l'est pour toujours.
+SEUIL_SUBDIVISION = 3
 
 # Un niveau est « faible » quand il rapporte moins que ça, en proportion du cumul.
 # 🔴 LA RÈGLE EST « ON DÉCOUPE TANT QUE DÉCOUPER RAPPORTE », JAMAIS UNE
@@ -353,6 +370,7 @@ async def passe(
 
 
 async def main() -> None:
+    global SEUIL_SUBDIVISION
     ap = argparse.ArgumentParser(description="Balayage géographique de l'inventaire")
     ap.add_argument("--region", action="append", help="par défaut : toutes")
     ap.add_argument("--secteur", action="append", help="par défaut : tout le catalogue")
@@ -363,6 +381,11 @@ async def main() -> None:
              "paliers faibles qui doit arrêter la passe, pas ce plafond.",
     )
     ap.add_argument("--track", default="agence-ia")
+    ap.add_argument(
+        "--seuil-subdivision", type=int, default=SEUIL_SUBDIVISION,
+        help="une tuile sous ce nombre de résultats n'est pas redécoupée. "
+             "Réglable pour pouvoir MESURER si le défaut est bien placé.",
+    )
     ap.add_argument("--dry-run", action="store_true", help="n'écrit rien en base")
     args = ap.parse_args()
 
@@ -380,7 +403,9 @@ async def main() -> None:
     if inconnus:
         sys.exit(f"secteur(s) hors catalogue {args.track} : {inconnus}\nconnus : {tous}")
 
+    SEUIL_SUBDIVISION = args.seuil_subdivision
     print(f"Balayage — {len(regions)} région(s) x {len(secteurs)} secteur(s)"
+          f" — seuil de subdivision {SEUIL_SUBDIVISION}"
           f"{'  [DRY-RUN]' if args.dry_run else ''}")
     async with httpx.AsyncClient() as client:
         for secteur in secteurs:
