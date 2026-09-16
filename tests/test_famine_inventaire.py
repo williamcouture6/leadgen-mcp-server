@@ -63,19 +63,27 @@ def test_decembre_ouvre_le_printemps_grace_au_mois_d_avance() -> None:
     assert "entrepreneur en déneigement" in secteurs
 
 
-def test_un_secteur_sans_metier_reconnu_est_ecarte() -> None:
+def test_un_secteur_sans_metier_reconnu_est_ecarte(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Et PAS inclus « au cas où ». L'inclure ferait préparer toute l'année un
     secteur dont on ne sait rien — c'est la décision William du 2026-09-14 qui
-    a écarté `metier_inconnu` de la démarchabilité."""
+    a écarté `metier_inconnu` de la démarchabilité.
+
+    ⚠️ `monkeypatch.setitem` et pas une affectation avec try/finally : le
+    catalogue est un état de MODULE, partagé par tout le processus de test. Un
+    `finally` qui ne s'exécute pas — interruption, erreur dans le corps — le
+    laisserait cassé pour tous les tests suivants, et la panne se manifesterait
+    ailleurs que là où elle a été causée.
+    """
     from src.tools import db as dbt
 
-    monkeypatched = {"commerce_local": ["quelque chose qui n'est pas un métier"]}
-    original = dbt._CATALOGS.get("agence-ia")
-    try:
-        dbt._CATALOGS["agence-ia"] = monkeypatched
-        assert dbt.secteurs_a_preparer(date(2026, 9, 16)) == []
-    finally:
-        dbt._CATALOGS["agence-ia"] = original
+    monkeypatch.setitem(
+        dbt._CATALOGS,
+        "agence-ia",
+        {"commerce_local": ["quelque chose qui n'est pas un métier"]},
+    )
+    assert dbt.secteurs_a_preparer(date(2026, 9, 16)) == []
 
 
 # -------------------------------------------------- le littéral de tableau
@@ -171,11 +179,40 @@ def test_une_lecture_tombee_ne_ressemble_pas_a_un_calme_plat() -> None:
 
 # ------------------------------------------------------------- le message
 
+def test_du_stock_sans_rythme_mesurable_ne_declenche_PAS_d_alerte() -> None:
+    """🔴 DÉFAUT RÉEL, ATTRAPÉ EN PRODUCTION LE 2026-09-16. Juste après le
+    premier balayage — 591 entreprises piochables, aucune hydratation encore
+    faite donc aucun rythme mesurable — la première version rendait « stock
+    faible » et aurait crié tous les matins sur une file abondante.
+
+    Sans rythme, on ne peut pas parler en jours. Alors on n'en parle pas : la
+    ligne du résumé porte le chiffre, #alertes reste silencieux."""
+    from src.http_api import _verdict_inventaire
+
+    etat = _etat(
+        total=842, piochable=591, rythme_par_jour=None, jours_de_file=None,
+        dernier_balayage="2026-09-16T01:00:00Z",
+    )
+    assert _verdict_inventaire(etat) == "sans_rythme"
+
+
+def test_un_stock_maigre_crie_meme_sans_rythme() -> None:
+    """La contrepartie : 12 fiches sont maigres à n'importe quel rythme
+    plausible. Se taire là serait le défaut inverse."""
+    from src.http_api import _verdict_inventaire
+
+    etat = _etat(
+        total=800, piochable=12, rythme_par_jour=None, jours_de_file=None,
+        dernier_balayage="2026-09-16T01:00:00Z",
+    )
+    assert _verdict_inventaire(etat) == "rythme_inconnu"
+
+
 @pytest.mark.anyio
 async def test_aucune_alerte_quand_tout_va_bien_ni_avant_le_premier_balayage() -> None:
     from src.http_api import _alerter_famine_inventaire
 
-    for verdict in ("ok", "jamais_balaye"):
+    for verdict in ("ok", "jamais_balaye", "sans_rythme"):
         assert await _alerter_famine_inventaire(_etat(), verdict) is None
 
 
@@ -210,7 +247,7 @@ async def test_le_message_nomme_les_chiffres_et_l_action(monkeypatch) -> None:
     assert "entrepreneur en déneigement" in msg
     assert "Longueuil" in msg
     # LE point 2 : le total ne doit jamais s'afficher seul, sans le hors-saison.
-    assert "5752" in msg and "HORS préparation" in msg
+    assert "DORMENT" in msg  # le total ne s'affiche jamais seul
 
 
 @pytest.mark.anyio
@@ -271,4 +308,4 @@ def test_la_ligne_du_resume_separe_le_stock_du_piochable() -> None:
     ligne = _ligne_resume_inventaire(etat, "famine")
     assert "5800 connues" in ligne
     assert "47 piochables" in ligne
-    assert "5753 hors préparation" in ligne
+    assert "5753 en attente de leur saison" in ligne

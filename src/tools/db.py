@@ -51,10 +51,53 @@ logger = logging.getLogger(__name__)
 # Aligné avec docs/icp-playbooks.md. Pour MVP on reste sur 3 segments × top villes.
 # Le sector correspond à un keyword Google Places (`type` ou `keyword`).
 
-DEFAULT_CITIES: list[str] = [
-    "Montréal", "Québec", "Laval", "Gatineau", "Longueuil",
-    "Sherbrooke", "Saguenay", "Lévis", "Trois-Rivières", "Terrebonne",
-]
+# Les régions de sourcing, avec le rectangle que le balayeur interroge.
+#
+# 🔴 LA CLÉ EST LE NOM DE RÉGION, ET C'EST LA MÊME CHAÎNE PARTOUT :
+# `companies.city` quand Google ne rend pas de locality, `sourcing_runs.city`,
+# `sourcing_inventaire.regions` et `sourcing_balayages.region`. Rien ne les
+# accorde mécaniquement côté base — une coquille rendrait une région invisible
+# à l'alerte de famine, définitivement. D'où la source unique ici, et
+# `DEFAULT_CITIES` qui en DÉRIVE au lieu d'être une seconde liste à maintenir.
+#
+# Rectangle = (bas_lat, bas_lng, haut_lat, haut_lng), coin sud-ouest puis
+# nord-est, comme l'attend `locationRestriction` de Places.
+#
+# ⚠️ CES BORNES SONT APPROXIMATIVES ET VOLONTAIREMENT GÉNÉREUSES. L'asymétrie
+# qui justifie ce choix : un rectangle TROP GRAND ne coûte que des tuiles
+# supplémentaires, et une tuile est facturée 0 $ au masque identifiants-seuls ;
+# un rectangle TROP PETIT perd des entreprises pour toujours, sans que rien ne
+# le signale. Dans le doute, élargir.
+#
+# ⚠️ Les rectangles se CHEVAUCHENT entre régions voisines (Montréal / Laval /
+# Terrebonne / Longueuil). C'est sans conséquence : la dédup se fait sur le
+# `google_place_id` et `sourcing_inventaire.regions` est un tableau — une
+# entreprise sortie de deux balayages porte les deux régions.
+#
+# ✅ Vérifié le 2026-09-16 : les bornes de Montréal, Québec, Laval et Gatineau
+# contiennent bien la totalité des fiches que nous avons déjà dans ces villes.
+# Les six autres régions n'ont AUCUNE fiche en base, donc leurs bornes ne sont
+# vérifiées par rien — c'est le premier balayage qui les éprouvera.
+REGIONS_BALAYAGE: dict[str, tuple[float, float, float, float]] = {
+    "Montréal":       (45.38, -74.02, 45.74, -73.44),
+    "Québec":         (46.70, -71.55, 47.00, -71.05),
+    "Laval":          (45.50, -73.92, 45.74, -73.56),
+    # Étirée d'ouest en est sur ~60 km : la borne est à -75.50 laissait dehors
+    # Buckingham, Masson-Angers et L'Ange-Gardien — trois fiches déjà en base,
+    # trouvées le 2026-09-16 en vérifiant ce rectangle. La démonstration en
+    # miniature de « dans le doute, élargir ».
+    "Gatineau":       (45.38, -76.10, 45.66, -75.25),
+    "Longueuil":      (45.42, -73.58, 45.60, -73.36),
+    "Sherbrooke":     (45.28, -72.08, 45.52, -71.74),
+    "Saguenay":       (48.26, -71.40, 48.60, -70.80),
+    "Lévis":          (46.64, -71.34, 46.88, -70.90),
+    "Trois-Rivières": (46.24, -72.76, 46.50, -72.40),
+    "Terrebonne":     (45.62, -73.78, 45.88, -73.46),
+}
+
+# ⚠️ DÉRIVÉE, jamais réécrite à la main : deux listes finiraient par diverger,
+# et l'ordre compte (il tranche les égalités du classement des cibles).
+DEFAULT_CITIES: list[str] = list(REGIONS_BALAYAGE)
 
 # 3 segments ICP × keywords Google Places
 SECTOR_CATALOG: dict[str, list[str]] = {

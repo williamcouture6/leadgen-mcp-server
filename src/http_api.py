@@ -3004,6 +3004,24 @@ FENETRE_MESURE_RYTHME_JOURS = 14
 # ville prend quelques minutes ; deux heures est déjà très généreux.
 DELAI_BALAYAGE_ORPHELIN_H = 2
 
+# 🔴 LE PLANCHER QUI ÉVITE DE CRIER AU LOUP QUAND LE RYTHME EST INCONNU.
+#
+# Tant que le piocheur n'a pas tourné, `derniere_tentative` n'est écrit nulle
+# part : aucun rythme n'est mesurable, donc aucune file ne peut s'exprimer en
+# jours. Sans ce plancher, la première version criait « stock faible » sur
+# 591 entreprises piochables — mesuré le 2026-09-16, juste après le premier
+# balayage réel. Une alerte fausse dès son premier jour de vie s'apprend à être
+# ignorée avant d'avoir jamais servi, et c'est précisément ce que le verdict
+# `jamais_balaye` avait été écrit pour éviter un cran plus tôt.
+#
+# La règle honnête : SANS RYTHME, ON NE PARLE PAS DE JOURS. On ne crie que sur
+# un stock qui serait faible à n'importe quel rythme plausible.
+#
+# 40 = deux jours à la cadence de WF-6 (20 courriels/jour, la borne réelle du
+# pipeline). En dessous, c'est maigre quelle que soit l'hypothèse ; au-dessus,
+# on n'en sait rien et on se tait — la ligne du résumé montre le chiffre.
+SEUIL_PIOCHABLE_SANS_RYTHME = 40
+
 
 def _litteral_tableau_pg(valeurs: list[str]) -> str:
     """Un littéral de tableau Postgres pour un filtre PostgREST `ov.`/`cs.`.
@@ -3021,6 +3039,11 @@ class EtatInventaire(BaseModel):
     """Photo de l'inventaire, telle que l'alerte et le résumé la lisent."""
     total: int = 0
     piochable: int = 0                      # a_traiter ET secteur à préparer
+    # ⚠️ SÉPARÉ DU RESTE À DESSEIN. `total - piochable` mélange trois choses
+    # sans rapport : les fiches déjà payées, celles écartées comme junk, et
+    # celles dont la saison n'est pas encore là. La première version affichait
+    # « 251 hors préparation saisonnière » pour 251 fiches DÉJÀ TRAITÉES.
+    traitees: int = 0
     # Défauts mutables : Pydantic v2 les copie par instance, pas de piège ici.
     par_secteur: dict[str, int] = {}
     secteurs_a_preparer: list[str] = []
@@ -3046,6 +3069,10 @@ async def _lire_etat_inventaire(track: str = "agence-ia") -> EtatInventaire:
     try:
         etat.total = await sb.count(
             "sourcing_inventaire", params={"track": f"eq.{track}"}
+        )
+        etat.traitees = await sb.count(
+            "sourcing_inventaire",
+            params={"track": f"eq.{track}", "etat": "eq.traitee"},
         )
         if etat.secteurs_a_preparer:
             etat.piochable = await sb.count(
@@ -3147,9 +3174,13 @@ def _verdict_inventaire(etat: EtatInventaire) -> str:
     if etat.balayages_orphelins > 0:
         return "balayage_orphelin"
     if etat.jours_de_file is None:
-        # Stock connu mais rythme pas encore mesurable : le piocheur n'a pas
-        # encore tourné. On ne peut pas parler en jours, seulement en fiches.
-        return "vide" if etat.piochable == 0 else "rythme_inconnu"
+        # Stock connu, rythme pas encore mesurable : le piocheur n'a pas encore
+        # tourné. On ne peut pas parler en jours — alors on n'en parle pas.
+        if etat.piochable == 0:
+            return "vide"
+        if etat.piochable < SEUIL_PIOCHABLE_SANS_RYTHME:
+            return "rythme_inconnu"   # maigre à tout rythme plausible → on crie
+        return "sans_rythme"          # on ne sait pas → la ligne suffit
     if etat.jours_de_file < SEUIL_JOURS_URGENCE:
         return "urgence"
     if etat.jours_de_file < SEUIL_JOURS_FAMINE:
@@ -3172,10 +3203,14 @@ def _ligne_resume_inventaire(etat: EtatInventaire, verdict: str) -> str:
     file = f"{etat.piochable} piochables"
     if etat.jours_de_file is not None:
         file += f" (~{etat.jours_de_file:.1f} j au rythme de {etat.rythme_par_jour:.0f}/j)"
-    hors = etat.total - etat.piochable
     ligne = f"🗺️ Inventaire : {etat.total} connues · {file}"
-    if hors > 0:
-        ligne += f" · {hors} hors préparation saisonnière"
+    if etat.traitees > 0:
+        ligne += f" · {etat.traitees} déjà traitées"
+    # Ce qui reste : ni piochable, ni déjà payé. C'est le stock qui DORT en
+    # attendant sa saison — le chiffre qu'un compteur global masquerait.
+    en_attente = etat.total - etat.piochable - etat.traitees
+    if en_attente > 0:
+        ligne += f" · {en_attente} en attente de leur saison"
     if detail:
         ligne += f"\n    {detail}"
     return ligne
@@ -3190,7 +3225,10 @@ async def _alerter_famine_inventaire(etat: EtatInventaire, verdict: str) -> bool
     """
     from .lib import slack as slack_lib
 
-    if verdict in ("ok", "jamais_balaye"):
+    # `sans_rythme` est silencieux au même titre que `ok` : on a du stock et
+    # aucun moyen honnête de dire combien de temps il tient. La ligne du résumé
+    # porte le chiffre ; #alertes ne sert qu'à réveiller.
+    if verdict in ("ok", "jamais_balaye", "sans_rythme"):
         return None
 
     corps: list[str]
@@ -3233,11 +3271,12 @@ async def _alerter_famine_inventaire(etat: EtatInventaire, verdict: str) -> bool
             + (", ".join(etat.secteurs_a_preparer) or "aucun secteur en fenêtre")
             + "."
         )
-        hors = etat.total - etat.piochable
-        if hors > 0:
+        en_attente = etat.total - etat.piochable - etat.traitees
+        if en_attente > 0:
             corps.append(
-                f"⚠️ L'inventaire en contient {etat.total} au total, mais {hors} "
-                "sont HORS préparation saisonnière — inutilisables ce mois-ci. "
+                f"⚠️ L'inventaire en contient {etat.total} au total, mais "
+                f"{en_attente} DORMENT en attendant leur saison et "
+                f"{etat.traitees} sont déjà traitées — inutilisables ce mois-ci. "
                 "Un compteur global dirait que tout va bien."
             )
         if etat.regions_jamais_balayees:
