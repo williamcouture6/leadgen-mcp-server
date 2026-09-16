@@ -266,8 +266,6 @@ def test_la_vraie_excavation_est_toujours_reconnue() -> None:
     [
         ("Aménagement des plates-bandes", "paysagement", 23),
         ("Sarclage des plates-bandes", "paysagement", 23),
-        ("Lavage à pression de patio", "lavage de vitres", 34),
-        ("Construction de murs de soutènement", "paysagement", 19),
     ],
 )
 def test_les_trous_du_dictionnaire_sont_bouches(
@@ -278,11 +276,47 @@ def test_les_trous_du_dictionnaire_sont_bouches(
 
     ⚠️ « plate-bande » au SINGULIER apparaît dans **0 fiche** de production,
     « plates-bandes » dans 23 : la racine d'origine était du code mort.
-    Le classement de « lavage à pression » (→ vitres) et « murs de soutènement »
-    (→ paysagement) est une décision de William du 2026-08-30.
+
+    🔴 DEUX DE CES TROUS ONT ÉTÉ REBOUCHÉS DANS L'AUTRE SENS le 2026-09-16, et
+    leurs cas vivent maintenant dans le test qui suit : « lavage à pression »
+    n'est plus du lavage de vitres, et « murs de soutènement » n'est plus du
+    paysagement. Les deux avaient été classés ainsi le 2026-08-30 ; William les
+    a renversés en lisant les courriels qu'ils produisaient.
     """
     r = resoudre_metiers([libelle], date(2027, 2, 10))
     assert metier_attendu in r.metiers, f"{libelle!r} → {r.metiers}"
+
+
+def test_les_deux_classements_renverses_le_2026_09_16() -> None:
+    """🔴 CE QUI A ÉTÉ RENVERSÉ, ET POURQUOI — on garde le cas, pas le verdict.
+
+    Les deux classements venaient d'une décision du 2026-08-30 et se défendaient
+    sur le papier : un laveur à pression a le même client et la même saison qu'un
+    laveur de vitres ; un mur de soutènement se construit dans un aménagement.
+
+    Ce qui les a fait tomber, le 2026-09-16, c'est la lecture des courriels
+    produits. Le NOM de la famille sert de vocabulaire : un entrepreneur qui fait
+    du lavage à pression se faisait parler de **vitres**, et un maçon de murs de
+    soutènement se faisait parler de **paysagement**. Le classement était
+    défendable ; le courriel ne l'était pas.
+
+    ⚠️ Ne pas les rétablir en les croyant oubliés : 52 libellés portaient le
+    premier et 41 le second, tous correctement appariés. C'est justement parce
+    que l'appariement marchait que le défaut était invisible.
+    """
+    r = resoudre_metiers(["Lavage à pression de patio"], date(2027, 2, 10))
+    assert "lavage de vitres" not in r.metiers, r.metiers
+
+    r = resoudre_metiers(["Construction de murs de soutènement"], date(2027, 2, 10))
+    assert "paysagement" not in r.metiers, r.metiers
+
+    # Contre-épreuve : les vraies vitres et le vrai paysagement sont intacts.
+    assert "lavage de vitres" in resoudre_metiers(
+        ["Lavage de vitres résidentiel"], date(2027, 2, 10)
+    ).metiers
+    assert "paysagement" in resoudre_metiers(
+        ["Aménagement paysager complet"], date(2027, 2, 10)
+    ).metiers
 
 
 def test_herbofleurs_avec_ses_VRAIS_libelles() -> None:

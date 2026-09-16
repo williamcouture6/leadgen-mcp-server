@@ -67,7 +67,17 @@ RACINES: dict[str, tuple[str, ...]] = {
     # paysagement plutot que les douze mois d'excavation.
     "paysagement": (
         "paysag", "amenagement paysager", "plate-bande", "plates-bande",
-        "platebande", "haie", "soutenement",
+        "platebande", "haie",
+        # ⚠️ « soutenement » RETIRE le 2026-09-16 (decision William) : un mur de
+        # soutenement n'est pas du paysagement. 41 libelles le portaient, tous des
+        # « mur(s) / muret(s) de soutenement » — c'est de la maconnerie, pas de
+        # l'amenagement. Le seul libelle qui disait AUSSI « Amenagement paysager
+        # (terrasses, allees, murs de soutenement) » garde sa famille par la racine
+        # paysag : aucune fiche ne perd le paysagement a cause de ce retrait seul.
+        #
+        # ⚠️ Il avait ete ajoute avec tourbe et plantation le 2026-09-13, pour
+        # sortir trois fiches d'une fenetre VIDE. Ce motif reste valable pour les
+        # deux autres racines ; c'est celle-ci qui appariait trop large.
         # 🔧 Ajoutees le 2026-09-13. Trois fiches portaient une fenetre VIDE
         # (joignables zero mois sur douze, donc invisibles pour toujours) parce
         # qu'aucune racine n'appariait leurs libelles : seuls `pavage` et
@@ -197,6 +207,32 @@ EXCLUSIONS: dict[str, tuple[str, ...]] = {
         "deck de piscine",
         "decks de piscine",
         "amenagement avec piscine",
+        # 🔴 PAS D'EXCLUSION POUR LA PISCINE CONSTRUITE — tentee le 2026-09-16,
+        # RETIREE le meme jour, et la raison merite d'etre gardee.
+        #
+        # La demande etait juste : « Installation de piscines creusees » ne doit
+        # pas faire un pisciniste, et « Excavation sur mesure (fondations, drains
+        # francais, piscines creusees...) » avait valu un refus de conformite a
+        # Groupe Everest. La correction evidente — exclure ces libelles — ouvre un
+        # trou que trois tests existants gardaient :
+        #
+        #     « Installation de piscines creusees » + industry « entretien de
+        #     piscine » -> plus aucune famille par les services -> le SECTEUR
+        #     reprend la parole -> « entretien » dans le mot-cle satisfait EXIGE
+        #     -> la fenetre S'OUVRE pour un constructeur de piscines.
+        #
+        # ⚠️ Le systeme gerait DEJA ce cas, autrement : la famille est attribuee,
+        # mais `EXIGE` (entretien/nettoyage/ouverture/fermeture/...) n'est pas
+        # satisfait, donc la fenetre ne s'ouvre jamais. Voir
+        # `test_un_constructeur_de_piscines_n_ouvre_toujours_rien`,
+        # `test_la_piscine_sans_verbe_dentretien_n_ouvre_RIEN`.
+        #
+        # 🔴 CE QUI RESTE VRAIMENT A CORRIGER n'est donc pas le classement, c'est
+        # le VOCABULAIRE : la fenetre restait fermee, mais le redacteur nommait
+        # quand meme la piscine. Meme partage que pour le mot-cle de sourcing —
+        # la garde protegeait la saison, pas le courriel. La correction est dans
+        # la consigne du redacteur (ne pas promouvoir en metier autonome ce qui
+        # n'apparait qu'entre parentheses dans un libelle), pas ici.
     ),
 }
 
@@ -262,34 +298,30 @@ ECRASE: dict[str, tuple[str, ...]] = {
     "piscine": ("excavation",),
 }
 
-# Les racines qui ne peuvent PAS s'ecrire comme un simple prefixe, parce que
-# le mot ne compte QUE s'il est accompagne. Compilees telles quelles, sans
+# Les racines qui ne peuvent PAS s'ecrire comme un simple prefixe, parce que le
+# mot ne compte QUE s'il est accompagne. Compilees telles quelles, sans
 # `re.escape` — ce sont des motifs, pas des mots.
 #
-# 🔴 « PRESSION » SEUL NE COMPTE PLUS — decision William du 2026-09-15, sur
-# mesure. Le mot avait ete pose le 2026-08-30 pour le *lavage a pression*, et
-# cette intention reste juste. Mais la racine nue attrapait aussi ce qui n'a
-# rien a voir :
+# 🔴 VIDE DEPUIS LE 2026-09-16, et le mecanisme est garde expres : il a servi
+# une seule journee, entre deux decisions, et la trace de ce demi-tour vaut plus
+# que la place qu'elle prend.
 #
-#     « Application de scellant sous pression »  ->  laveuse de vitres
+# Le 2026-08-30, « pression » avait ete ajoute aux racines de `lavage de vitres`
+# — meme client, meme saison d'avril, meme equipement. Le 2026-09-15, le mot nu
+# attrapait « Application de scellant sous pression », un service d'asphalte, et
+# faisait de Pavage Gadbois une laveuse de vitres ; il a donc ete resserre ici
+# pour n'accepter que « lavage/nettoyage ... pression ».
 #
-# Consequence observee le 2026-09-15 : Pavage Gadbois etait classee en lavage
-# de vitres, le redacteur lui ecrivait donc un courriel sur les vitres, et le
-# juge de conformite le BLOQUAIT pour fait invente. Le redacteur n'inventait
-# rien — il obeissait a un dictionnaire qui se trompait.
+# Le 2026-09-16, William a tranche plus haut : **le lavage a pression n'est pas
+# du lavage de vitres**, meme bien orthographie. 52 libelles de la base le
+# portaient, tous de vrais lavages a pression — et c'est justement le probleme.
+# Le NOM de la famille sert de vocabulaire au courriel : un laveur a pression se
+# faisait parler de vitres.
 #
-# 📏 La mesure qui a dicte le motif : sur les 53 libelles de la base contenant
-# « pression », 51 sont de vrais lavages et portent TOUS « lavage » ou
-# « nettoyage ». Les deux intrus — « Test de pression » et « Application de
-# scellant sous pression » — n'en portent aucun. Les mots intercales varient
-# (« a », « a la », « a haute », « sous », « exterieur a »), d'ou les quelques
-# mots de latitude plutot qu'une liste de formes figees.
-#
-# ⚠️ « repression d'insectes » ne matchait DEJA pas — la frontiere de mot s'en
-# chargeait. Un test le verifie, pour qu'un futur motif ne le casse pas.
-RACINES_MOTIFS: dict[str, tuple[str, ...]] = {
-    "lavage de vitres": (r"\b(?:lav|nettoy)\w*(?:\s+\S+){0,3}\s+pression\b",),
-}
+# ⚠️ Le lavage a pression n'a donc plus AUCUNE famille. Une entreprise qui ne
+# ferait que ca n'a plus de metier reconnu, donc plus de fenetre. Lui creer sa
+# propre famille est une decision, pas un nettoyage.
+RACINES_MOTIFS: dict[str, tuple[str, ...]] = {}
 
 _RACINES_RE: dict[str, tuple[re.Pattern[str], ...]] = {
     metier: tuple(re.compile(r"\b" + re.escape(r)) for r in racines)

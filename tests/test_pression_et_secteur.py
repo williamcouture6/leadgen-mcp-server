@@ -30,23 +30,33 @@ class TestPressionSeule:
     tenait pas, c'est le mot tout seul.
     """
 
-    def test_le_vrai_lavage_a_pression_compte_toujours(self) -> None:
-        """Les 51 libellés légitimes mesurés en base contiennent tous
-        « lavage » ou « nettoyage ». Les formes varient ; le sens non."""
+    def test_le_lavage_a_pression_n_est_PAS_du_lavage_de_vitres(self) -> None:
+        """🔴 RENVERSÉ LE 2026-09-16, au lendemain du premier correctif.
+
+        Le 2026-09-15, ce test s'appelait « le vrai lavage à pression compte
+        toujours » : on venait de resserrer la racine pour qu'elle exige un mot
+        de lavage, et les 51 libellés légitimes de la base continuaient de
+        compter.
+
+        William a tranché plus haut le lendemain, en lisant les courriels : un
+        entrepreneur qui fait du lavage à pression se faisait parler de
+        **vitres**, parce que le nom de la famille sert de vocabulaire. Le
+        classement était bon, le courriel ne l'était pas.
+
+        ⚠️ Les 52 libellés concernés n'ont plus AUCUNE famille. Une entreprise
+        qui ne ferait que du lavage à pression n'a donc plus de métier reconnu,
+        donc plus de fenêtre saisonnière. Lui créer sa propre famille est une
+        décision à prendre, pas un nettoyage à faire.
+        """
         for libelle in (
             "Lavage à pression",
             "Lavage à la pression",
             "Lavage à haute pression",
-            "Lavage haute pression",
-            "Lavage sous pression (pressure washing)",
             "Nettoyage haute pression",
-            "Nettoyage à haute pression",
             "Nettoyage à pression",
             "Lavage extérieur à pression",
-            "Nettoyage à pression ou doux",
-            "Lavage à pression (patios, entrées, façades)",
         ):
-            assert "lavage de vitres" in metiers_nommes(libelle), libelle
+            assert "lavage de vitres" not in metiers_nommes(libelle), libelle
 
     def test_pression_sans_lavage_ne_compte_plus(self) -> None:
         """🔴 LES DEUX CAS RÉELS QUI ONT CAUSÉ UN BLOCAGE.
