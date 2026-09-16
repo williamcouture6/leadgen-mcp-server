@@ -52,7 +52,10 @@ RELANCES: tuple[tuple[str, str, str], ...] = (
     # d'un genre que le prospect constate lui-même, donc le pire. Si une
     # relance 4 apparaît un jour, c'est le texte de la 3 qu'il faut changer
     # d'abord.
-    ("relance_3", "followup_3_body", "Relance 3 (dernier contact — annonce la fin de la séquence)"),
+    # Jour 11, et pas le lendemain de la relance 2 : `delay` d'une étape Instantly
+    # est l'attente avant la SUIVANTE (spec OpenAPI v2). À 1, l'adieu partait à
+    # J+8, 24 h après « mon courriel s'est pas perdu ». Porté à 4 le 2026-09-15.
+    ("relance_3", "followup_3_body", "Relance 3 (jour 11, dernier contact — annonce la fin de la séquence)"),
 )
 
 # Les clés seules, pour les parcours simples.
@@ -93,7 +96,9 @@ Pour te rappeler, je voudrais regarder avec toi pour te créer un système de r�
 
 Pour le site, l'offre tient toujours.
 
-J'espère pouvoir t'en parler un peu plus!""",
+J'espère pouvoir t'en parler un peu plus!
+
+Hésite pas à m'écrire!""",
     # Les quatre chiffres de ce corps sont gardés par
     # `check_statistiques_conformes`. Ce qu'ils valent réellement — le 78 % n'a
     # pas de source primaire, le 21 fois mesure la qualification — est écrit
@@ -116,5 +121,7 @@ Je crois avoir compris que ça ne t'intéresse pas d'avoir le système et un sit
 
 Je ne vais plus t'écrire, donc si tu veux en savoir plus contacte-moi sur le même courriel.
 
-Au plaisir de pouvoir te parler!""",
+Au plaisir de pouvoir te parler!
+
+Tu peux m'écrire quand tu veux!""",
 }

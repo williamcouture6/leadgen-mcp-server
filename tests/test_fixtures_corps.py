@@ -60,11 +60,28 @@ def test_le_budget_de_pis_est_respecte(nom: str, corps: str) -> None:
 
 # Les corps qui ferment en douceur, sans demander de geste.
 #
-# Textes de William, remarque `cta_present` signalée et assumée le 2026-09-01.
-# La relance 1 finit sur « J'espère pouvoir t'en parler un peu plus! » et la
-# relance 3 est un ADIEU : lui coller un « dis-moi juste si » contredirait la
-# phrase « je ne vais plus t'écrire » qui la précède.
-FERMETURES_DOUCES = frozenset({"RELANCE_1", "RELANCE_3"})
+# 🔧 VIDE DEPUIS LE 2026-09-16, et l'ensemble est garde : c'est le mecanisme qui
+# a produit ce commit. Le test verifie l'exception DANS LES DEUX SENS, donc le
+# jour ou une fermeture douce s'est mise a porter un vrai CTA, il a echoue en
+# demandant lui-meme qu'on la retire d'ici. Une exception qu'on n'entretient pas
+# devient une permission oubliee.
+#
+# Historique. Le 2026-09-01, les relances 1 et 3 etaient inscrites ici : la
+# premiere finissait sur « J'espere pouvoir t'en parler un peu plus! », et la
+# troisieme est un ADIEU — lui coller un « dis-moi juste si » aurait contredit
+# le « je ne vais plus t'ecrire » qui la precede.
+#
+# Mesure du 2026-09-15 : sur 20 brouillons juges, 20 partaient avec ces deux
+# relances sans aucun appel a l'action. La checklist de go-live note que 68 %
+# des reponses positives arrivent apres la 2e touche — une relance qui ne
+# demande rien depense une touche pour rien.
+#
+# 🔴 L'OBJECTION DE L'ADIEU NE TOMBE PAS SUR LA FORMULATION DE WILLIAM, et c'est
+# ce qui la rend meilleure que l'ancienne : « je ne vais plus t'ecrire » parle de
+# LUI, « Tu peux m'ecrire quand tu veux! » parle du PROSPECT. Les deux se
+# completent au lieu de se contredire. C'est « dis-moi juste si », qui solliciterait
+# une reponse comme si la sequence continuait, qui aurait menti.
+FERMETURES_DOUCES: frozenset[str] = frozenset()
 
 
 @pytest.mark.parametrize("nom,corps", CORPS)

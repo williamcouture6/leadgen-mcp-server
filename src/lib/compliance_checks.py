@@ -671,6 +671,22 @@ _EXPLICIT_INVITE_RE = re.compile(
     r"dis[\s-]moi|juste[\s-][àa][\s-]me[\s-]dire|fais[\s-]moi[\s-]signe|"
     r"me[\s-]le[\s-]dire|fais[\s-]moi[\s-]savoir|un appel rapide|"
     r"h[ée]site[\s-]pas|"
+    # 🔧 Ajoute le 2026-09-16 avec la ligne d'invitation des relances 1 et 3
+    # (« Hesite pas a m'ecrire! », « Tu peux m'ecrire quand tu veux! »).
+    # Les deux relances n'avaient AUCUN CTA — mesure du 2026-09-15 : 20 sur 20.
+    #
+    # ⚠️ Ancre sur « m'ecrire », jamais sur « ecrire » seul : les trois relances
+    # s'ouvrent par « Je te reecris », et « je ne vais plus t'ecrire » clot la
+    # troisieme. Un motif large y verdirait sur le mot le plus banal du corps,
+    # et le check redeviendrait vert pour la mauvaise raison — exactement le
+    # defaut que ses versions v1 et v2 ont eu deux fois.
+    # ⚠️ L'APOSTROPHE EST EXIGEE, et une frontiere de mot devant le « m ».
+    # Premier jet : une classe de caracteres fourre-tout qui acceptait aussi une
+    # contre-oblique et la lettre s, et rendait le motif illisible. Ce check a
+    # deja ete vert pour la mauvaise raison DEUX fois (v1 et v2, voir le
+    # docstring) : on ne lui laisse pas une troisieme occasion.
+    r"\bm['’][ée]crire|"
+
     # 🔧 La durée doit être PROPOSÉE, pas seulement mentionnée. Corrigé le
     # 2026-09-02 sur trouvaille du conseil.
     #

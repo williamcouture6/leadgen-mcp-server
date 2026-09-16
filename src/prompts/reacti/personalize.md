@@ -293,7 +293,7 @@ regroupent, le reste se rattache avec « pis » :
     ❌ autant du déneigement résidentiel que du déneigement commercial pis de
        la mini-excavation
 
-    ✅ autant plusieurs sortes de déneigement, résidentiel et commercial, que
+    ✅ autant de sortes de déneigement, résidentiel et commercial, que
        de la mini-excavation
 
 Quand aucun métier ne revient deux fois, la forme reste « autant X que Y pis

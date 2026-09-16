@@ -823,3 +823,58 @@ def test_run_all_clean_legit_email_no_blockers(
     )
     blockers = [r for r in results if not r.passed and r.severity == "block"]
     assert not blockers, f"email propre devrait avoir 0 blockers: {[(b.name, b.message) for b in blockers]}"
+
+
+# ── Le CTA des relances (2026-09-16) ───────────────────────────────────────
+
+
+def test_les_trois_relances_portent_une_invitation_explicite() -> None:
+    """🔴 MESURE DU 2026-09-15 : 20 brouillons sur 20 partaient avec une relance 1
+    et une relance 3 SANS aucun appel à l'action.
+
+    La relance 1 finissait par « J'espère pouvoir t'en parler un peu plus! » et
+    la relance 3 par « contacte-moi sur le même courriel » — ni l'une ni l'autre
+    ne demandait quoi que ce soit dans les termes que le check reconnaît. Seule
+    la relance 2 passait, grâce à « si t'as des questions hésite pas ».
+
+    Ça compte : la checklist de go-live note que **68 % des réponses positives
+    arrivent après la 2ᵉ touche**. Une relance qui ne demande rien dépense une
+    touche pour rien.
+
+    William a écrit les deux lignes le 2026-09-16 — « Hésite pas à m'écrire! »
+    et « Tu peux m'écrire quand tu veux! » — ajoutées SOUS le texte existant,
+    qui n'a pas bougé.
+    """
+    from src.lib.compliance_checks import check_cta_present
+    from src.lib.relances import CORPS_RELANCES
+
+    for cle, corps in CORPS_RELANCES.items():
+        assert check_cta_present(corps).passed, f"{cle} n'a pas de CTA reconnu"
+
+
+def test_le_motif_m_ecrire_ne_verdit_pas_sur_les_tournures_banales() -> None:
+    """🔴 CE CHECK A DÉJÀ ÉTÉ VERT POUR LA MAUVAISE RAISON DEUX FOIS.
+
+    Sa v1 verdissait sur le bloc SERVICE, sa v2 sur la ligne de renvoi présente
+    dans tous les gabarits. À chaque fois, le vrai CTA n'était jamais regardé.
+    Ajouter « m'écrire » à la liste rouvrait exactement ce risque : les trois
+    relances s'ouvrent par « Je te réécris », et la troisième contient « je ne
+    vais plus t'écrire ». Un motif ancré sur « écrire » seul aurait verdi sur le
+    mot le plus banal du corps.
+
+    D'où l'apostrophe exigée et la frontière de mot devant le « m ».
+    """
+    from src.lib.compliance_checks import check_cta_present
+
+    for banal in (
+        "Je te réécris juste pour remettre mon courriel sur le dessus.",
+        "Je ne vais plus t'écrire, donc si tu veux en savoir plus.",
+        "On pourrait écrire un plan ensemble.",
+        "un film écrire quelque chose",
+    ):
+        assert not check_cta_present(banal).passed, banal
+
+    # Les deux apostrophes du français comptent : le clavier pose U+0027,
+    # plusieurs éditeurs et Word posent U+2019.
+    assert check_cta_present("Tu peux m'écrire quand tu veux!").passed
+    assert check_cta_present("Hésite pas à m" + chr(8217) + "écrire!").passed
