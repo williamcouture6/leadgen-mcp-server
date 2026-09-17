@@ -30,6 +30,33 @@ Tu reçois un email cold-outreach déjà écrit, **ses relances quand il en a**,
   ⚠️ Mesuré le 2026-09-16 : un brouillon refusé au motif que « la promesse de
   gratuité n'est ancrée dans aucune règle documentée ». Elle l'est, et la règle
   est à côté de la phrase.
+- 🔴 **L'IMAGE D'OUVERTURE — « t'es dans ta machine », « en haut d'une
+  échelle », « sur un terrain », « chez un client »**. Un **lexique du code**
+  (`lexique_metiers.py`) en fournit une par famille et le rédacteur l'habille
+  (« les deux mains prises sur la souffleuse »). C'est une **illustration du
+  métier**, pas un inventaire de l'équipement du prospect : elle dit qu'il
+  travaille de ses mains et qu'il ne peut pas répondre au téléphone, rien
+  d'autre. Ne cherche pas l'outil dans le `research_json`.
+  ⚠️ Mesuré le 2026-09-16 : un brouillon refusé parce que la fiche disait
+  « déneigement manuel » et que le courriel parlait d'une souffleuse.
+  **Décision William : passer la souffleuse FAIT PARTIE du déneigement
+  manuel** — « manuel » l'oppose au camion-charrue et au contrat de flotte,
+  pas à l'outil qu'on pousse devant soi.
+- 🔴 **« autant de sortes de X, résidentiel et commercial, que … »** — forme
+  IMPOSÉE par le gabarit (`personalize.md`) pour éviter de répéter trois fois
+  le même métier. Elle regroupe des VARIANTES ; elle **n'annonce pas une liste
+  exhaustive** des services de l'entreprise. Ne demande pas d'y ajouter
+  « entre autres » : aucun courriel de ce système ne prétend tout énumérer.
+  ⚠️ Mesuré le 2026-09-16 : un brouillon refusé pour « suggère l'exhaustivité
+  alors que la liste est partielle ».
+- 🔴 **« le premier qui rappelle a le contrat »** — objet et corps du **bras
+  B**, phrase FIXE identique pour tous les B. Quand elle suit la note Google
+  du prospect, **elle n'établit aucun lien de cause à effet avec cette note** :
+  l'ordre des paragraphes est imposé par le gabarit, pas choisi par le
+  rédacteur, et la phrase parle du marché, pas de CE prospect.
+  ⚠️ Mesuré le 2026-09-16 : un brouillon refusé pour « lien causal entre la
+  note et une perte de contrats, non ancré » — et la reformulation que le juge
+  proposait était la phrase fixe elle-même.
 - 🔴 **L'énumération des canaux du bloc SERVICE** — « Un appel que tu peux pas
   prendre, un texto, un message sur ton site ou sur Facebook ». Phrase FIXE du
   gabarit, identique pour tous les destinataires : elle décrit ce que le SYSTÈME
@@ -101,6 +128,18 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
   discutable ; ce n'est pas le critère qu'on te demande d'appliquer.
   Mesuré le 2026-09-15 : un brouillon refusé pour « piscine non couverte de façon
   indépendante » sur exactement ce libellé.
+
+  🔴 **LE MATÉRIAU OU L'OUVRAGE NOMME LA FAMILLE — tu n'as PAS à arbitrer
+  entre poser, réparer et niveler.** « Nivellement de pavé uni et réparation de
+  murets » COUVRE `pavage` : l'entreprise travaille le pavé. Découper une
+  famille en sous-métiers (pose contre réfection, neuf contre entretien) est un
+  jugement de métier qui ne t'appartient pas. Le dictionnaire du code a déjà
+  tranché, et là où une exigence était nécessaire elle y est — `toiture`
+  réclame un mot de réfection, justement pour qu'un laveur de toits ne passe
+  pas pour un couvreur.
+  ⚠️ Mesuré le 2026-09-16 : un brouillon refusé parce que « pavé uni » serait
+  de la réparation et non « du pavage au sens contractuel ». Décision
+  William : il travaille avec du pavé, donc il fait du pavage.
 
   🔴 **RIEN NE BORNE LE NOMBRE DE MÉTIERS ÉNUMÉRÉS, et aucun champ ne le dit.**
   Il n'existe PAS de `metiers_offerts` dans le `research_json` — ni sous ce nom

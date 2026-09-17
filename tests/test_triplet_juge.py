@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+from src.lib.compliance_checks import check_cta_present
+from src.lib.relances import CORPS_RELANCES
 from src.tools import compliance as comp
 from tests.fixtures.corps_ac1 import (  # noqa: F401
     CORPS_A,
@@ -201,10 +203,27 @@ async def test_la_remarque_de_cta_se_tait_sur_les_fermetures_douces() -> None:
     # donc « aucun cta_present sur les relances » devient vrai pour la pire des
     # raisons. Vérifié en écrivant ce test — hors pytest, le runner rendait
     # `error` et les deux assertions du dessous passaient sans rien regarder.
-    assert any("[relance" in n for n in noms), (
-        f"aucune remarque de relance : le juge n'a rien produit (verdict "
-        f"{out.verdict}), ce test ne prouverait rien"
+    #
+    # ⚠️ CE TÉMOIN A DÛ ÊTRE REFAIT LE 2026-09-16, et la raison vaut d'être
+    # gardée : il vérifiait qu'une remarque « [relance … ] » quelconque
+    # existait, et la seule qui restait était `site_au_conditionnel[relance 3]`.
+    # En exemptant celle-là à son tour, ce test est devenu rouge — non pas
+    # parce que la garde avait cédé, mais parce que son témoin s'appuyait sur
+    # un effet de bord. Un témoin qui dépend d'un AUTRE défaut meurt avec lui.
+    #
+    # Celui-ci ne dépend de rien d'autre : il prouve (a) que le juge a bien
+    # tourné, et (b) que `cta_present` ÉCHOUERAIT vraiment sur ces deux corps —
+    # donc que leur absence plus bas vient de l'exception, et pas d'un texte
+    # qui se serait mis à porter un CTA.
+    assert out.verdict != "error", (
+        f"le juge n'a pas tourné (verdict {out.verdict}) : ce test ne "
+        "prouverait rien"
     )
+    for cle, libelle in (("relance_1", "relance 1"), ("relance_3", "relance 3")):
+        assert not check_cta_present(CORPS_RELANCES[cle]).passed, (
+            f"{libelle} porte maintenant un CTA : l'exception de "
+            "`tools/compliance.py` ne sert plus à rien et ce test non plus"
+        )
 
     assert not [n for n in noms if n.startswith("cta_present[relance 1]")], noms
     assert not [n for n in noms if n.startswith("cta_present[relance 3]")], noms

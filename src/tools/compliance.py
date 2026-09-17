@@ -412,6 +412,31 @@ async def compliance_check(
         ):
             if r.name == "cta_present" and etiquette in FERMETURES_DOUCES:
                 continue
+            # 🔴 MEME RAISON, AUTRE CHECK : `site_au_conditionnel` se declenchait
+            # sur la relance 3 dans 20 brouillons sur 20 — mesure le 2026-09-16.
+            #
+            # Le motif attrape « au gout du jour », et la relance 3 dit « ca ne
+            # t'interesse pas d'avoir le systeme et un site web au gout du jour ».
+            # C'est une phrase AU CONDITIONNEL sur ce qu'il n'a pas voulu, pas une
+            # affirmation que le site est fait — exactement ce que le check existe
+            # pour interdire. William l'a confirmee bonne.
+            #
+            # 🔴 L'ARGUMENT QUI TRANCHE, ET IL VAUT POUR TOUTE LA FAMILLE : les
+            # trois relances sont du TEXTE FIXE (`relances.CORPS_RELANCES`, pose
+            # tel quel par `personalize.py`). Le redacteur n'y ecrit rien. Un
+            # check deterministe sur un texte constant rend donc un verdict
+            # CONSTANT : il ne mesure pas le brouillon du soir, il mesure un
+            # fichier du depot. A 100 % de declenchement il n'apprend rien et il
+            # noie les vraies remarques — le seul lecteur humain apprend a sauter
+            # la section.
+            #
+            # ⚠️ CE N'EST PAS UNE GARDE RETIREE : elle est DEPLACEE dans la
+            # suite, ou elle est meilleure (elle echoue a l'edition du texte, pas
+            # trois semaines plus tard sur un brouillon). Voir
+            # `test_relance_3_ne_dit_pas_le_site_deja_fait`. Si quelqu'un retire
+            # cette exception, qu'il retire aussi le test.
+            if r.name == "site_au_conditionnel" and etiquette == "relance 3":
+                continue
             # L'étiquette voyage avec le résultat : « cta_present » tout court
             # ne dit pas LEQUEL des trois corps est en faute, et c'est la
             # première question qu'on se pose en lisant l'alerte.

@@ -16,7 +16,13 @@ variables réellement envoyées à Instantly.
 """
 from __future__ import annotations
 
-from src.lib.relances import CLES_RELANCES, NB_CORPS_PAR_ENVOI, RELANCES
+from src.lib.compliance_checks import check_site_au_conditionnel
+from src.lib.relances import (
+    CLES_RELANCES,
+    CORPS_RELANCES,
+    NB_CORPS_PAR_ENVOI,
+    RELANCES,
+)
 
 
 def test_la_liste_est_coherente_avec_elle_meme() -> None:
@@ -95,3 +101,52 @@ def test_la_relance_finale_annonce_bien_la_fin() -> None:
         "relance a été ajoutée après l'adieu, c'est le TEXTE de l'adieu qu'il "
         "faut corriger d'abord"
     )
+
+
+# ── La garde que `compliance.py` a cessé d'exercer chaque soir ──────────────
+
+# La seule formulation « site » tolérée dans la relance 3, et pourquoi.
+# « ça ne t'intéresse pas d'avoir […] un site web au goût du jour » est au
+# CONDITIONNEL : elle parle de ce que le prospect n'a pas voulu, jamais d'un
+# site qui existerait. Décision William, confirmée le 2026-09-16.
+_TOLERE_RELANCE_3 = "au goût du jour"
+
+
+def test_relance_3_ne_dit_pas_le_site_deja_fait() -> None:
+    """🔴 CETTE GARDE A ÉTÉ DÉPLACÉE ICI, elle n'a pas été retirée.
+
+    `check_site_au_conditionnel` se déclenchait sur la relance 3 dans 20
+    brouillons sur 20 — mesuré le 2026-09-16 — parce que le motif attrape
+    « au goût du jour ». `tools/compliance.py` a donc cessé de la juger corps
+    par corps, et la raison dépasse ce cas précis :
+
+    **les trois relances sont du texte FIXE** (`CORPS_RELANCES`, posé tel quel
+    par `personalize.py`). Le rédacteur n'y écrit rien. Un contrôle
+    déterministe sur un texte constant rend un verdict constant : il ne mesure
+    pas le brouillon du soir, il mesure un fichier du dépôt. À 100 % de
+    déclenchement il n'apprend rien, et il noie les remarques qui, elles,
+    portent sur ce qui vient d'être écrit.
+
+    Ici, le même contrôle est meilleur : il échoue **au moment où quelqu'un
+    édite le texte**, pas trois semaines plus tard sur un brouillon. Si une
+    réécriture de la relance 3 affirmait un jour que le site est fait — « je te
+    l'envoie », « ton site est prêt » — ce test rougirait tout de suite.
+
+    ⚠️ Retirer ce test impose de retirer l'exception dans `tools/compliance.py`.
+    """
+    r = check_site_au_conditionnel(CORPS_RELANCES["relance_3"])
+    trouve = [m for m in (r.matches or []) if _TOLERE_RELANCE_3 not in m.lower()]
+    assert not trouve, (
+        "la relance 3 affirme maintenant que le site est DÉJÀ FAIT : "
+        f"{trouve}. C'est la dette d'honnêteté refermée le 2026-08-26 "
+        "([[feedback-no-lying-in-outreach]]), et plus personne ne la voit "
+        "passer au juge — ce test est le dernier filet."
+    )
+
+
+def test_les_deux_autres_relances_ne_parlent_pas_du_site() -> None:
+    """La contre-épreuve. Sans elle, l'exception pourrait glisser vers les
+    relances 1 et 2 sans que rien ne le signale : elles, personne ne les
+    exempte, et c'est parce qu'elles n'ont jamais parlé du site."""
+    for cle in ("relance_1", "relance_2"):
+        assert not (check_site_au_conditionnel(CORPS_RELANCES[cle]).matches or []), cle
