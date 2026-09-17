@@ -231,6 +231,19 @@ async def balayer(
     niveau = 0
     tuiles = 0
     faibles = 0   # paliers faibles consécutifs
+    # 🔴 LE NIVEAU RAPPORTÉ EST CELUI RÉELLEMENT INTERROGÉ, PAS LE COMPTEUR.
+    # `niveau += 1` s'exécute AVANT que la boucle constate que la liste de
+    # tuiles est vide : une passe qui s'arrête faute de tuiles rapportait donc
+    # un niveau de trop, alors qu'une passe sortie par `break` rapportait le
+    # bon. Mesuré le 2026-09-16 : Montréal a porté « niveau 5 » puis
+    # « niveau 6 » pour EXACTEMENT le même travail — 149 tuiles, 164 appels.
+    # 16 passes sur 30 étaient mal étiquetées.
+    # Ce n'est pas cosmétique : le dictionnaire de `sourcing_inventaire.derniere_vue`
+    # fait reposer le calcul « a-t-elle fermé ? » sur cette colonne, et conclut
+    # qu'une entreprise absente d'une passe MOINS profonde n'a pas disparu.
+    # Comparer deux passes mal étiquetées ferait déclarer fermées des
+    # entreprises simplement jamais atteintes.
+    dernier_niveau = 0
     while actifs and niveau <= niveau_max:
         avant = len(cumul)
         prochains: list[tuple[float, float, float, float]] = []
@@ -239,6 +252,7 @@ async def balayer(
                 break
             ids = await interroger(client, secteur, tuile, cpt)
             tuiles += 1
+            dernier_niveau = niveau
             cumul |= ids
             if len(ids) >= SEUIL_SUBDIVISION and not trop_petite(tuile):
                 prochains += decouper(tuile)
@@ -265,7 +279,7 @@ async def balayer(
             break
         actifs = prochains
         niveau += 1
-    return cumul, niveau, tuiles
+    return cumul, dernier_niveau, tuiles
 
 
 async def enregistrer(

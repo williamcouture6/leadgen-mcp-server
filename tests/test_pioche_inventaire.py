@@ -89,7 +89,13 @@ async def test_la_selection_porte_le_litteral_et_le_bon_ordre(monkeypatch) -> No
     assert vus["table"] == "sourcing_inventaire"
     assert vus["etat"] == "eq.a_traiter"
     assert vus["order"] == "derniere_tentative.asc.nullsfirst,created_at.asc"
-    assert vus["limit"] == "7"
+    # ⚠️ La requête SUR-LIT : on lit `limit × FACTEUR_EQUITE_REGIONALE` lignes
+    # pour pouvoir ensuite alterner entre les régions. Sans ça, l'ordre par
+    # `created_at` sert Montréal pendant vingt jours avant de toucher
+    # Trois-Rivières. Le lot rendu, lui, fait bien `limit`.
+    from src.tools.db import FACTEUR_EQUITE_REGIONALE
+
+    assert vus["limit"] == str(7 * FACTEUR_EQUITE_REGIONALE)
     # Point 5 du fichier de l'alerte : les guillemets protègent les espaces.
     assert vus["trouve_par"] == 'ov.{"entrepreneur en déneigement"}'
 
@@ -648,3 +654,103 @@ async def test_le_piocheur_muet_reveille_alertes(monkeypatch) -> None:
     assert await http_api._alerter_famine_inventaire(etat, "piocheur_muet") is True
     assert "PIOCHEUR NE TOURNE PLUS" in captures[0]
     assert "600" in captures[0], "il doit dire que la file n'est PAS le problème"
+
+
+# ------------------------------------------------- l'équité entre régions
+
+def test_la_file_alterne_entre_les_regions() -> None:
+    """🔴 LE TRI PAR `created_at` REJOUAIT LA FAMINE GÉOGRAPHIQUE. `created_at`
+    est l'ordre de DÉCOUVERTE, donc celui dans lequel le balayeur a parcouru les
+    régions. Mesuré le 2026-09-16 sur les 663 déneigeurs : Montréal servie dès
+    le jour 1, Saguenay au jour 22, Trois-Rivières au jour 25 — en pleine
+    ouverture de saison, et seulement parce qu'elles avaient été balayées en
+    dernier. C'est le défaut corrigé le 2026-09-14 dans `next_sourcing_target`,
+    reproduit un étage plus bas."""
+    from src.tools.db import _repartir_par_region
+
+    lignes = (
+        [{"google_place_id": f"mtl{i}", "regions": ["Montréal"]} for i in range(50)]
+        + [{"google_place_id": f"tr{i}", "regions": ["Trois-Rivières"]} for i in range(5)]
+    )
+    lot = _repartir_par_region(lignes, 10)
+
+    regions = [l["regions"][0] for l in lot]
+    assert "Trois-Rivières" in regions, (
+        "une petite région ne doit pas attendre que Montréal soit épuisée"
+    )
+    assert regions.count("Trois-Rivières") == 5
+
+
+def test_l_ordre_de_famine_est_garde_dans_chaque_region() -> None:
+    """On ALTERNE entre les files, on ne MÉLANGE pas. Les lignes arrivent déjà
+    triées `derniere_tentative nulls first, created_at` ; une fiche déjà tentée
+    doit rester derrière les vierges de sa propre région."""
+    from src.tools.db import _repartir_par_region
+
+    lignes = [
+        {"google_place_id": "mtl-vierge", "regions": ["Montréal"]},
+        {"google_place_id": "mtl-tentee", "regions": ["Montréal"]},
+        {"google_place_id": "qc-vierge", "regions": ["Québec"]},
+    ]
+    lot = _repartir_par_region(lignes, 3)
+    ids = [l["google_place_id"] for l in lot]
+    assert ids.index("mtl-vierge") < ids.index("mtl-tentee")
+
+
+def test_une_region_unique_n_est_pas_penalisee() -> None:
+    """Quand tout vient d'une seule région, la répartition ne doit rien changer
+    — surtout pas tronquer le lot."""
+    from src.tools.db import _repartir_par_region
+
+    lignes = [{"google_place_id": f"x{i}", "regions": ["Laval"]} for i in range(30)]
+    lot = _repartir_par_region(lignes, 20)
+    assert len(lot) == 20
+    assert [l["google_place_id"] for l in lot] == [f"x{i}" for i in range(20)]
+
+
+def test_une_entreprise_multi_region_n_apparait_qu_une_fois() -> None:
+    """Le trigger de fusion trie `regions` alphabétiquement : le choix de la
+    première est arbitraire mais STABLE. Ce qui compte, c'est qu'elle ne soit
+    pas servie deux fois."""
+    from src.tools.db import _repartir_par_region
+
+    lignes = [
+        {"google_place_id": "partagee", "regions": ["Laval", "Montréal"]},
+        {"google_place_id": "autre", "regions": ["Québec"]},
+    ]
+    lot = _repartir_par_region(lignes, 10)
+    assert [l["google_place_id"] for l in lot].count("partagee") == 1
+    assert len(lot) == 2
+
+
+def test_une_ligne_sans_region_ne_disparait_pas() -> None:
+    """Les fiches semées depuis `companies` peuvent n'avoir aucune région si
+    leurs coordonnées ne tombent dans aucun rectangle. Les perdre ici les
+    rendrait invisibles pour toujours."""
+    from src.tools.db import _repartir_par_region
+
+    lignes = [
+        {"google_place_id": "orpheline", "regions": []},
+        {"google_place_id": "situee", "regions": ["Montréal"]},
+    ]
+    lot = _repartir_par_region(lignes, 10)
+    assert len(lot) == 2
+
+
+@pytest.mark.anyio
+async def test_la_selection_sur_lit_avant_de_repartir(monkeypatch) -> None:
+    """Sur-lire est ce qui rend la répartition possible : PostgREST ne sait
+    trier que par colonne. Même patron que `FACTEUR_SURRECOLTE` de WF-4."""
+    from src.tools import db as dbt
+
+    vus: dict[str, str] = {}
+
+    async def _faux_select(table, *, params=None, **_k):
+        vus.update(params or {})
+        return []
+
+    monkeypatch.setattr(dbt.db, "select", _faux_select)
+    monkeypatch.setattr(dbt, "secteurs_a_preparer", lambda **_k: ["s"])
+
+    await dbt.list_inventaire_a_piocher(20)
+    assert vus["limit"] == str(20 * dbt.FACTEUR_EQUITE_REGIONALE)

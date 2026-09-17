@@ -1,5 +1,22 @@
 """Orchestrateur Python du WF-1 (sourcing) — version stand-alone.
 
+🔴 CE N'EST PLUS LE CHEMIN DE LA PISTE `agence-ia` DEPUIS LE 2026-09-16.
+Pour sourcer aujourd'hui, on ne lance PAS ce script : on lance
+`scripts/balayage.py`, qui découpe une région en tuiles et énumère pour 0 $
+(masque `places.id,nextPageToken`), puis WF-1 hydrate depuis l'inventaire.
+Mesure du 2026-09-16 : le déneigement est passé de 201 à 922 entreprises
+connues pour 3 063 appels gratuits — là où ce script-ci pose UNE question par
+lancement, facturée, et écrit `city = p.city or city`, un repli sur la ville du
+catalogue dont `companies.dedup_key` dépend.
+
+Il reste utile pour la piste `OPT`, qui n'a aucun équivalent côté inventaire.
+⚠️ Il duplique la boucle de `_run_wf1` : toute correction apportée là-bas doit
+être reportée ici, et c'est exactement le trou qu'a déjà refermé
+`test_sourcing_piste_vivante.py` (le script taguait `OPT` en silence).
+⚠️ Il est hors du verrou serveur `_VERROUS_DE_LOT` : lancé pendant qu'une pioche
+tourne, rien ne le refuse.
+
+
 Reproduit la logique cible du n8n WF-1 :
   1. Trouve la prochaine cible (city, sector) via cooldown 30j
   2. Crée un sourcing_run

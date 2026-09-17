@@ -513,7 +513,7 @@ async def list_inventaire_a_piocher(
         # Aucun métier en fenêtre : il n'y a rien à préparer, et c'est un état
         # normal, pas une panne. L'alerte de famine le dit à sa façon.
         return []
-    return await db.select(
+    lignes = await db.select(
         "sourcing_inventaire",
         params={
             "select": "google_place_id,trouve_par,regions,tentatives",
@@ -525,9 +525,59 @@ async def list_inventaire_a_piocher(
             # remise en file des échecs transitoires.
             "tentatives": f"lt.{MAX_TENTATIVES_INVENTAIRE}",
             "order": "derniere_tentative.asc.nullsfirst,created_at.asc",
-            "limit": str(limit),
+            # 5. ON SUR-LIT POUR POUVOIR RÉPARTIR PAR RÉGION ENSUITE. Même
+            # patron que `FACTEUR_SURRECOLTE` côté WF-4, et même raison :
+            # PostgREST ne sait trier que par colonne.
+            "limit": str(limit * FACTEUR_EQUITE_REGIONALE),
         },
     )
+    return _repartir_par_region(lignes, limit)
+
+
+# Combien de fois `limit` on lit avant de répartir. Six suffit : avec dix
+# régions, un lot de 20 en voit déjà largement l'essentiel, et sur-lire ne coûte
+# qu'une seule requête, pas un aller-retour de plus.
+FACTEUR_EQUITE_REGIONALE = 6
+
+
+def _repartir_par_region(
+    lignes: list[dict[str, Any]], limit: int
+) -> list[dict[str, Any]]:
+    """Sert les régions à tour de rôle, en gardant l'ordre de famine DANS chacune.
+
+    🔴 SANS ÇA, LE TRI PAR `created_at` REJOUE LA FAMINE GÉOGRAPHIQUE QUE
+    L'INVENTAIRE DEVAIT GUÉRIR. `created_at` est l'ordre de DÉCOUVERTE, donc
+    l'ordre dans lequel le balayeur a parcouru les régions. Mesuré le 2026-09-16
+    sur les 663 déneigeurs en file : Montréal était servie dès le jour 1,
+    Saguenay au jour 22 et Trois-Rivières au jour 25 — en pleine ouverture de
+    saison, et pour la seule raison qu'elles avaient été balayées en dernier.
+
+    C'est exactement le défaut que `next_sourcing_target` a corrigé le
+    2026-09-14 — « six villes entières jamais atteintes » — reproduit un étage
+    plus bas par un `order by` qui paraissait inoffensif.
+
+    ⚠️ L'ORDRE DE FAMINE EST PRÉSERVÉ À L'INTÉRIEUR DE CHAQUE RÉGION : les
+    lignes arrivent déjà triées `derniere_tentative nulls first, created_at`, et
+    on les consomme dans cet ordre. On ALTERNE entre les files, on ne mélange
+    pas — une fiche déjà tentée reste derrière les vierges de sa région.
+
+    ⚠️ Une entreprise portant plusieurs régions est rangée sous la PREMIÈRE de
+    son tableau. Le trigger de fusion les trie alphabétiquement, donc ce choix
+    est arbitraire mais STABLE : elle apparaît dans une seule file, jamais deux.
+    """
+    files: dict[str, list[dict[str, Any]]] = {}
+    for ligne in lignes:
+        regions = ligne.get("regions") or [""]
+        files.setdefault(regions[0], []).append(ligne)
+
+    sortie: list[dict[str, Any]] = []
+    while len(sortie) < limit and any(files.values()):
+        for region in sorted(files):
+            if len(sortie) >= limit:
+                break
+            if files[region]:
+                sortie.append(files[region].pop(0))
+    return sortie
 
 
 async def marquer_inventaire(
