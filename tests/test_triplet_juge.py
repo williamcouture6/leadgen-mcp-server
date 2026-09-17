@@ -167,3 +167,44 @@ def test_le_prompt_du_juge_sait_que_les_faits_verifies_font_foi() -> None:
     assert "JUGE LES TROIS CORPS" in prompt
     # L'ancienne offre ne doit plus servir d'exemple de formulation légitime.
     assert "je recontacte vos anciens clients" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_la_remarque_de_cta_se_tait_sur_les_fermetures_douces() -> None:
+    """🔴 MESURE DU 2026-09-15 : `cta_present` tombait sur 20 brouillons sur 20,
+    pour les relances 1 et 3.
+
+    La remarque était EXACTE — ni l'une ni l'autre ne demande de geste — mais
+    sans issue, puisque c'est voulu : la relance 1 ferme en douceur et la
+    relance 3 est un adieu. Une remarque qui tombe sur 100 % des courriels pour
+    une chose assumée n'apprend rien ; elle apprend à ne plus lire la section
+    des remarques, où les vraies trouvailles apparaissent.
+
+    ⚠️ Deux tentatives ont précédé celle-ci, le même jour :
+      · ajouter un CTA aux deux relances — William a préféré garder ses textes ;
+      · l'exception côté TEST seule — elle verdit la suite, mais n'enlève rien
+        de ce qui s'écrit dans `compliance_notes`, donc la remarque continuait
+        d'arriver chaque soir.
+
+    ⚠️ La relance 2 reste jugée : elle porte un vrai CTA (« si t'as des
+    questions hésite pas »), et le jour où une réécriture le fait sauter, c'est
+    exactement ce qu'on veut apprendre.
+    """
+    out = await _juger()
+    noms = [
+        r["name"]
+        for r in out.deterministic_warnings + out.deterministic_infos
+    ]
+
+    # 🔴 TÉMOIN POSITIF, et il n'est pas décoratif. Sans lui, ce test passe au
+    # vert quand le juge ÉCHOUE : un verdict `error` ne produit aucune remarque,
+    # donc « aucun cta_present sur les relances » devient vrai pour la pire des
+    # raisons. Vérifié en écrivant ce test — hors pytest, le runner rendait
+    # `error` et les deux assertions du dessous passaient sans rien regarder.
+    assert any("[relance" in n for n in noms), (
+        f"aucune remarque de relance : le juge n'a rien produit (verdict "
+        f"{out.verdict}), ce test ne prouverait rien"
+    )
+
+    assert not [n for n in noms if n.startswith("cta_present[relance 1]")], noms
+    assert not [n for n in noms if n.startswith("cta_present[relance 3]")], noms

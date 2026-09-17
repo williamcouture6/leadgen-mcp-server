@@ -368,6 +368,29 @@ async def compliance_check(
     )
 
     det_results: list[CheckResult] = []
+    # 🔴 LES DEUX RELANCES QUI FERMENT EN DOUCEUR — decision William du
+    # 2026-09-16, apres avoir essaye l'inverse le meme jour.
+    #
+    # `check_cta_present` les signalait a chaque brouillon : mesure du
+    # 2026-09-15, 20 sur 20. La remarque etait EXACTE — ni l'une ni l'autre ne
+    # demande de geste — mais elle etait aussi sans issue, puisque c'est voulu.
+    # Une remarque qui tombe sur 100 % des courriels pour une chose assumee
+    # n'apprend rien : elle apprend a ne plus lire la section des remarques,
+    # ou les vraies trouvailles apparaissent.
+    #
+    # ⚠️ Deux tentatives ont precede celle-ci, et la trace evite de les refaire :
+    #   · ajouter un CTA aux deux relances (« Hesite pas a m'ecrire! ») —
+    #     William a prefere garder ses textes tels quels ;
+    #   · l'exception cote TEST seule (`FERMETURES_DOUCES` dans
+    #     tests/test_fixtures_corps.py) — elle verdit la suite mais ne change
+    #     rien a ce qui s'ecrit dans `compliance_notes`, donc la remarque
+    #     continuait d'arriver chaque soir.
+    #
+    # ⚠️ La relance 2, elle, DOIT continuer d'etre jugee : elle porte un vrai
+    # CTA (« si t'as des questions hesite pas »), et le jour ou une reecriture
+    # le fait sauter, c'est exactement ce qu'on veut apprendre.
+    FERMETURES_DOUCES = frozenset({"relance 1", "relance 3"})
+
     for etiquette, texte, gabarit in corps_a_juger:
         for r in run_all(
             email_body=texte,
@@ -387,6 +410,8 @@ async def compliance_check(
             # fois le même écart.
             moment_saison=moment_saison if etiquette == "courriel" else None,
         ):
+            if r.name == "cta_present" and etiquette in FERMETURES_DOUCES:
+                continue
             # L'étiquette voyage avec le résultat : « cta_present » tout court
             # ne dit pas LEQUEL des trois corps est en faute, et c'est la
             # première question qu'on se pose en lisant l'alerte.

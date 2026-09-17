@@ -96,9 +96,7 @@ Pour te rappeler, je voudrais regarder avec toi pour te créer un système de r�
 
 Pour le site, l'offre tient toujours.
 
-J'espère pouvoir t'en parler un peu plus!
-
-Hésite pas à m'écrire!""",
+J'espère pouvoir t'en parler un peu plus!""",
     # Les quatre chiffres de ce corps sont gardés par
     # `check_statistiques_conformes`. Ce qu'ils valent réellement — le 78 % n'a
     # pas de source primaire, le 21 fois mesure la qualification — est écrit
@@ -121,7 +119,5 @@ Je crois avoir compris que ça ne t'intéresse pas d'avoir le système et un sit
 
 Je ne vais plus t'écrire, donc si tu veux en savoir plus contacte-moi sur le même courriel.
 
-Au plaisir de pouvoir te parler!
-
-Tu peux m'écrire quand tu veux!""",
+Au plaisir de pouvoir te parler!""",
 }
