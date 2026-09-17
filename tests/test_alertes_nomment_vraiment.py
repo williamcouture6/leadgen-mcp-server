@@ -31,7 +31,8 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from src.http_api import RunReactiWf2Item, RunWf3Item, RunWf4Item, RunWf5Item
+from src.http_api import RunReactiWf2Item, RunWf3Item, RunWf4Item
+from src.tools.reply import PollRepliesItem
 from src.tools.send import RunWf6Item
 from src.tools.send_status import SyncStatusItem
 
@@ -42,10 +43,18 @@ MODELE_PAR_ROUTE: dict[str, type[BaseModel]] = {
     "wf2/run": RunReactiWf2Item,
     "wf3/run": RunWf3Item,
     "wf4/run": RunWf4Item,
-    "wf5/run": RunWf5Item,
     "wf6/run": RunWf6Item,
     "wf6/sync-status": SyncStatusItem,
+    # Ajoutee le 2026-09-17. Son absence faisait sauter wf-7-poll-replies.json
+    # EN SILENCE, et c'est precisement le fichier dont l'alerte ne nommait
+    # personne : `.map(i => i.error_text)`, sans le moindre identifiant.
+    "wf7/poll-replies": PollRepliesItem,
 }
+
+# ⚠️ `wf5/run` N'EST PAS ICI, et c'est voulu : `wf-5-compliance.json` n'a aucun
+# `i.*` — son alerte part du serveur (`RunWf5Out.alerte_envoyee`), pas de n8n.
+# L'entree existait dans la premiere version ; elle n'etait jamais exercee et
+# donnait l'impression d'une couverture qui n'existait pas.
 
 # `i.status` et `i.error_text` sont lus par le FILTRE de l'expression, pas par
 # la partie qui nomme. Ils existent sur tous les modeles ; on les verifie comme
@@ -58,14 +67,24 @@ def _workflows_avec_alerte() -> list[tuple[str, str, set[str]]]:
     trouves: list[tuple[str, str, set[str]]] = []
     for f in sorted(DOSSIER.glob("*.json")):
         texte = f.read_text(encoding="utf-8")
-        cases = set(re.findall(r"\bi\.([a-z_]+)", texte))
+        # ⚠️ `[a-z_]+` tronquait EN SILENCE sur un chiffre ou une majuscule :
+        # `i.error_text2` rendait `error_text`, un champ qui existe -> vert a
+        # tort. `i.errorText` rendait `error`, un champ inexistant -> rouge en
+        # accusant un nom qu'aucun fichier ne porte. Les deux sont pires que
+        # pas de test du tout.
+        cases = set(re.findall(r"\bi\.([A-Za-z_][A-Za-z0-9_]*)", texte))
         if not cases:
             continue
         routes = {r for r in re.findall(r"/(wf\d[a-z]*/[a-z-]+)", texte)}
         connues = routes & MODELE_PAR_ROUTE.keys()
         if len(connues) != 1:
-            # Un workflow qui alerte sur une route inconnue du tableau est
-            # signale par son propre test, plus bas — pas ignore en silence.
+            # 🔴 CE `continue` EST LE TROU DU TEST, et il a menti une journee.
+            # Le commentaire d'origine disait « signale par son propre test,
+            # plus bas ». Ce test N'EXISTAIT PAS. Un conseil de relecture l'a
+            # trouve le 2026-09-17, et le fichier qui en payait le prix etait
+            # `wf-7-poll-replies.json` — dont l'alerte ne nommait personne.
+            # Le test existe maintenant : `test_aucune_alerte_n_echappe_au_
+            # controle`, juste en dessous.
             continue
         trouves.append((f.name, connues.pop(), cases))
     return trouves
@@ -104,21 +123,72 @@ def test_une_alerte_ne_reclame_que_des_cases_qui_existent(
     )
 
 
-def test_chaque_alerte_peut_nommer_quelque_chose_de_lisible() -> None:
-    """🔴 Le champ doit exister, mais il doit aussi DIRE quelque chose.
+def test_aucune_alerte_n_echappe_au_controle() -> None:
+    """🔴 LE TEST QUE MON COMMENTAIRE PROMETTAIT SANS L'ECRIRE.
 
-    Un `contact_id` en repli est correct — c'est une cle, on peut la chercher.
-    Une alerte qui n'aurait QUE des identifiants techniques serait conforme au
-    test du dessus et illisible quand meme : le premier nom propose doit etre
-    un nom, une adresse, quelque chose qu'un humain reconnait sans requete.
+    `_workflows_avec_alerte` saute tout fichier dont la route n'est pas dans
+    `MODELE_PAR_ROUTE`. Le commentaire affirmait qu'un autre test le signalait.
+    Il n'existait pas — et le fichier qui en payait le prix, trouve par un
+    conseil de relecture le 2026-09-17, etait `wf-7-poll-replies.json` : son
+    alerte faisait `.map(i => i.error_text)`, sans le moindre identifiant, alors
+    que `PollRepliesItem.lead_email` existe. La maladie que ce fichier pretend
+    avoir eradiquee vivait dans le seul fichier qu'il ne regardait pas.
+
+    Un `continue` silencieux dans un test est toujours une promesse a tenir
+    ailleurs ; celui-ci est la promesse.
     """
-    lisibles = {"name", "company_name", "to_email", "subject"}
-    muettes = [
-        (f, sorted(c))
-        for f, _route, c in _workflows_avec_alerte()
-        if not (c & lisibles)
-    ]
-    assert not muettes, (
-        f"ces alertes ne nomment que des identifiants techniques : {muettes}. "
-        "Il faut aller fouiller la base pour savoir de qui elles parlent."
+    examines = {f for f, _r, _c in _workflows_avec_alerte()}
+    echappees = []
+    for f in sorted(DOSSIER.glob("*.json")):
+        if f.name in examines:
+            continue
+        texte = f.read_text(encoding="utf-8")
+        if re.search(r"i\.[A-Za-z_]", texte):
+            routes = sorted(set(re.findall(r"/(wf\d[a-z]*/[a-z-]+)", texte)))
+            echappees.append((f.name, routes))
+    assert not echappees, (
+        "ces workflows lisent des champs d'items mais aucun modele ne leur est "
+        f"associe, donc personne ne verifie leurs alertes : {echappees}. "
+        "Ajoute la route a MODELE_PAR_ROUTE."
+    )
+
+
+# Ce qu'un humain reconnait sans avoir a interroger la base.
+LISIBLES = {"name", "company_name", "to_email", "lead_email", "subject"}
+
+# `(i.a || i.b || '?')` — on veut l'ORDRE, pas seulement la presence.
+_REPLIS = re.compile(r"\(\s*i\.([A-Za-z_][A-Za-z0-9_]*)"
+                     r"(?:\s*\|\|\s*i\.([A-Za-z_][A-Za-z0-9_]*))*")
+
+
+def test_chaque_alerte_nomme_quelque_chose_de_LISIBLE_EN_PREMIER() -> None:
+    """🔴 Le champ doit exister, mais il doit aussi DIRE quelque chose, et
+    ARRIVER EN PREMIER.
+
+    Un identifiant technique en repli est correct — c'est une cle, on peut la
+    chercher. Mais une alerte qui affiche `contact_id` AVANT `company_name`
+    passe le test des champs existants et reste illisible : il faut une requete
+    pour savoir de qui on parle, ce que l'alerte devait justement eviter.
+
+    ⚠️ Une premiere version de ce test faisait une simple intersection
+    d'ensembles tout en affirmant dans sa description qu'elle verifiait l'ordre.
+    Un conseil de relecture l'a releve le 2026-09-17 : `(i.contact_id ||
+    i.company_name || '?')` l'aurait passe au vert. Une description qui promet
+    plus que le code est pire qu'un test absent — on cesse de regarder.
+    """
+    fautifs = []
+    for fichier, _route, _cases in _workflows_avec_alerte():
+        texte = (DOSSIER / fichier).read_text(encoding="utf-8")
+        premiers = [m.group(1) for m in _REPLIS.finditer(texte)]
+        # Le filtre (`.filter(i => i.status ...)`) n'est pas un repli : il
+        # n'utilise pas de `||` entre deux `i.`. On ne garde que les groupes
+        # qui nomment.
+        nommants = [p for p in premiers if p not in ("status", "error_text")]
+        if not nommants:
+            fautifs.append((fichier, "aucun champ ne nomme quoi que ce soit"))
+        elif nommants[0] not in LISIBLES:
+            fautifs.append((fichier, f"commence par « {nommants[0] } »"))
+    assert not fautifs, (
+        f"ces alertes ne nomment pas lisiblement en premier : {fautifs}. "
+        f"Mets un champ de {sorted(LISIBLES)} en tete du repli."
     )
