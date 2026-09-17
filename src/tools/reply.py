@@ -47,6 +47,7 @@ from .. import supabase_client as db
 from ..lib import instantly as instantly_lib
 from ..lib import slack as slack_lib
 from ..lib.pricing import estimated_cost_usd
+from ..lib.json_du_modele import objet_json_du_modele
 
 # ----------------------------------------------------------------------
 # Config
@@ -79,17 +80,15 @@ def _is_transient_anthropic_error(exc: BaseException) -> bool:
 
 
 def _parse_llm_json(text: str) -> dict[str, Any]:
-    text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        raise ValueError(f"No JSON in LLM response: {text[:300]}")
-    return json.loads(match.group(0))
+    """Delegue a `lib.json_du_modele` — voir ce module pour le pourquoi.
+
+    🔴 Ce corps etait une COPIE, mot pour mot, de celle de
+    `tools/personalize.py`. Le defaut repare le 2026-09-17 (le modele
+    rend son objet puis autre chose) vivait donc ici aussi, intact.
+    C'est la duplication qui etait le defaut, pas le motif : ne pas
+    reecrire un analyseur local ici.
+    """
+    return objet_json_du_modele(text, source="reply")
 
 
 @retry(

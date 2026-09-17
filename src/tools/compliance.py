@@ -57,6 +57,7 @@ from ..lib.compliance_checks import (
     run_all,
 )
 from .research import sans_diagnostic
+from ..lib.json_du_modele import objet_json_du_modele
 
 # ----------------------------------------------------------------------
 # Prompt + modèle
@@ -186,15 +187,13 @@ def _llm_judge(
         messages=[{"role": "user", "content": user}],
     )
     text = "".join(b.text for b in resp.content if b.type == "text").strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
-            raise ValueError(f"No JSON in compliance LLM response: {text[:300]}")
-        return json.loads(match.group(0))
+    # 🔴 C'ETAIT UNE COPIE du parseur de `tools/personalize.py`, mot pour mot,
+    # avec le meme defaut : le modele rend son objet PUIS autre chose, le repli
+    # avale les deux et le `json.loads` de repli n'etait dans aucun `try`. Un
+    # juge qui tombe la-dessus ne rend aucun verdict, et le brouillon reste en
+    # attente — moins grave qu'un faux verdict, mais tout aussi muet.
+    # Voir `lib/json_du_modele` pour le raisonnement complet.
+    return objet_json_du_modele(text, source="compliance")
 
 
 # ----------------------------------------------------------------------
