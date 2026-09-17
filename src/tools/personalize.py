@@ -28,6 +28,7 @@ from ..lib.gabarits import est_un_gabarit
 from ..lib.relances import CLES_RELANCES, CORPS_RELANCES
 from ..lib.gabarits import GABARITS_A_TETE_FIXE
 from ..lib.metiers import (
+    EXIGE,
     MOMENT_A_VENIR,
     MOMENT_DEBUT,
     MOMENT_EN_COURS,
@@ -171,6 +172,60 @@ def variantes_du_meme_metier(
     return max(repetes, key=lambda x: len(x[1]))
 
 
+def metiers_mentionnables(
+    services_offered: list[str] | None,
+    aujourdhui: date,
+    industry: str | None = None,
+) -> tuple[str, ...]:
+    """Les métiers que le courriel a le droit de NOMMER, dans l'ordre.
+
+    🔴 CE QUI NE PEUT PAS OUVRIR LA FENÊTRE NE SE MENTIONNE PAS NON PLUS —
+    règle de William, 2026-09-16.
+
+    `EXIGE` encode déjà « ce que le métier est VRAIMENT » : la famille `piscine`
+    ne compte que si un libellé porte un verbe d'entretien (entretien,
+    nettoyage, ouverture, fermeture, traitement, analyse). Sans ce signal, la
+    fenêtre saisonnière ne s'ouvrait déjà pas — mais le rédacteur, lui, nommait
+    quand même le métier.
+
+    Le cas qui l'a montré, le 2026-09-15 : « Excavation sur mesure (fondations,
+    drains français, piscines creusées) » faisait écrire à Groupe Everest qu'il
+    fait de la piscine. Il en CREUSE ; il n'en vend pas l'entretien. Le juge de
+    conformité a refusé le brouillon, à raison.
+
+    🔴 DEUX USAGES, UNE SEULE RÈGLE, et c'est pour ça que cette fonction existe
+    plutôt qu'un filtre recopié deux fois. Le premier jet ne filtrait que le
+    2ᵉ temps — et la SCÈNE continuait de tomber sur `piscine`, parce qu'hors
+    saison elle retombe sur le métier dominant, qui ignore l'exigence. Vérifié
+    sur Groupe Everest en juin : aucune de ses fenêtres n'est ouverte, donc la
+    scène retombait sur le dominant, donc sur la piscine, donc l'ouvreur entier
+    parlait de piscines.
+
+    📏 Mesuré sur les 526 fiches qui ont des services : **25** cessent de nommer
+    `piscine`, et **AUCUNE** ne perd tous ses métiers — chacune en garde de deux
+    à cinq. Ce sont des paysagistes qui font des CONTOURS de piscine.
+
+    ⚠️ Une autre piste a été mesurée puis ÉCARTÉE : traiter comme incidente
+    toute famille qui n'apparaît qu'entre parenthèses. Sur les 27 fiches
+    concernées, la plupart étaient légitimes — « Aménagement paysager complet
+    (excavation, dallage, pavage) » vend vraiment du pavage. La parenthèse
+    ÉNUMÈRE ce que le service inclut : le SENS distingue une mention incidente,
+    la position non.
+
+    ⚠️ `EXIGE` ne contient que `piscine` aujourd'hui. Toute famille qu'on y
+    ajoutera héritera automatiquement de cette règle — c'est voulu : une
+    exigence dit « ce libellé ne prouve pas le métier », et cette phrase vaut
+    autant pour la fenêtre que pour le courriel.
+    """
+    r = resoudre_metiers(services_offered, aujourdhui, industry)
+    if not r.metiers:
+        return ()
+    tenues = classer_services(services_offered, industry).exigence_satisfaite
+    return tuple(
+        m for m in r.metiers if m not in EXIGE or m in tenues
+    )
+
+
 def metier_de_la_scene(
     services_offered: list[str] | None,
     aujourdhui: date,
@@ -186,7 +241,12 @@ def metier_de_la_scene(
     r = resoudre_metiers(services_offered, aujourdhui, industry)
     if r.scene:
         return r.scene
-    return r.dominant if r.metiers else None
+    # 🔴 LE REPLI PASSE PAR `metiers_mentionnables`, jamais par `dominant` nu.
+    # `r.scene` applique déjà l'exigence (elle sort de `fenetre_ouverte`) ; le
+    # repli hors saison, lui, l'ignorait — et c'est par là que la piscine de
+    # Groupe Everest revenait tenir l'ouvreur entier.
+    nommables = metiers_mentionnables(services_offered, aujourdhui, industry)
+    return nommables[0] if nommables else None
 
 
 def bloc_metiers_resolus(
@@ -372,7 +432,12 @@ def bloc_metiers_resolus(
                 "La scène retombe sur son métier dominant. Ajoute le warning "
                 "« hors fenêtre saisonnière »."
             )
-        autres_metiers = [m for m in r.metiers if m != scene]
+        # La même règle que la scène, au même endroit : voir
+        # `metiers_mentionnables`.
+        autres_metiers = [
+            m for m in metiers_mentionnables(services_offered, aujourdhui, industry)
+            if m != scene
+        ]
         if autres_metiers:
             autres = _enumerer_metiers(autres_metiers)
             # 🔴 « j'ai aussi vu que » — formulation de William, 2026-09-07.
@@ -431,10 +496,22 @@ def bloc_metiers_resolus(
             #
             # Mesuré le 2026-09-07 : 4 combinaisons de métiers réels produisent
             # ce cas. Trouvé par un conseil de relecture.
-            if r.scene_est_minoritaire and r.dominant != scene:
+            # 🔴 LE DOMINANT PASSE LUI AUSSI PAR `metiers_mentionnables`.
+            # Troisième usage du dominant brut, trouvé APRÈS les deux autres en
+            # relisant un bloc réel : la scène était corrigée, le 2ᵉ temps aussi,
+            # et cette consigne-ci disait encore « nomme son métier dominant
+            # (piscine) en premier » à un excavateur qui creuse des piscines.
+            # Trois endroits lisaient la même chose de trois façons.
+            _nommables = metiers_mentionnables(services_offered, aujourdhui, industry)
+            _dominant_nommable = _nommables[0] if _nommables else None
+            if (
+                r.scene_est_minoritaire
+                and _dominant_nommable is not None
+                and _dominant_nommable != scene
+            ):
                 lignes.append(
                     f"  ⚠️ Le métier de la scène pèse ≤ 25 % de ses libellés : le 2ᵉ temps "
-                    f"doit NOMMER son métier dominant ({r.dominant}) en premier."
+                    f"doit NOMMER son métier dominant ({_dominant_nommable}) en premier."
                 )
         else:
             lignes.append("- **Entreprise mono-métier : aucun 2ᵉ temps.** Ne l'invente pas.")
