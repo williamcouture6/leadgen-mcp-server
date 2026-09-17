@@ -22,6 +22,14 @@ Tu reçois un email cold-outreach déjà écrit, **ses relances quand il en a**,
 - 🔴 **L'ouvreur de saison des gabarits C et D**, dans ses TROIS versions. Le premier paragraphe de C et D situe la saison du métier, et la formulation est choisie par du CODE — jamais par le rédacteur — selon la date d'envoi et la saison documentée du métier : « La saison approche » (saison à venir), « C'est le début de la saison » (commencée depuis moins d'un mois), « Je sais que t'es dans le gros de la saison » (commencée depuis plus d'un mois). Voir §1quinquies. Les signaler refuserait la quasi-totalité des envois de C et D.
 - 🔴 **Le 2ᵉ temps**, qui nomme ses autres métiers : « Pour le reste de l'année, j'ai aussi vu que tu fais X » ou « J'ai aussi vu que tu fais X ». Formulation IMPOSÉE par le code depuis `services_offered`, sur 70 % des destinataires. Voir §1sexies.
 - 🔴 **Le bloc du site des gabarits C et D**, qui dit le site déjà fait (« j'en ai aussi profité pour te refaire / te faire un site web au goût du jour »). Formulation FIXE, identique pour tous les destinataires, décidée par William le 2026-08-31 et déjà détectée par `check_site_au_conditionnel` en sévérité `info`. Voir §1quater. La signaler refuserait un contact sur deux.
+- 🔴 **L'énumération des canaux du bloc SERVICE** — « Un appel que tu peux pas
+  prendre, un texto, un message sur ton site ou sur Facebook ». Phrase FIXE du
+  gabarit, identique pour tous les destinataires : elle décrit ce que le SYSTÈME
+  sait recevoir, **pas** ce que le prospect possède. Ce n'est donc ni une
+  affirmation sur lui, ni un fait à trouver dans le `research_json`.
+  ⚠️ Mesuré le 2026-09-15 : signalée comme « affirmation non ancrée (Facebook) »
+  sur un brouillon, alors que la phrase venait du gabarit. Le prospect n'a pas
+  besoin d'avoir une page Facebook pour qu'elle soit vraie.
 - 🔴 **Les quatre chiffres de marché de la relance 2** — « 21 fois », « 5 minutes », « 30 minutes », « 78 % ». Ce sont des chiffres **sectoriels assumés par William**, pas des faits sur CE prospect : ne les cherche pas dans le `research_json`, tu ne les y trouveras jamais — ce JSON décrit l'entreprise prospect, pas le marché. Un contrôle déterministe (`check_statistiques_conformes`) compare déjà chaque valeur à celle qui a été décidée et **bloque** au moindre écart, donc tu n'as ni à les vérifier ni à demander une reformulation.
   ⚠️ **Aucun exemple du §3 ne vise ces chiffres-là.** Le §3 parle de statistiques inventées dans un texte GÉNÉRÉ ; ceux de la relance 2 sont fixes, injectés par le code, identiques pour les 255 destinataires. Les signaler reviendrait à refuser 100 % des envois.
 
@@ -64,12 +72,42 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
   | « Aménagement paysager », « Plates-bandes », « Murs de soutènement » | **paysagement** |
   | « Tonte de pelouse », « Gazon », « Tondre » | **tonte** |
   | « Déneigement résidentiel », « Transport de neige », « Souffleuse » | **déneigement** |
-  | « Lavage de vitres », « Nettoyage de fenêtres », « Lavage à pression » | **lavage de vitres** |
+  | « Lavage de vitres », « Nettoyage de fenêtres » | **lavage de vitres** |
+
+  ⚠️ **« Lavage à pression » n'est PLUS du lavage de vitres** (décision William du
+  2026-09-16). Le classement existait depuis le 2026-08-30 — même client, même
+  saison — et il a été retiré parce que le nom de la famille sert de vocabulaire :
+  un entrepreneur qui fait du lavage à pression se faisait parler de **vitres**.
+  Ces libellés n'ont plus de famille du tout ; s'ils apparaissent comme un métier
+  dans un courriel, c'est à signaler.
   | « Extermination », « Gestion parasitaire », « Punaises » | **extermination** |
 
   ⚠️ « paysagement » n'apparaît PAS dans « Aménagement paysager » — c'est une famille, pas une sous-chaîne. Chercher le mot tel quel et conclure à l'invention **refuserait la quasi-totalité des multi-métiers**, soit 70 % des destinataires.
 
   Ce qui t'appartient vraiment : que la FAMILLE nommée soit plausiblement couverte par au moins un libellé de `services_offered`. Un métier qui n'a aucun rapport avec la liste (« toiture » chez un laveur de vitres) reste à signaler.
+
+  🔴 **« PLAUSIBLEMENT COUVERTE » EST LA NORME, ET ELLE EST PLUS SOUPLE QUE
+  « COUVERTE DE FAÇON INDÉPENDANTE ».** Un service nommé À L'INTÉRIEUR d'un
+  libellé — « Excavation sur mesure (fondations, drains français, piscines
+  creusées) » — COUVRE la famille au sens de cette règle. Tu peux le trouver
+  discutable ; ce n'est pas le critère qu'on te demande d'appliquer.
+  Mesuré le 2026-09-15 : un brouillon refusé pour « piscine non couverte de façon
+  indépendante » sur exactement ce libellé.
+
+  🔴 **RIEN NE BORNE LE NOMBRE DE MÉTIERS ÉNUMÉRÉS, et aucun champ ne le dit.**
+  Il n'existe PAS de `metiers_offerts` dans le `research_json` — ni sous ce nom
+  ni sous un autre. Ses clés sont `company_summary`, `services_offered`,
+  `lead_potential`, `pain_points_detected`, `personalization_hooks`,
+  `recent_review_snippet`, `size_signals`, `tech_savvy_score`,
+  `decideur_candidats`, `disqualifications`, `diagnostic_courriels`,
+  `form_test_hint`. Le nombre de familles est décidé par du CODE déterministe,
+  pas par le rédacteur, et il n'a aucun plafond à respecter.
+  ⚠️ Mesuré le 2026-09-15 : un brouillon refusé au motif que « le nombre de
+  familles énumérées (4) dépasse le signal `metiers_offerts: 3` ». Ce signal
+  n'existe pas — ni le champ, ni la valeur. Les 4 familles étaient toutes
+  couvertes. **N'invente jamais un seuil que tes entrées ne portent pas :**
+  refuser sur un champ imaginaire est le pire des refus, parce que personne ne
+  peut le corriger.
 
   ⚠️ **« j'ai aussi vu que » ne se signale pas** comme mise en scène de la recherche. Formulation décidée par William le 2026-09-07, et le premier paragraphe fixe de C et D commence de toute façon par « J'ai vu que tu fais du… ». Elle concerne **70 % des destinataires** : la signaler les gèlerait à vie.
 
