@@ -749,17 +749,49 @@ def _format_input_for_llm(
 # ----------------------------------------------------------------------
 
 def _parse_json(text: str) -> dict[str, Any]:
+    """Le PREMIER objet JSON complet de la reponse, ce qui suit est ignore.
+
+    🔴 PANNE REELLE DU 2026-09-17, 12 h 33 : un brouillon sur dix perdu, avec
+    `JSONDecodeError('Extra data: line 18 column 1 (char 2443)')`.
+
+    « Extra data » veut dire que le modele a rendu son objet PUIS autre chose.
+    L'ancienne version le prevoyait a moitie : `json.loads` echouait, et le
+    repli prenait « tout entre la premiere et la derniere accolade ». Quand ce
+    qui suit est un SECOND objet, ce repli les avale tous les deux — et deux
+    objets colles ne sont pas un objet valide non plus. Le `json.loads` du
+    repli n'etait dans aucun `try` : l'erreur sortait, le courriel etait perdu.
+
+    ⚠️ Le cas « objet + prose sans accolade » passait, lui. C'est ce qui a
+    rendu le defaut invisible : le repli marchait la plupart du temps.
+
+    `raw_decode` lit un objet complet et rend l'indice ou il s'arrete ; ce qui
+    traine derriere ne le regarde pas. Il n'y a donc plus de forme de bavardage
+    qui fasse perdre un brouillon.
+
+    ⚠️ Ne pas « simplifier » en revenant a une expression reguliere : aucune ne
+    sait ou se ferme un objet JSON, parce qu'il faut compter les accolades ET
+    savoir lesquelles sont dans une chaine de caracteres. C'est le travail de
+    l'analyseur, pas d'un motif.
+    """
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
+    decodeur = json.JSONDecoder()
+    depart = text.find("{")
+    if depart == -1:
         raise ValueError(f"No JSON object found in response: {text[:300]}")
-    return json.loads(match.group(0))
+    try:
+        objet, _fin = decodeur.raw_decode(text, depart)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"No JSON object found in response: {text[:300]}"
+        ) from e
+    if not isinstance(objet, dict):
+        raise ValueError(
+            f"Reponse JSON qui n'est pas un objet ({type(objet).__name__}): "
+            f"{text[:300]}"
+        )
+    return objet
 
 
 # ----------------------------------------------------------------------
