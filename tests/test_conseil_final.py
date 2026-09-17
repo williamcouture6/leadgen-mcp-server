@@ -197,16 +197,29 @@ def test_la_formulation_imposee_est_lisible_de_bout_en_bout() -> None:
     assert "de l'excavation" in bloc
 
 
-# ---------------- 4. Le lexique se separe en deux ----------------
+# ------------- 4. Le lexique suit la saison, d'un bout a l'autre -------------
 
-def test_le_lieu_suit_la_scene_et_les_questions_le_dominant() -> None:
-    """🔴 Les souder écrivait, à un laveur de vitres démarché en décembre sur
-    le déneigement : « Pis toi t'es EN HAUT D'UNE ÉCHELLE » juste après une
-    scène de neige.
+def test_le_lieu_ET_les_questions_suivent_la_scene() -> None:
+    """🔴 RENVERSÉ LE 2026-09-16 — décision William, et l'histoire compte.
 
-    La spec §3 sépare bien les deux : le BLOC SERVICE (les questions) suit le
-    dominant, la SCÈNE de l'ouvreur suit la saison — donc le LIEU aussi.
-    Mesuré : scène ≠ dominant sur 27 % des entreprises.
+    Il y a eu TROIS états, pas deux, et confondre les deux premiers m'a fait
+    déconseiller le bon :
+
+      1. les deux au DOMINANT — le vrai bug. À un laveur de vitres démarché en
+         décembre sur la neige, ça écrivait « Pis toi t'es EN HAUT D'UNE
+         ÉCHELLE » juste après une scène de neige.
+      2. le lieu à la saison, les questions au dominant — le correctif d'alors.
+         Il réglait le lieu et laissait les questions ailleurs : le courriel
+         ouvrait sur la neige puis demandait « le nombre d'étages, combien de
+         fenêtres ». Le juge de conformité l'a signalé DEUX fois le 2026-09-16.
+      3. **tout à la saison** — l'état actuel. Jamais essayé avant, et ce n'est
+         PAS le bug nº 1 : celui-là prenait tout au dominant.
+
+    Ce que ça coûte, assumé : on interroge le prospect sur son métier de saison,
+    qui peut être son activité secondaire. On lui parle de son petit métier —
+    mais au bon moment, et sans changer de sujet en cours de courriel.
+
+    📏 Scène ≠ dominant sur 27 % des entreprises.
     """
     from datetime import date
 
@@ -218,12 +231,14 @@ def test_le_lieu_suit_la_scene_et_les_questions_le_dominant() -> None:
     # 🔧 « dans TA machine » depuis le 2026-09-09 (décision William, en relisant
     # les brouillons réels) : le tutoiement rapproche, « la machine » sonnait
     # comme une machine en général.
-    assert "dans ta machine" in bloc, "le lieu doit suivre la scène (déneigement)"
-    assert "le nombre d'étages" in bloc, "les questions suivent le dominant (vitres)"
-    assert "en haut d'une échelle" not in bloc
-    assert "DEUX métiers différents" in bloc, (
-        "quand les deux divergent, le rédacteur doit savoir que c'est voulu"
+    assert "dans ta machine" in bloc, "le lieu suit la scène (déneigement)"
+    assert "la grandeur de l'entrée" in bloc, (
+        "les questions suivent la scène elles aussi, depuis le 2026-09-16"
     )
+    assert "le nombre d'étages" not in bloc, (
+        "les questions de vitres n'ont plus rien à faire dans un courriel de neige"
+    )
+    assert "en haut d'une échelle" not in bloc
 
 
 def test_sans_divergence_aucun_avertissement_inutile() -> None:

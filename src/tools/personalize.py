@@ -310,8 +310,15 @@ def bloc_metiers_resolus(
     #     Pis toi t'es EN HAUT D'UNE ÉCHELLE. »
     # Mesuré : scène ≠ dominant sur 27 % des entreprises, lieu divergent sur
     # 25 %. Un courriel sur quatre décrivait le gars au mauvais endroit.
-    lex_scene = lexique_pour(r.scene or r.dominant)
-    lex_dominant = lexique_pour(r.dominant)
+    # ⚠️ LES DEUX LEXIQUES PASSENT PAR `metiers_mentionnables`, pas par
+    # `r.dominant` nu. C'etait le quatrieme endroit qui lisait le dominant brut,
+    # trouve le 2026-09-16 en relisant ce bloc : les trois autres avaient ete
+    # corriges la veille, celui-ci parlait encore au nom d'un metier que le
+    # courriel n'a pas le droit de nommer.
+    _nommables = metiers_mentionnables(services_offered, aujourdhui, industry)
+    _dominant_nommable = _nommables[0] if _nommables else None
+    lex_scene = lexique_pour(r.scene or _dominant_nommable)
+    lex_dominant = lexique_pour(_dominant_nommable)
 
     lignes = ["## Métiers résolus (déjà classés — tu ne recalcules RIEN)"]
 
@@ -531,23 +538,38 @@ def bloc_metiers_resolus(
     if gabarit in GABARITS_A_TETE_FIXE:
         return "\n".join(lignes)
 
-    q = lex_dominant.questions
+    # 🔴 LES QUESTIONS SUIVENT LA SAISON — decision William, 2026-09-16.
+    #
+    # Elles suivaient le metier DOMINANT, et l'ouvreur la saison. Pour un laveur
+    # de vitres qui deneige l'hiver, le courriel ouvrait donc sur la neige puis
+    # demandait « le nombre d'etages, les fenetres ». Le juge de conformite l'a
+    # signale deux fois le 2026-09-16 : « les questions de qualification sont
+    # propres au lavage de vitres alors que l'email met le deneigement en avant ».
+    #
+    # ⚠️ CE N'EST PAS LE BUG QUI AVAIT ETE CORRIGE. Celui-la prenait les deux au
+    # DOMINANT, et ecrivait « quelqu'un cherche un entrepreneur pour deneiger son
+    # entree... pis toi t'es EN HAUT D'UNE ECHELLE ». Prendre les deux a la SAISON
+    # n'avait jamais ete essaye. La distinction vaut d'etre ecrite : j'avais
+    # d'abord deconseille cette option en la confondant avec le bug corrige, et
+    # c'est William qui a demande pourquoi.
+    #
+    # Ce que ca coute, et c'est l'arbitrage assume : on interroge le prospect sur
+    # son metier de SAISON, qui peut etre son activite secondaire. On lui parle de
+    # son petit metier plutot que de son principal -- mais on lui en parle au bon
+    # moment, et sans changer de sujet entre le premier et le deuxieme paragraphe.
+    q = lex_scene.questions
     lignes += [
         "",
         "## Lexique (choisi par une table — recopie-le TEL QUEL)",
         f"- **Où il est**, pour l'OUVREUR (suit le métier de la scène) : **{lex_scene.ou_il_est}**",
-        f"- **Les trois questions**, pour le BLOC SERVICE (suivent le métier dominant) :",
+        f"- **Les trois questions**, pour le BLOC SERVICE (suivent la MÊME saison) :",
         f"  **{q[0]}, {q[1]}, {q[2]}**",
     ]
     if lex_scene.ou_il_est != lex_dominant.ou_il_est:
         lignes.append(
-            "  ⚠️ Le lieu et les questions viennent de DEUX métiers différents, "
-            # « qui s'en vient » a été retiré le 2026-09-04 : en mai, cette
-            # note tombait juste sous la ligne « sa saison est DÉJÀ COMMENCÉE »
-            # et la contredisait. Deux consignes qui se contredisent, c'est la
-            # plus faible des deux qui gagne parfois.
-            "et c'est voulu : l'ouvreur parle de sa saison à lui, le "
-            "bloc service parle de son métier de tous les jours."
+            "  ℹ️ Son métier de tous les jours est un autre que celui de la saison. "
+            "Le courriel parle d'un SEUL métier de bout en bout — celui de la "
+            "saison — et nomme l'autre au 2ᵉ temps, sans y revenir."
         )
     if lex_dominant.est_repli:
         lignes.append(

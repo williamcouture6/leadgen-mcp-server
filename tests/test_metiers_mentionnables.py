@@ -82,3 +82,63 @@ class TestLesTroisEndroits:
     def test_le_vrai_pisciniste_la_nomme_tous_les_mois(self, mois: int) -> None:
         bloc = bloc_metiers_resolus(PISCINISTE, date(2026, mois, 15), "A", None)
         assert "piscine" in bloc.lower(), f"mois {mois}"
+
+
+NETTOYEUR_DE_TOITS = [
+    "Lavage de vitres résidentiel",
+    "Nettoyage de gouttières",
+    "Nettoyage de toitures",
+    "Déneigement de toiture",
+]
+COUVREUR = ["Réfection de toiture", "Pose de bardeau", "Membrane élastomère"]
+PAYSAGISTE_PUNAISES = [
+    "Tonte de gazon",
+    "Fertilisation de la pelouse",
+    "Traitement des punaises de gazon",
+]
+EXTERMINATEUR = ["Traitement des punaises de lit", "Extermination de fourmis"]
+
+
+class TestToitureEtPunaises:
+    """🔴 DEUX CAS TROUVÉS LE 2026-09-16, au deuxième passage de WF-5.
+
+    Ce sont les mêmes pièges que « piscines creusées » et « lavage à pression » :
+    un mot du dictionnaire attrapé sans regarder ce qui l'entoure.
+
+      · Net-Pro lave des vitres et NETTOIE des toits — classé couvreur. Le juge
+        a refusé : « la famille toiture est trop vague et pourrait laisser croire
+        que l'entreprise fait de la couverture ».
+      · Boteco est paysagiste et traite les punaises DE GAZON — classé
+        exterminateur.
+
+    Deux mécanismes différents, et c'est voulu :
+      · pour la TOITURE, une EXIGENCE — il faut un mot qui prouve qu'on refait
+        le toit (réfection, bardeau, membrane), pas qu'on monte dessus ;
+      · pour les PUNAISES, une EXCLUSION — « punaise » EST déjà le mot qui
+        prouve l'extermination, c'est l'ESPÈCE qui distingue.
+    """
+
+    def test_nettoyer_un_toit_ne_fait_pas_un_couvreur(self) -> None:
+        assert "toiture" not in metiers_mentionnables(
+            NETTOYEUR_DE_TOITS, date(2026, 6, 15)
+        )
+
+    def test_un_vrai_couvreur_garde_sa_toiture(self) -> None:
+        """La contre-épreuve. Sans elle, supprimer la famille passerait aussi."""
+        assert "toiture" in metiers_mentionnables(COUVREUR, date(2026, 6, 15))
+
+    def test_le_nettoyeur_garde_ses_vrais_metiers(self) -> None:
+        nommables = metiers_mentionnables(NETTOYEUR_DE_TOITS, date(2026, 6, 15))
+        assert {"lavage de vitres", "déneigement"} <= set(nommables)
+
+    def test_les_punaises_de_gazon_ne_sont_pas_de_l_extermination(self) -> None:
+        assert "extermination" not in metiers_mentionnables(
+            PAYSAGISTE_PUNAISES, date(2026, 6, 15)
+        )
+
+    def test_les_punaises_de_LIT_le_restent(self) -> None:
+        """🔴 L'ESPÈCE DISTINGUE, PAS LE VERBE. Une exclusion trop large sur
+        « punaise » aurait désarmé la famille pour de vrais exterminateurs."""
+        assert "extermination" in metiers_mentionnables(
+            EXTERMINATEUR, date(2026, 6, 15)
+        )

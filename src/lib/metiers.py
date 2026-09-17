@@ -168,6 +168,19 @@ RACINES: dict[str, tuple[str, ...]] = {
 # pas pour ce métier-là. Il peut toujours compter pour un autre — « gazon en
 # rouleau » reste du paysagement.
 EXCLUSIONS: dict[str, tuple[str, ...]] = {
+    # 🔴 « PUNAISES DE GAZON » N'EST PAS DE L'EXTERMINATION — William, 2026-09-16.
+    #
+    # Ici l'exigence ne pouvait pas servir : « punaise » EST deja le mot qui prouve
+    # l'extermination. Ce qui cloche est l'espece — la punaise de gazon est un
+    # ravageur de pelouse, traite par le paysagiste avec sa fertilisation, pas par
+    # un exterminateur. Boteco Services Paysagers, qui ne fait que du paysagement,
+    # se faisait classer exterminateur sur « Traitement des punaises de gazon », et
+    # le juge a refuse le brouillon.
+    #
+    # ⚠️ « Traitement des punaises de lit » reste de l'extermination, et doit le
+    # rester : c'est l'espece qui distingue, pas le verbe.
+    "extermination": ("punaise de gazon", "punaises de gazon", "punaise de pelouse",
+                      "punaises de pelouse"),
     "tonte": (
         "gazon en rouleau",
         "gazon en plaque",
@@ -275,6 +288,21 @@ EXCLUSIONS: dict[str, tuple[str, ...]] = {
 # des faux positifs. La règle générale reste l'inclusion ; `piscine` est
 # l'exception, justifiée par la mesure.
 EXIGE: dict[str, tuple[str, ...]] = {
+    # 🔴 NETTOYER UN TOIT NE FAIT PAS UN COUVREUR — decision William, 2026-09-16.
+    #
+    # Meme regle que la piscine, meme raison. La racine `toiture` attrapait
+    # « Nettoyage de toitures » et « Deneigement de toiture » : Net-Pro, qui lave
+    # des vitres et nettoie des gouttieres, se faisait classer couvreur, et le juge
+    # de conformite a refuse son brouillon — « la famille toiture est trop vague et
+    # pourrait laisser croire que l'entreprise fait de la couverture ».
+    #
+    # Les mots ci-dessous sont ceux qui prouvent qu'on REFAIT un toit, pas qu'on
+    # monte dessus. Sans l'un d'eux, la famille est classee mais ne peut ni ouvrir
+    # de fenetre ni etre nommee dans le courriel (voir `metiers_mentionnables`).
+    "toiture": (
+        "refection", "couvreur", "bardeau", "membrane", "elastomere",
+        "installation", "remplacement", "reparation", "toiture neuve",
+    ),
     "piscine": (
         "entretien",
         "nettoyage",

@@ -336,8 +336,18 @@ def test_le_prompt_interdit_au_modele_de_noter() -> None:
 def test_le_prompt_ferme_la_liste_des_disqualifications() -> None:
     p = _prompt()
     assert "la liste est FERMÉE" in p
-    for motif in ("entité publique", "annuaire", "coopérative", "plus de 50 employés"):
+    # 🔧 Le seuil de taille est passe de 50 a 25 le 2026-09-16 (decision
+    # William). Le critere ne porte plus seulement sur la structure
+    # (franchise, chaine) mais sur le fait d'avoir QUELQU'UN QUI REPOND :
+    # repartiteur, receptionniste, centre d'appels. Le cas qui l'a decide :
+    # Worry Free Snow Blowing, 25-50 employes, « centre d'appels entierement
+    # dote en personnel lors des tempetes » — elle passait le seuil de 50 et a
+    # recu un brouillon qui lui disait « t'es dans ta machine ».
+    for motif in ("entité publique", "annuaire", "coopérative", "25 employés ou plus"):
         assert motif in p, motif
+    assert "plus de 50 employés" not in p, (
+        "l'ancien seuil doit avoir disparu partout, y compris du schema JSON"
+    )
     # Décision William : un service de réponse humain 24/7 reste joignable.
     assert "ne disqualifie PAS" in p
 

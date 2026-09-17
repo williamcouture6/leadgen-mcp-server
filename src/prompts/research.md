@@ -66,7 +66,7 @@ Tu n'écris pas l'email. Tu extrais des **faits vérifiables et des signaux** �
     "notes": "ce que tu as vu sur le site qui pourrait servir au Template B (test du formulaire)"
   },
   "disqualifications": [
-    "UNIQUEMENT un des quatre motifs de la liste fermée (ex: 'organisme municipal', 'annuaire', 'coopérative', 'franchise corporative, plus de 50 employés'). Un outil en place, un site inactif ou une agence partenaire ne sont PAS des motifs."
+    "UNIQUEMENT un des CINQ motifs de la liste fermée (ex: 'organisme municipal', 'annuaire', 'coopérative', '25 employés ou plus / répartiteur en place', 'ferme définitivement'). Un outil en place, un site inactif ou une agence partenaire ne sont PAS des motifs."
   ],
   "personalization_hooks": [
     "1-3 angles factuels et spécifiques que l'agent Personalization peut utiliser. Ex: 'mentionne leur 4.9 ★ avec 154 avis', 'mentionne le service d'urgence 24/7 affiché sur la page d'accueil', 'mentionne la review du 12 mars qui dit X'"
@@ -133,7 +133,19 @@ Un travail mal fait, un retard de chantier, un prix contesté ne sont PAS ce sig
 1. **entité publique ou municipale** (ville, arrondissement, organisme para-public, installation municipale) ;
 2. **annuaire, répertoire ou plateforme de mise en relation** ;
 3. **coopérative, réseau coopératif, association ou organisme de certification** ;
-4. **plus de 50 employés** — franchise corporative, chaîne, multi-succursales ;
+4. **25 employés ou plus** — franchise, chaîne, multi-succursales, **ou simplement
+   une opération assez grosse pour avoir quelqu'un qui répond au téléphone** :
+   répartiteur, réceptionniste, centre d'appels, équipe de bureau.
+   🔴 **Le seuil est passé de 50 à 25 le 2026-09-16** (décision William), et le
+   critère ne porte plus seulement sur la structure. Ce qui compte est ce que le
+   courriel PROMET : il dit « t'es dans ta machine, tu peux pas répondre ». Chez
+   une entreprise qui a un répartiteur, cette phrase dit au prospect que personne
+   n'a regardé son entreprise.
+   📏 Le cas qui l'a décidé : *Worry Free Snow Blowing*, 25-50 employés, dont ta
+   propre analyse disait « centre d'appels entièrement doté en personnel lors des
+   tempêtes ». Elle passait le seuil de 50, donc elle a reçu un brouillon.
+   ⚠️ Une entreprise de 10-25 avec plusieurs équipes n'est PAS disqualifiée par
+   ce motif : en dessous de 25, c'est le score qui décide, pas la porte.
 5. **commerce fermé définitivement** — `business_status: CLOSED_PERMANENTLY` sur la fiche Google. Personne ne lit ce champ dans le code : sans toi, cette entreprise traverse tout le pipeline et reçoit un courriel.
 
 Rien d'autre ne disqualifie. En particulier :
@@ -156,7 +168,16 @@ Rien d'autre ne disqualifie. En particulier :
 
 - **Pain points typiques à chercher**: leads ratés hors heures, formulaires soumis le soir/weekend sans réponse rapide, demandes Facebook Messenger ignorées, no-shows de RDV, relances pour avis Google.
 - **Outil en place = des points en moins, jamais une disqualification**: "chatbot", "assistant virtuel", "réservation en ligne", "agence numérique partenaire" sur le site → le code s'en occupe via `outils_detectes`, ne mets rien dans `disqualifications`.
-- **Taille**: si >1000 avis ET plusieurs succursales → probablement plus de 50 employés, donc une franchise corporative, et **ça, ça disqualifie**. Une entreprise d'une seule personne (peu d'avis, un seul technicien nommé) se note dans `size_signals` et **ne change rien au score**.
+- **Taille**: le seuil de disqualification est à **25 employés** depuis le
+  2026-09-16 (motif 4 ci-dessus). Les signaux qui le trahissent : plus de 1000
+  avis, plusieurs succursales, une page Équipe fournie, un centre d'appels ou un
+  répartiteur mentionné, un standard téléphonique. Une entreprise d'une seule
+  personne (peu d'avis, un seul technicien nommé) se note dans `size_signals` et
+  **ne change rien au score**.
+  🔴 `estimated_employees_range` et `disqualifications` doivent CONCORDER : si tu
+  écris « 25-50 » ou « 50+ », le motif 4 doit être dans `disqualifications`. Les
+  deux champs se lisent ensemble, et une fiche qui dit 25-50 sans disqualification
+  traverse tout le pipeline — c'est exactement ce qui s'est produit.
 
 ## Confiance des décideurs (`confidence`)
 

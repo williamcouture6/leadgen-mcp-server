@@ -97,16 +97,24 @@ def test_les_deux_formes_du_deuxieme_temps_sont_distinctes() -> None:
     assert a != b
 
 
-def test_le_message_porte_le_lexique_du_metier_DOMINANT() -> None:
-    """🔴 Le lexique suit le dominant, la scène suit la saison. Un laveur de
-    vitres démarché en août à propos de la neige doit se faire demander le
-    nombre d'étages, pas la grandeur de son entrée."""
+def test_le_message_porte_le_lexique_du_metier_DE_SAISON() -> None:
+    """🔴 RENVERSÉ LE 2026-09-16 — décision William.
+
+    Ce test s'appelait « le lexique du métier DOMINANT » et demandait l'inverse :
+    un laveur de vitres démarché en août sur la neige devait se faire demander
+    le nombre d'étages. C'était le correctif de l'époque, et il laissait le
+    courriel changer de sujet en cours de route — ouvrir sur la neige, puis
+    interroger sur les fenêtres. Le juge de conformité l'a signalé deux fois.
+
+    Le courriel parle maintenant d'UN SEUL métier de bout en bout : celui dont
+    c'est la saison.
+    """
     msg = _message(
         ["lavage de vitres commercial", "nettoyage de fenêtres", "lavage de vitres résidentiel", "déneigement"],
         aujourdhui=date(2026, 8, 20),
     )
-    assert "le nombre d'étages" in msg
-    assert "la grandeur de l'entrée" not in msg
+    assert "la grandeur de l'entrée" in msg
+    assert "le nombre d'étages" not in msg
 
 
 def test_un_mono_metier_na_pas_de_deuxieme_temps() -> None:

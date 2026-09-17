@@ -22,6 +22,14 @@ Tu reçois un email cold-outreach déjà écrit, **ses relances quand il en a**,
 - 🔴 **L'ouvreur de saison des gabarits C et D**, dans ses TROIS versions. Le premier paragraphe de C et D situe la saison du métier, et la formulation est choisie par du CODE — jamais par le rédacteur — selon la date d'envoi et la saison documentée du métier : « La saison approche » (saison à venir), « C'est le début de la saison » (commencée depuis moins d'un mois), « Je sais que t'es dans le gros de la saison » (commencée depuis plus d'un mois). Voir §1quinquies. Les signaler refuserait la quasi-totalité des envois de C et D.
 - 🔴 **Le 2ᵉ temps**, qui nomme ses autres métiers : « Pour le reste de l'année, j'ai aussi vu que tu fais X » ou « J'ai aussi vu que tu fais X ». Formulation IMPOSÉE par le code depuis `services_offered`, sur 70 % des destinataires. Voir §1sexies.
 - 🔴 **Le bloc du site des gabarits C et D**, qui dit le site déjà fait (« j'en ai aussi profité pour te refaire / te faire un site web au goût du jour »). Formulation FIXE, identique pour tous les destinataires, décidée par William le 2026-08-31 et déjà détectée par `check_site_au_conditionnel` en sévérité `info`. Voir §1quater. La signaler refuserait un contact sur deux.
+- 🔴 **La gratuité de la version à montrer** — « Je te charge rien pour ça ».
+  Phrase FIXE du gabarit (personalize.md, §5 : « le site est au conditionnel, et
+  le gratuit porte sur une **version à montrer** »). Ce n'est ni une promesse
+  commerciale inventée par le rédacteur, ni un engagement à trouver dans le
+  `research_json` — c'est une décision de William, écrite dans le gabarit.
+  ⚠️ Mesuré le 2026-09-16 : un brouillon refusé au motif que « la promesse de
+  gratuité n'est ancrée dans aucune règle documentée ». Elle l'est, et la règle
+  est à côté de la phrase.
 - 🔴 **L'énumération des canaux du bloc SERVICE** — « Un appel que tu peux pas
   prendre, un texto, un message sur ton site ou sur Facebook ». Phrase FIXE du
   gabarit, identique pour tous les destinataires : elle décrit ce que le SYSTÈME
