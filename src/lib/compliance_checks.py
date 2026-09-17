@@ -1197,6 +1197,34 @@ def check_registre(email_body: str, track: str | None = None) -> CheckResult:
     )
 
 
+# 🔴 QUATRE, ET ON Y RESTE — décision William du 2026-09-16, sur mesure.
+#
+# Un brouillon avait été annoté « 5 « pis » (max 4) », et la question posée
+# était : monter le plafond à 5 ? Distribution réelle sur les 40 brouillons
+# d'alors, avec ce contrôle-ci :
+#
+#     0 pis :  2     3 pis :  9
+#     1 pis : 10     4 pis :  8   <- AU plafond
+#     2 pis : 10     5 pis :  1   <- le seul dépassement
+#
+# Ce que ça dit : **huit brouillons sur quarante s'arrêtent pile à 4**. Le
+# rédacteur pousse jusqu'à la limite et s'y tient — c'est le plafond qui le
+# tient là. Le monter à 5 le ferait aller à 5, et on retrouverait la même
+# grappe collée au nouveau plafond : le tic gagnerait un cran dans TOUTE la
+# copie pour faire taire UNE annotation sur quarante.
+#
+# ⚠️ Ne pas confondre avec les deux remarques qu'on a fait taire le même
+# jour (`cta_present` sur les fermetures douces). Celles-là tombaient sur
+# 100 % des courriels pour une chose VOULUE — du bruit pur, qui apprend à
+# ne plus lire la section des remarques. Celle-ci tombe sur 2,5 %, et sur un
+# vrai dépassement. Une remarque rare qui dit vrai est le contraire du bruit.
+#
+# ⚠️ Sévérité `info` : ce plafond n'a jamais bloqué un envoi et n'en bloquera
+# pas. Le « coût » d'un dépassement est une ligne dans les notes.
+#
+# 📏 Les relances n'en contiennent AUCUN (vérifié le 2026-09-16) : les « pis »
+# viennent tous du corps généré — l'ouvreur fixe de C et D (« la saison
+# approche, pis je me disais ») et la forme « autant X que Y pis Z ».
 _MAX_PIS = 4
 
 
