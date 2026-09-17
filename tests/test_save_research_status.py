@@ -203,3 +203,92 @@ async def test_les_statuts_terminaux_restent_hors_du_backlog(
     await dbt.list_companies_to_research(limit=10, track="agence-ia")
 
     assert vus[0]["status"] == "not.in.(disqualified,no_web_presence)"
+
+
+# ── La disqualification sort du circuit (2026-09-16) ───────────────────────
+
+
+async def test_une_disqualification_sort_la_fiche_du_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 DÉCISION WILLIAM, 2026-09-16.
+
+    Avant : une disqualification mettait le score à ZÉRO, ce qui reléguait la
+    fiche au fond de la file d'envoi sans jamais l'en retirer. Or le prompt de
+    recherche parle d'une « liste FERMÉE » de cinq motifs terminaux — entité
+    publique, annuaire, coopérative, 25 employés ou plus, commerce fermé.
+    Aucun des cinq ne mérite d'être « plus bas dans la file ».
+
+    Le cas qui l'a montré : Worry Free Snow Blowing, 25-50 employés avec un
+    centre d'appels, a reçu un brouillon lui disant « t'es dans ta machine ».
+    """
+    from src.tools import db as dbt
+
+    patches = _capture(monkeypatch, n_contacts=2)
+    await dbt.update_company_research(
+        "co-1",
+        {"disqualifications": ["25 employés ou plus — centre d'appels en place"]},
+    )
+    assert patches[0]["status"] == "disqualified"
+    assert "centre d'appels" in patches[0]["disqualified_reason"], (
+        "une fiche sortie sans motif est une fiche que personne ne pourra rouvrir"
+    )
+
+
+async def test_sans_disqualification_le_statut_normal_est_intact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """La contre-épreuve. Sans elle, « tout passe en disqualified » passerait
+    aussi, et on ne s'en apercevrait qu'en voyant la file se vider."""
+    from src.tools import db as dbt
+
+    patches = _capture(monkeypatch, n_contacts=2)
+    await dbt.update_company_research("co-1", {"disqualifications": []})
+    assert patches[0]["status"] == "enriched"
+    assert "disqualified_reason" not in patches[0]
+
+
+async def test_un_mot_vide_ne_disqualifie_pas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un modèle qui répond « aucune » remplit quand même le tableau. Le piège
+    existait déjà pour le score (`_MOTS_VIDES_DISQUALIFICATION`) ; il serait
+    bien pire ici, où il sortirait la fiche du circuit pour de bon."""
+    from src.tools import db as dbt
+
+    patches = _capture(monkeypatch, n_contacts=2)
+    await dbt.update_company_research("co-1", {"disqualifications": ["aucune"]})
+    assert patches[0]["status"] == "enriched"
+
+
+def test_la_regle_n_agit_qu_a_L_ECRITURE_jamais_retroactivement() -> None:
+    """🔴 LE GARDE-FOU QUI COMPTE, et il est structurel plutôt qu'assertif.
+
+    117 des 404 fiches déjà recherchées portent une disqualification écrite sous
+    l'ANCIENNE règle, large, que la refonte a abrogée : « tech-savvy élevé »,
+    « agence partenaire visible », « site inactif ». Les passer en
+    `disqualified` appliquerait une loi supprimée à des jugements rendus sous
+    elle, et enterrerait des PME que William veut garder.
+
+    C'est exactement le raisonnement qui a fait RETIRER la mise à zéro
+    rétroactive du score le 2026-09-10. La règle vit donc dans
+    `update_company_research` — le chemin d'ÉCRITURE — et nulle part ailleurs.
+
+    Ce test échoue si quelqu'un ajoute un script ou une requête qui applique la
+    règle au parc existant.
+    """
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent.parent / "src"
+    coupables = []
+    for f in src.rglob("*.py"):
+        texte = f.read_text(encoding="utf-8")
+        if "motif_de_disqualification" not in texte:
+            continue
+        rel = f.relative_to(src).as_posix()
+        if rel not in ("tools/db.py",):
+            coupables.append(rel)
+    assert not coupables, (
+        "la règle ne doit vivre QUE sur le chemin d'écriture "
+        f"(tools/db.py) — trouvée aussi dans : {coupables}"
+    )

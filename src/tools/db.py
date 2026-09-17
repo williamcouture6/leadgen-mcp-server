@@ -1786,6 +1786,28 @@ def _porte_une_disqualification(research_json: dict[str, Any]) -> bool:
     )
 
 
+def motif_de_disqualification(research_json: Any) -> str | None:
+    """Le PREMIER motif de disqualification lisible, ou None.
+
+    `_porte_une_disqualification` repond oui/non pour le score ; celle-ci rend
+    le texte, parce que `companies.disqualified_reason` doit dire POURQUOI. Une
+    fiche sortie du circuit sans motif est une fiche que personne ne pourra
+    rouvrir en connaissance de cause.
+    """
+    if not isinstance(research_json, dict):
+        return None
+    lignes = research_json.get("disqualifications")
+    if not isinstance(lignes, list):
+        return None
+    for x in lignes:
+        if not isinstance(x, str):
+            continue
+        propre = x.strip().rstrip(".")
+        if propre.lower() not in _MOTS_VIDES_DISQUALIFICATION:
+            return propre[:200]
+    return None
+
+
 def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     """Extrait les colonnes flat `lead_potential_*` du research_json.
 
@@ -1946,13 +1968,44 @@ async def update_company_research(
     confirme, potentiel = summarize_company_decideur(
         (research_json or {}).get("decideur_candidats"), emails_found
     )
+    # 🔴 UNE DISQUALIFICATION SORT L'ENTREPRISE DU CIRCUIT — decision William,
+    # 2026-09-16.
+    #
+    # Jusqu'ici elle ne faisait que mettre le score a ZERO
+    # (`calculer_score(disqualifie=True)`), ce qui releguait la fiche au fond de
+    # la file sans jamais l'en retirer. Le prompt de recherche, lui, parle d'une
+    # « liste FERMEE » de cinq motifs terminaux : entite publique, annuaire,
+    # cooperative, 25 employes ou plus, commerce ferme. Aucun de ces cinq ne
+    # merite d'etre « plus bas dans la file » : ils meritent de sortir.
+    #
+    # Le cas qui l'a montre : Worry Free Snow Blowing, 25-50 employes avec un
+    # centre d'appels, a recu un brouillon lui disant « t'es dans ta machine ».
+    #
+    # 🔴 ET CA NE VAUT QUE POUR LES RECHERCHES FUTURES, jamais retroactivement.
+    # 117 des 404 fiches deja recherchees portent une disqualification ecrite
+    # sous l'ANCIENNE regle, large, que la refonte a abrogee (« tech-savvy
+    # eleve », « agence partenaire visible », « site inactif »). Les passer en
+    # `disqualified` appliquerait une loi supprimee a des jugements rendus sous
+    # elle, et enterrerait des PME que William veut garder. C'est exactement le
+    # raisonnement qui a fait RETIRER la mise a zero retroactive le 2026-09-10 ;
+    # voir `extract_lead_potential_patch`.
+    #
+    # ⚠️ Le filtre de l'UPDATE porte sur le statut ACTUEL
+    # (`not.in.(disqualified,suppressed)`) : il empeche de ressusciter une fiche
+    # deja sortie, et n'empeche pas d'en sortir une nouvelle.
+    motif_disqualifiant = motif_de_disqualification(research_json)
     patch: dict[str, Any] = {
         "research_json": research_json,
         "decideur_confirme": confirme,
         "decideur_potentiel": potentiel,
-        "status": await _statut_apres_recherche(company_id, emails_found),
+        "status": (
+            "disqualified" if motif_disqualifiant
+            else await _statut_apres_recherche(company_id, emails_found)
+        ),
         "last_enriched_at": datetime.now(timezone.utc).isoformat(),
     }
+    if motif_disqualifiant:
+        patch["disqualified_reason"] = motif_disqualifiant
     patch.update(extract_lead_potential_patch(research_json))
     rows = await db.update(
         "companies",
