@@ -1669,6 +1669,138 @@ async def _run_wf1(payload: RunWf1In) -> RunWf1Out:
     )
 
 
+# ------------- WF-1 nouvelle manière : le PIOCHEUR d'inventaire -------------
+#
+# 🔴 CE QUI CHANGE, ET POURQUOI `/wf1/run` RESTE EN PLACE À CÔTÉ.
+#
+# `/wf1/run` fait DEUX métiers collés : découvrir ce qui existe chez Google, et
+# alimenter la machine à courriels. Comme l'envoi avance à 20/jour, la
+# découverte avançait au même rythme — une question par matin. Le balayeur
+# (`scripts/balayage.py`) a séparé les deux : il découvre pour 0 $, et cet
+# endpoint ne fait plus QUE piocher dans l'inventaire et payer les détails de ce
+# qu'on va vraiment démarcher.
+#
+# ⚠️ ON NE SUPPRIME PAS `/wf1/run` DANS LE MÊME LOT, ET C'EST DÉLIBÉRÉ. Il porte
+# `next_sourcing_target`, dont le correctif anti-famine du 2026-09-14 est épinglé
+# par neuf cas de `test_sourcing_famine_de_cible.py`, et il reste le seul chemin
+# pour la piste `OPT`. Le retirer ici ferait deux chantiers à la fois.
+# LE CRITÈRE POUR LE RETIRER, à écrire maintenant pendant qu'on y pense : quand
+# les sept secteurs du catalogue auront été balayés au moins une fois et que le
+# piocheur aura tourné un mois sans famine. D'ici là, les deux coexistent et
+# `/wf1/run` ne doit plus être appelé par le cron `agence-ia`.
+
+class PiocheWf1In(BaseModel):
+    limit: int = 20
+    track: str = "agence-ia"
+    dry_run: bool = False
+
+
+class PiocheWf1Out(BaseModel):
+    secteurs_prepares: list[str] = []
+    pioches: int = 0
+    inserees: int = 0
+    doublons: int = 0
+    junk: int = 0
+    introuvables: int = 0
+    echecs: int = 0
+    error_text: str | None = None
+
+
+@app.post("/wf1/pioche", dependencies=[Depends(_require_auth)],
+          response_model=PiocheWf1Out)
+async def pioche_wf1(payload: PiocheWf1In) -> PiocheWf1Out:
+    """Hydrate un lot d'entreprises de l'inventaire et les insère dans companies.
+
+    Un lot à la fois — même verrou que `/wf1/run`, pour la même raison : un n8n
+    qui relance sa requête ne doit pas démarrer un lot NEUF par-dessus celui qui
+    court.
+    """
+    cle = f"wf1pioche:{payload.track}"
+    if _lot_deja_en_cours(cle):
+        logging.getLogger("pioche_wf1").warning("lot refuse : un lot tourne deja")
+        return PiocheWf1Out()
+    async with _verrou_de_lot(cle):
+        return await _pioche_wf1(payload)
+
+
+async def _pioche_wf1(payload: PiocheWf1In) -> PiocheWf1Out:
+    out = PiocheWf1Out(secteurs_prepares=db_tools.secteurs_a_preparer(track=payload.track))
+    try:
+        lot = await db_tools.list_inventaire_a_piocher(
+            payload.limit, track=payload.track
+        )
+    except Exception as e:  # noqa: BLE001
+        out.error_text = f"selection: {e!r}"
+        return out
+
+    for ligne in lot:
+        pid = ligne["google_place_id"]
+        tentatives = ligne.get("tentatives") or 0
+        out.pioches += 1
+        if payload.dry_run:
+            continue
+        # 🔴 UN ÉCHEC PAR FICHE N'EMPORTE PAS LE LOT. `_run_wf1` porte le défaut
+        # inverse — un try/except unique autour de toute la boucle — et sur un
+        # lot de 20 ça ferait perdre 19 hydratations pour une seule mauvaise.
+        try:
+            place = await maps_tools.get_place(pid)
+        except maps_tools.PlaceIntrouvable as e:
+            # Définitif : l'identifiant a péri. On l'écarte avec son motif pour
+            # qu'il ne revienne jamais manger le budget du lot.
+            out.introuvables += 1
+            await db_tools.marquer_inventaire(
+                pid, etat="ecartee", motif=f"place_id_perime:{e}"[:300],
+                tentatives=tentatives,
+            )
+            continue
+        except Exception as e:  # noqa: BLE001
+            # Transitoire (quota, réseau) : on retentera, et `derniere_tentative`
+            # la renvoie en fin de file en attendant.
+            out.echecs += 1
+            logging.getLogger("pioche_wf1").warning("hydratation %s — %r", pid, e)
+            await db_tools.marquer_inventaire(
+                pid, etat="echec", tentatives=tentatives
+            )
+            continue
+
+        motif = sourcing_disqualify_reason(place.name, place.primary_type)
+        if motif:
+            out.junk += 1
+            await db_tools.marquer_inventaire(
+                pid, etat="ecartee", motif=motif, tentatives=tentatives
+            )
+            continue
+
+        # ⚠️ `city` vient de Google, sans repli sur une ville de catalogue. Le
+        # repli `p.city or city` de `_run_wf1` n'a plus de sens ici : une entrée
+        # d'inventaire porte une ou plusieurs RÉGIONS de balayage, qui sont des
+        # rectangles et non des municipalités. Un repli inventerait une ville, et
+        # `companies.dedup_key` est bâtie sur nom+ville+code postal.
+        secteur = (ligne.get("trouve_par") or [None])[0]
+        res = await db_tools.insert_company(
+            db_tools.CompanyIn(
+                name=place.name, google_place_id=place.google_place_id,
+                address=place.formatted_address, city=place.city,
+                postal_code=place.postal_code, latitude=place.latitude,
+                longitude=place.longitude, website=place.website,
+                domain=place.domain, icp_segment="commerce_local",
+                industry=secteur, google_types=place.google_types,
+                google_rating=place.google_rating,
+                google_reviews_count=place.google_reviews_count,
+                track=payload.track, raw_payload=place.raw_payload,
+            )
+        )
+        if res.status == "inserted":
+            out.inserees += 1
+        else:
+            out.doublons += 1
+        await db_tools.marquer_inventaire(
+            pid, etat="traitee", company_id=res.company_id, tentatives=tentatives
+        )
+
+    return out
+
+
 # ---------------- Research (Phase 2 — WF-3) ----------------
 
 # Au-delà de ce nombre d'échecs research cumulés sur une même company, on la
@@ -3024,15 +3156,12 @@ SEUIL_PIOCHABLE_SANS_RYTHME = 40
 
 
 def _litteral_tableau_pg(valeurs: list[str]) -> str:
-    """Un littéral de tableau Postgres pour un filtre PostgREST `ov.`/`cs.`.
+    """Alias historique — l'implémentation vit dans `supabase_client`, où les
+    deux appelants (l'alerte de famine et la sélection du piocheur) la
+    partagent. Deux copies auraient fini par diverger sur l'échappement."""
+    from . import supabase_client as sb
 
-    ⚠️ Les guillemets ne sont PAS décoratifs : nos secteurs contiennent des
-    espaces (`entrepreneur en déneigement`). Sans eux, Postgres lit quatre
-    éléments au lieu d'un, le filtre ne matche rien, et l'alerte annonce une
-    famine parfaitement fausse. Les accents passent par l'encodage d'URL.
-    """
-    echappees = [v.replace("\\", "\\\\").replace('"', '\\"') for v in valeurs]
-    return "{" + ",".join(f'"{v}"' for v in echappees) + "}"
+    return sb.litteral_tableau(valeurs)
 
 
 class EtatInventaire(BaseModel):

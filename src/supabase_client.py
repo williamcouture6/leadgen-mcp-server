@@ -174,6 +174,19 @@ async def select_all(
         offset += page_size
 
 
+
+def litteral_tableau(valeurs: list[str]) -> str:
+    """Un littéral de tableau Postgres pour un filtre PostgREST `ov.`/`cs.`.
+
+    ⚠️ Les guillemets ne sont PAS décoratifs : plusieurs de nos valeurs
+    contiennent des espaces (`entrepreneur en déneigement`). Sans eux, Postgres
+    lit quatre éléments au lieu d'un, le filtre ne matche rien — et un filtre
+    qui ne matche rien ressemble à une file vide, pas à un bogue. Les accents
+    passent par l'encodage d'URL.
+    """
+    echappees = [v.replace("\\", "\\\\").replace('"', '\\"') for v in valeurs]
+    return "{" + ",".join(f'"{v}"' for v in echappees) + "}"
+
 @retry(**_RETRY_KW)
 async def insert(
     table: str,

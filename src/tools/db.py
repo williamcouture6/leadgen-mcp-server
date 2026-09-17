@@ -463,6 +463,87 @@ def _en_datetime(valeur: Any) -> datetime | None:
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
+# ----------------------------------------------------------------------
+# L'inventaire — la file du piocheur (WF-1 nouvelle manière)
+# ----------------------------------------------------------------------
+
+async def list_inventaire_a_piocher(
+    limit: int = 20, *, track: str = "agence-ia"
+) -> list[dict[str, Any]]:
+    """Les entreprises à hydrater MAINTENANT, les plus affamées d'abord.
+
+    🔴 TROIS RÈGLES, ET CHACUNE A UNE HISTOIRE.
+
+    1. `etat = 'a_traiter'` EN LITTÉRAL. C'est ce qu'exige le prédicat de
+       l'index GIN partiel de la 0070. Passé en paramètre lié, le plan générique
+       perd la preuve du prédicat et l'index est ignoré — en silence.
+
+    2. `trouve_par` CROISÉ AVEC LA SAISON. On n'hydrate que ce qu'on pourra
+       démarcher dans le mois : payer 0,02 $ de détails plus 0,034 $ de
+       recherche six mois avant de s'en servir, c'est payer pour une fiche qui
+       sera périmée le jour de l'envoi. `secteurs_a_preparer` prend déjà un mois
+       d'avance sur l'ouverture de la fenêtre.
+
+    3. `derniere_tentative` NULLS FIRST. Jamais tentée d'abord, puis la plus
+       anciennement tentée. Sans cet ordre, une fiche dont l'hydratation échoue
+       en boucle reste en tête de file et mange le budget tous les matins —
+       c'est la forme exacte du défaut de `next_sourcing_target` corrigé le
+       2026-09-14, et les deux autres files du dépôt portent déjà ce remède.
+
+    ⚠️ `select` nu et pas `select_all` : on veut `limit` lignes, pas la table.
+    Le plafond PostgREST de 1000 ne mord donc jamais ici.
+    """
+    secteurs = secteurs_a_preparer(track=track)
+    if not secteurs:
+        # Aucun métier en fenêtre : il n'y a rien à préparer, et c'est un état
+        # normal, pas une panne. L'alerte de famine le dit à sa façon.
+        return []
+    return await db.select(
+        "sourcing_inventaire",
+        params={
+            "select": "google_place_id,trouve_par,regions,tentatives",
+            "track": f"eq.{track}",
+            "etat": "eq.a_traiter",
+            "trouve_par": "ov." + db.litteral_tableau(secteurs),
+            "order": "derniere_tentative.asc.nullsfirst,created_at.asc",
+            "limit": str(limit),
+        },
+    )
+
+
+async def marquer_inventaire(
+    google_place_id: str,
+    *,
+    etat: Literal["traitee", "ecartee", "echec"],
+    company_id: str | None = None,
+    motif: str | None = None,
+    tentatives: int = 0,
+) -> None:
+    """Referme une ligne d'inventaire après une tentative d'hydratation.
+
+    ⚠️ `derniere_tentative` est écrit DANS TOUS LES CAS, succès compris. C'est
+    la colonne d'ordre : si elle n'était posée qu'en cas d'échec, une fiche
+    traitée resterait éternellement « jamais tentée » pour le tri.
+
+    ⚠️ On n'envoie JAMAIS `trouve_par` ni `regions` ici. Le trigger de fusion
+    les protégerait, mais s'en remettre à lui pour une faute qu'on peut ne pas
+    commettre, c'est user la garde pour rien.
+    """
+    patch: dict[str, Any] = {
+        "etat": etat,
+        "derniere_tentative": datetime.now(timezone.utc).isoformat(),
+        "tentatives": tentatives + 1,
+    }
+    if company_id:
+        patch["company_id"] = company_id
+    if motif:
+        patch["ecartee_motif"] = motif
+    await db.update(
+        "sourcing_inventaire", patch,
+        filters={"google_place_id": f"eq.{google_place_id}"},
+    )
+
+
 async def start_sourcing_run(payload: StartRunIn) -> StartRunOut:
     now = datetime.now(timezone.utc).isoformat()
     rows = await db.insert(

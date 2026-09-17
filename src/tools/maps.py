@@ -14,7 +14,12 @@ from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from ..config import settings
 from ..lib.platform_domains import PLATFORM_DOMAINS_NEVER_USE
@@ -129,6 +134,72 @@ def _map_place(p: dict[str, Any]) -> PlaceResult:
         google_reviews_count=p.get("userRatingCount"),
         raw_payload=p,
     )
+
+
+PLACE_DETAILS_URL = "https://places.googleapis.com/v1/places/"
+
+# Le MÊME jeu de champs que `FIELD_MASK`, mais sans le préfixe `places.` — Text
+# Search masque une LISTE (`places.id`), Place Details masque la ressource
+# elle-même (`id`). Se tromper de forme rend un 400 dont le message ne dit pas
+# lequel des deux est en cause.
+# ⚠️ On le DÉRIVE au lieu de le recopier : deux listes de champs finiraient par
+# diverger, et la divergence serait invisible — une fiche hydratée sans
+# `websiteUri` ne casse rien, elle devient juste éternellement inexploitable.
+PLACE_DETAILS_FIELD_MASK = ",".join(
+    champ.removeprefix("places.")
+    for champ in FIELD_MASK.split(",")
+    if champ != "nextPageToken"
+)
+
+
+class PlaceIntrouvable(Exception):
+    """Google ne connaît plus ce `place_id`.
+
+    Les identifiants Google PÉRIMENT — la doc recommande de les rafraîchir au
+    bout de 12 mois. Un inventaire vieux de plusieurs mois en contiendra
+    forcément quelques-uns. C'est une exception à part parce que l'appelant doit
+    la traiter autrement qu'une panne : elle est DÉFINITIVE, il ne sert à rien
+    de réessayer, alors qu'un 429 ou un 503 méritent une reprise.
+    """
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=1, max=8),
+    # ⚠️ On ne rejoue QUE les erreurs de transport. `search_places`, juste en
+    # dessous, porte un `@retry` sans ce filtre : il rejoue n'importe quelle
+    # exception, 400 compris. Sur une hydratation en lot, rejouer trois fois un
+    # identifiant périmé coûte 9 s de backoff par fiche morte.
+    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+    reraise=True,
+)
+async def _get_place_http(place_id: str) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(
+            PLACE_DETAILS_URL + place_id,
+            headers={
+                "X-Goog-Api-Key": settings().google_places_api_key,
+                "X-Goog-FieldMask": PLACE_DETAILS_FIELD_MASK,
+            },
+        )
+        if r.status_code in (404, 400):
+            # 400 arrive aussi sur un identifiant devenu illisible. Dans les deux
+            # cas c'est définitif : on ne veut PAS que le retry s'en mêle.
+            raise PlaceIntrouvable(f"{r.status_code} sur {place_id}: {r.text[:160]}")
+        r.raise_for_status()
+        return r.json()
+
+
+async def get_place(place_id: str) -> PlaceResult:
+    """Hydrate UNE entreprise à partir de son identifiant.
+
+    C'est la passe B de l'architecture en deux temps : le balayage découvre des
+    identifiants pour 0 $, et on ne paie les détails QUE pour ce qu'on va
+    vraiment traiter. Facturé au SKU Place Details Enterprise.
+
+    Lève `PlaceIntrouvable` si Google ne connaît plus l'identifiant.
+    """
+    return _map_place(await _get_place_http(place_id))
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
