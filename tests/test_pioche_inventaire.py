@@ -51,10 +51,11 @@ async def test_hors_saison_la_file_est_vide_sans_appeler_la_base(monkeypatch) ->
     appels: list[str] = []
 
     async def _interdit(*a, **k):
-        appels.append("select")
+        appels.append("lecture")
         return []
 
     monkeypatch.setattr(dbt.db, "select", _interdit)
+    monkeypatch.setattr(dbt.db, "select_all", _interdit)
     monkeypatch.setattr(dbt, "secteurs_a_preparer", lambda **_k: [])
 
     assert await dbt.list_inventaire_a_piocher(20) == []
@@ -62,24 +63,32 @@ async def test_hors_saison_la_file_est_vide_sans_appeler_la_base(monkeypatch) ->
 
 
 @pytest.mark.anyio
-async def test_la_selection_porte_le_litteral_et_le_bon_ordre(monkeypatch) -> None:
-    """Point 3 et l'index. Deux choses se jouent dans ces paramètres :
+async def test_la_selection_lit_la_file_ENTIERE_avec_les_bons_filtres(
+    monkeypatch,
+) -> None:
+    """Trois choses se jouent dans ces paramètres.
 
     · `etat=eq.a_traiter` en LITTÉRAL — c'est ce qu'exige le prédicat de l'index
       GIN partiel de la 0070. Passé en paramètre lié, le plan générique perd la
       preuve du prédicat et l'index est ignoré, en silence.
-    · `derniere_tentative.asc.nullsfirst` — jamais tentée d'abord. Sans ça, une
-      fiche qui échoue en boucle reste en tête de file pour toujours.
+
+    · `select_all` et PAS `select` — PostgREST tronque à 1000 lignes SANS erreur
+      ni en-tête. Une troncature muette ferait disparaître les dernières régions
+      de la file, ce qui est exactement le défaut qu'on vient de corriger.
+
+    · l'ordre de lecture est `google_place_id`, une colonne UNIQUE, parce que la
+      pagination par offset saute ou double des lignes sinon. L'ordre de famine
+      est rétabli en Python, sur la totalité.
     """
     from src.tools import db as dbt
 
-    vus: dict[str, str] = {}
+    vus: dict[str, object] = {}
 
-    async def _faux_select(table, *, params=None, **_k):
-        vus.update({"table": table, **(params or {})})
+    async def _faux_select_all(table, *, order=None, params=None, **_k):
+        vus.update({"table": table, "order": order, **(params or {})})
         return []
 
-    monkeypatch.setattr(dbt.db, "select", _faux_select)
+    monkeypatch.setattr(dbt.db, "select_all", _faux_select_all)
     monkeypatch.setattr(
         dbt, "secteurs_a_preparer", lambda **_k: ["entrepreneur en déneigement"]
     )
@@ -88,16 +97,42 @@ async def test_la_selection_porte_le_litteral_et_le_bon_ordre(monkeypatch) -> No
 
     assert vus["table"] == "sourcing_inventaire"
     assert vus["etat"] == "eq.a_traiter"
-    assert vus["order"] == "derniere_tentative.asc.nullsfirst,created_at.asc"
-    # ⚠️ La requête SUR-LIT : on lit `limit × FACTEUR_EQUITE_REGIONALE` lignes
-    # pour pouvoir ensuite alterner entre les régions. Sans ça, l'ordre par
-    # `created_at` sert Montréal pendant vingt jours avant de toucher
-    # Trois-Rivières. Le lot rendu, lui, fait bien `limit`.
-    from src.tools.db import FACTEUR_EQUITE_REGIONALE
-
-    assert vus["limit"] == str(7 * FACTEUR_EQUITE_REGIONALE)
-    # Point 5 du fichier de l'alerte : les guillemets protègent les espaces.
+    assert vus["order"] == "google_place_id", (
+        "la pagination de select_all exige une colonne UNIQUE"
+    )
+    assert "limit" not in vus, (
+        "on lit la file ENTIÈRE : un `limit` ramènerait la famine géographique, "
+        "les premières lignes par created_at étant toutes de la même région"
+    )
+    # Les guillemets protègent les espaces du secteur.
     assert vus["trouve_par"] == 'ov.{"entrepreneur en déneigement"}'
+    assert vus["tentatives"] == f"lt.{dbt.MAX_TENTATIVES_INVENTAIRE}"
+    # Les deux colonnes de tri doivent être lues, sinon le tri Python est aveugle.
+    assert "derniere_tentative" in vus["select"]
+    assert "created_at" in vus["select"]
+
+
+def test_l_ordre_de_famine_est_retabli_en_python() -> None:
+    """Il était appliqué par PostgREST (`derniere_tentative.asc.nullsfirst`) ;
+    il l'est maintenant en Python, parce que la lecture doit être ordonnée par
+    clé unique pour paginer sans sauter de lignes. Le résultat doit être
+    IDENTIQUE : jamais tentée d'abord, puis la plus anciennement tentée."""
+    from src.tools.db import _rang_de_famine
+
+    lignes = [
+        {"google_place_id": "c", "derniere_tentative": "2026-09-16T10:00:00+00:00",
+         "created_at": "2026-09-01T00:00:00+00:00"},
+        {"google_place_id": "a", "derniere_tentative": None,
+         "created_at": "2026-09-02T00:00:00+00:00"},
+        {"google_place_id": "b", "derniere_tentative": "2026-09-10T10:00:00+00:00",
+         "created_at": "2026-09-01T00:00:00+00:00"},
+        {"google_place_id": "z", "derniere_tentative": None,
+         "created_at": "2026-09-01T00:00:00+00:00"},
+    ]
+    ordre = [l["google_place_id"] for l in sorted(lignes, key=_rang_de_famine)]
+    # Les deux jamais tentées d'abord, départagées par created_at ; puis les
+    # tentées, la plus ancienne en premier.
+    assert ordre == ["z", "a", "b", "c"]
 
 
 # ------------------------------------------------------- issues d'une fiche
@@ -737,20 +772,3 @@ def test_une_ligne_sans_region_ne_disparait_pas() -> None:
     assert len(lot) == 2
 
 
-@pytest.mark.anyio
-async def test_la_selection_sur_lit_avant_de_repartir(monkeypatch) -> None:
-    """Sur-lire est ce qui rend la répartition possible : PostgREST ne sait
-    trier que par colonne. Même patron que `FACTEUR_SURRECOLTE` de WF-4."""
-    from src.tools import db as dbt
-
-    vus: dict[str, str] = {}
-
-    async def _faux_select(table, *, params=None, **_k):
-        vus.update(params or {})
-        return []
-
-    monkeypatch.setattr(dbt.db, "select", _faux_select)
-    monkeypatch.setattr(dbt, "secteurs_a_preparer", lambda **_k: ["s"])
-
-    await dbt.list_inventaire_a_piocher(20)
-    assert vus["limit"] == str(20 * dbt.FACTEUR_EQUITE_REGIONALE)

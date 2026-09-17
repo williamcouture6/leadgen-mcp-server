@@ -513,10 +513,34 @@ async def list_inventaire_a_piocher(
         # Aucun métier en fenêtre : il n'y a rien à préparer, et c'est un état
         # normal, pas une panne. L'alerte de famine le dit à sa façon.
         return []
-    lignes = await db.select(
+    # 5. ON LIT TOUTE LA FILE ÉLIGIBLE, PUIS ON RÉPARTIT EN PYTHON.
+    #
+    # 🔴 LA SUR-LECTURE PARTIELLE NE MARCHE PAS ICI, ET C'EST MESURÉ. Un premier
+    # correctif lisait `limit × 6` lignes avant de répartir : sur les 663
+    # déneigeurs en file le 2026-09-16, les 120 premières par `created_at`
+    # appartenaient toutes à Montréal, Laval et Longueuil — le lot ne touchait
+    # QUE TROIS régions sur dix. Un facteur ne règle rien, il déplace le seuil :
+    # Montréal porte à elle seule 243 entrées, donc il faudrait lire presque
+    # toute la table pour atteindre Trois-Rivières. Autant l'assumer.
+    #
+    # ⚠️ `select_all` ET PAS `select` : PostgREST tronque à 1000 lignes SANS
+    # erreur ni en-tête, et une troncature muette ramènerait exactement le
+    # défaut qu'on vient de corriger — les dernières régions disparaîtraient
+    # de la file sans que rien ne le dise.
+    #
+    # ⚠️ L'ORDRE DE LECTURE EST `google_place_id`, PAS l'ordre de famine. La
+    # pagination par offset de `select_all` exige une colonne UNIQUE, sinon elle
+    # saute ou double des lignes en silence. L'ordre de famine est rétabli en
+    # Python juste après, sur la totalité — ce qui donne le même résultat, sans
+    # le piège.
+    lignes = await db.select_all(
         "sourcing_inventaire",
+        order="google_place_id",
         params={
-            "select": "google_place_id,trouve_par,regions,tentatives",
+            "select": (
+                "google_place_id,trouve_par,regions,tentatives,"
+                "derniere_tentative,created_at"
+            ),
             "track": f"eq.{track}",
             "etat": "eq.a_traiter",
             "trouve_par": "ov." + db.litteral_tableau(secteurs),
@@ -524,20 +548,32 @@ async def list_inventaire_a_piocher(
             # `MAX_TENTATIVES_INVENTAIRE` : c'est ce plafond qui rend sûre la
             # remise en file des échecs transitoires.
             "tentatives": f"lt.{MAX_TENTATIVES_INVENTAIRE}",
-            "order": "derniere_tentative.asc.nullsfirst,created_at.asc",
-            # 5. ON SUR-LIT POUR POUVOIR RÉPARTIR PAR RÉGION ENSUITE. Même
-            # patron que `FACTEUR_SURRECOLTE` côté WF-4, et même raison :
-            # PostgREST ne sait trier que par colonne.
-            "limit": str(limit * FACTEUR_EQUITE_REGIONALE),
         },
     )
+    lignes.sort(key=_rang_de_famine)
     return _repartir_par_region(lignes, limit)
 
 
-# Combien de fois `limit` on lit avant de répartir. Six suffit : avec dix
-# régions, un lot de 20 en voit déjà largement l'essentiel, et sur-lire ne coûte
-# qu'une seule requête, pas un aller-retour de plus.
-FACTEUR_EQUITE_REGIONALE = 6
+def _rang_de_famine(ligne: dict[str, Any]) -> tuple[int, str, str]:
+    """`derniere_tentative` nulls first, puis `created_at`.
+
+    C'est l'ordre que PostgREST appliquait avant qu'on lise toute la file : on
+    le rétablit ici, à l'identique. `(0, "")` fait passer les jamais tentées
+    devant, et la comparaison de chaînes ISO équivaut à la comparaison de dates
+    — toutes sont écrites par `datetime.isoformat()` en UTC.
+    """
+    tentee = ligne.get("derniere_tentative")
+    return (1, tentee, ligne.get("created_at") or "") if tentee else (
+        0, "", ligne.get("created_at") or ""
+    )
+
+
+# ⚠️ `FACTEUR_EQUITE_REGIONALE` A EXISTÉ ICI ET A ÉTÉ RETIRÉ LE 2026-09-16.
+# Il valait 6 : on lisait `limit × 6` lignes avant de répartir par région. Ça ne
+# marchait pas — les 120 premières lignes par `created_at` venaient toutes des
+# trois régions balayées en premier. Un facteur ne règle pas ce problème, il
+# déplace le seuil. Ne pas le réintroduire : la file entière se lit d'un coup,
+# voir le commentaire dans `list_inventaire_a_piocher`.
 
 
 def _repartir_par_region(
