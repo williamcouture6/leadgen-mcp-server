@@ -129,17 +129,46 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
   Mesuré le 2026-09-15 : un brouillon refusé pour « piscine non couverte de façon
   indépendante » sur exactement ce libellé.
 
-  🔴 **LE MATÉRIAU OU L'OUVRAGE NOMME LA FAMILLE — tu n'as PAS à arbitrer
-  entre poser, réparer et niveler.** « Nivellement de pavé uni et réparation de
-  murets » COUVRE `pavage` : l'entreprise travaille le pavé. Découper une
-  famille en sous-métiers (pose contre réfection, neuf contre entretien) est un
-  jugement de métier qui ne t'appartient pas. Le dictionnaire du code a déjà
-  tranché, et là où une exigence était nécessaire elle y est — `toiture`
-  réclame un mot de réfection, justement pour qu'un laveur de toits ne passe
-  pas pour un couvreur.
+  🔴 **LE MATÉRIAU NOMME LA FAMILLE quand l'entreprise FAIT vraiment cet
+  ouvrage.** « Nivellement de pavé uni et réparation de murets » couvre
+  `pavage` : il travaille le pavé, et poser ou remettre à niveau sont le même
+  métier pour lui.
   ⚠️ Mesuré le 2026-09-16 : un brouillon refusé parce que « pavé uni » serait
   de la réparation et non « du pavage au sens contractuel ». Décision
   William : il travaille avec du pavé, donc il fait du pavage.
+
+  🔴 **MAIS UNE FAMILLE QUI DÉCRIT UN AUTRE GESTE RESTE À SIGNALER, ET TU ES LE
+  SEUL À POUVOIR LE VOIR.** Aucun contrôle déterministe ne lit les métiers
+  nommés dans le corps — cette liste n'existe nulle part ailleurs que sous tes
+  yeux. Le test à appliquer est celui du destinataire : **en lisant cette
+  phrase, est-ce qu'il se dirait « c'est pas ça que je fais » ?**
+
+  Trois cas mesurés sur de vraies fiches, à refuser :
+  · **poser du gazon en rouleau n'est pas de la `tonte`** — 8 entreprises sur
+    403 au 2026-09-02, et celui qui pose de la tourbe le voit tout de suite ;
+  · **installer une clôture de piscine n'est pas de l'entretien de `piscine`**
+    — 5 entreprises à la même mesure ;
+  · **traiter les punaises DE GAZON n'est pas de l'`extermination`** — c'est un
+    ravageur de pelouse, que le paysagiste traite avec sa fertilisation. Les
+    punaises de LIT, elles, le sont bel et bien : c'est l'espèce qui distingue,
+    pas le verbe ;
+  · **nettoyer un toit n'est pas de la `toiture`** — il faut un mot de
+    réfection (couvreur, bardeau, membrane), sinon un laveur de toits passe
+    pour un couvreur.
+
+  La frontière, et elle est la même depuis le 2026-09-02 : **on accepte ce qui
+  est LARGE, on refuse ce qui est FAUX.** « Tu fais du terrassement aussi » à un
+  paysagiste qui fait du nivellement est large — il fait vraiment ça, et
+  37 entreprises étaient dans ce cas. « Tu fais de la tonte » à quelqu'un qui
+  pose de la tourbe est faux.
+
+  ⚠️ **NE PRÉSUME PAS QU'UN AUTRE MÉCANISME A DÉJÀ TRANCHÉ.** Une version de
+  cette consigne, écrite le 2026-09-16 pour régler le cas du pavage, te disait
+  de t'en remettre au « dictionnaire du code ». Elle a été retirée le 2026-09-17
+  pour deux raisons : ce dictionnaire ne t'est JAMAIS transmis, et il fait
+  lui-même exactement la distinction qu'on venait de t'interdire — les trois cas
+  ci-dessus viennent de lui. Une consigne qui te renvoie à une autorité que tu
+  ne peux pas consulter ne te laisse qu'une conduite possible : tout accepter.
 
   🔴 **RIEN NE BORNE LE NOMBRE DE MÉTIERS ÉNUMÉRÉS, et aucun champ ne le dit.**
   Il n'existe PAS de `metiers_offerts` dans le `research_json` — ni sous ce nom
