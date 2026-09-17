@@ -67,6 +67,7 @@ app = FastAPI(title="leadgen-mcp HTTP API", version="0.1.0")
 
 import asyncio
 import logging
+import time
 
 _startup_log = logging.getLogger("leadgen.startup")
 
@@ -1723,15 +1724,90 @@ async def pioche_wf1(payload: PiocheWf1In) -> PiocheWf1Out:
         return await _pioche_wf1(payload)
 
 
+# Au-delà, une fiche qui échoue est considérée comme structurellement morte et
+# cesse d'être servie. Sans ce plafond, le correctif de `echec` (remise en
+# `a_traiter`) rouvrirait la famine que la 0070 cite trois fois : une fiche qui
+# rate toujours reviendrait en tête de file chaque matin.
+MAX_TENTATIVES_HYDRATATION = 5
+
+# Trois échecs d'affilée, ce n'est plus de la coïncidence : c'est une panne
+# GLOBALE (quota épuisé, facturation suspendue, clé révoquée, masque cassé). On
+# abandonne le lot au lieu d'écraser les 20 fiches une par une.
+ECHECS_CONSECUTIFS_COUPE_CIRCUIT = 3
+
+# Le nœud n8n coupe à 300 s et RELANCE ce qu'il croit mort, pendant que la
+# coroutine continue d'écrire. On rend la main avant, avec des compteurs
+# partiels — mieux qu'un lot perdu et un doublon de lot.
+BUDGET_SECONDES_PIOCHE = 240
+
+# 🔴 LE BALAYEUR N'A AUCUN FILTRE DE PROVINCE, ET LE RECTANGLE DE GATINEAU
+# COUVRE LE CENTRE-VILLE D'OTTAWA. L'ancien sourcing demandait « Gatineau,
+# Québec » à Google, ce qui suffisait ; une requête par rectangle n'a plus cette
+# protection. On filtre donc à l'hydratation, où l'adresse est enfin connue.
+# ⚠️ Toute la conformité du projet est écrite pour le Québec (Loi 25), et l'offre
+# vise des contracteurs québécois. Une entreprise ontarienne n'est pas « un lead
+# de moins bonne qualité », elle est hors cadre.
+PROVINCES_VISEES = ("QC",)
+
+
+def _hors_quebec(place: maps_tools.PlaceResult) -> bool:
+    """Vrai quand Google situe l'entreprise hors des provinces visées.
+
+    On lit `addressComponents` plutôt que de chercher « Québec » dans l'adresse
+    formatée : le nom de la province y apparaît en toutes lettres, traduit, et
+    parfois pas du tout. Le composant porte le code court (`QC`, `ON`).
+    ⚠️ Absence de composant = on NE tranche PAS. Écarter sur une absence
+    d'information ferait perdre des fiches valides à l'adresse incomplète.
+    """
+    for comp in (place.raw_payload or {}).get("addressComponents") or []:
+        if "administrative_area_level_1" in (comp.get("types") or []):
+            court = (comp.get("shortText") or "").upper()
+            return bool(court) and court not in PROVINCES_VISEES
+    return False
+
+
 async def _pioche_wf1(payload: PiocheWf1In) -> PiocheWf1Out:
-    out = PiocheWf1Out(secteurs_prepares=db_tools.secteurs_a_preparer(track=payload.track))
+    """Hydrate un lot d'entrées d'inventaire.
+
+    🔴 CE QUI A ÉTÉ CORRIGÉ LE 2026-09-16, APRÈS RELECTURE — quatre défauts qui
+    se combinaient en une perte silencieuse d'inventaire :
+
+    1. `echec` ÉTAIT UN CUL-DE-SAC. La sélection ne lit que `a_traiter`, et
+       aucun code n'écrivait jamais `a_traiter`. Une fiche mise en `echec` par un
+       429 passager sortait de la file POUR TOUJOURS, et un rebalayage ne la
+       ramenait pas (le balayeur n'écrit pas `etat`, exprès). Un quota épuisé un
+       matin enterrait 18 fiches. `echec` est maintenant réservé aux fiches qui
+       ont épuisé `MAX_TENTATIVES_HYDRATATION` ; le transitoire repasse en
+       `a_traiter` avec `derniere_tentative` posée, ce qui la renvoie en fin de
+       file — le comportement que le commentaire d'origine décrivait déjà sans
+       que le code le fasse.
+
+    2. AUCUN `error_text` SUR UNE PANNE D'HYDRATATION. Il n'était posé que quand
+       la SÉLECTION tombait. 20 échecs sur 20 rendaient donc un 200 tout propre,
+       le `IF` de n8n ne voyait rien, et l'exécution était verte. Régression par
+       rapport à `_run_wf1`, dont le try global le remplissait.
+
+    3. `insert_company` ET LE `marquer_inventaire` FINAL ÉTAIENT HORS DU `try`.
+       Un 503 de PostgREST tuait les 17 fiches restantes — et la fiche en cours
+       avait DÉJÀ été payée chez Google sans être marquée : `nulls first` la
+       remettait en tête de file le lendemain, et on la repayait.
+
+    4. RIEN NE LISAIT `tentatives`. Corriger (1) sans (4) aurait rouvert la
+       famine en grand.
+    """
+    debut = time.monotonic()
+    secteurs = db_tools.secteurs_a_preparer(track=payload.track)
+    out = PiocheWf1Out(secteurs_prepares=secteurs)
     try:
         lot = await db_tools.list_inventaire_a_piocher(
-            payload.limit, track=payload.track
+            payload.limit, track=payload.track, secteurs=secteurs
         )
     except Exception as e:  # noqa: BLE001
         out.error_text = f"selection: {e!r}"
         return out
+
+    consecutifs = 0
+    dernier_motif: str | None = None
 
     for ligne in lot:
         pid = ligne["google_place_id"]
@@ -1739,65 +1815,152 @@ async def _pioche_wf1(payload: PiocheWf1In) -> PiocheWf1Out:
         out.pioches += 1
         if payload.dry_run:
             continue
-        # 🔴 UN ÉCHEC PAR FICHE N'EMPORTE PAS LE LOT. `_run_wf1` porte le défaut
-        # inverse — un try/except unique autour de toute la boucle — et sur un
-        # lot de 20 ça ferait perdre 19 hydratations pour une seule mauvaise.
+        if time.monotonic() - debut > BUDGET_SECONDES_PIOCHE:
+            out.error_text = (
+                f"budget de {BUDGET_SECONDES_PIOCHE}s epuise apres "
+                f"{out.pioches} fiches"
+            )
+            break
+
+        # 🔴 LE `try` ENVELOPPE TOUTE L'ITÉRATION, pas seulement l'appel Google.
+        # Supabase tombe aussi, et une fiche payée mais non marquée est une
+        # fiche qu'on repaiera demain.
         try:
-            place = await maps_tools.get_place(pid)
-        except maps_tools.PlaceIntrouvable as e:
-            # Définitif : l'identifiant a péri. On l'écarte avec son motif pour
-            # qu'il ne revienne jamais manger le budget du lot.
-            out.introuvables += 1
+            try:
+                place = await maps_tools.get_place(pid)
+            except maps_tools.PlaceIntrouvable as e:
+                out.introuvables += 1
+                consecutifs += 1
+                dernier_motif = str(e)[:200]
+                await db_tools.marquer_inventaire(
+                    pid, etat="ecartee", motif=f"place_id_perime:{e}"[:300],
+                    tentatives=tentatives,
+                )
+                if consecutifs >= ECHECS_CONSECUTIFS_COUPE_CIRCUIT:
+                    out.error_text = (
+                        f"{consecutifs} identifiants introuvables d'affilee — "
+                        f"panne globale probable : {dernier_motif}"
+                    )
+                    break
+                continue
+
+            consecutifs = 0
+
+            if not place.google_place_id or not place.name.strip():
+                # Un 200 sans `displayName` donne `name=''`, que rien n'arrête
+                # ensuite : le filtre anti-junk saute son bloc `if name:`, et
+                # `dedup_key` vaut '||' — or l'index unique exclut cette valeur,
+                # donc ces lignes ne sont même pas dédoublonnées entre elles.
+                out.junk += 1
+                await db_tools.marquer_inventaire(
+                    pid, etat="ecartee", motif="hydratation_sans_nom",
+                    tentatives=tentatives,
+                )
+                continue
+
+            if _hors_quebec(place):
+                out.junk += 1
+                await db_tools.marquer_inventaire(
+                    pid, etat="ecartee", motif="hors_quebec",
+                    tentatives=tentatives,
+                )
+                continue
+
+            if place.business_status == "CLOSED_PERMANENTLY":
+                # `prompts/research.md` le dit : personne ne lit ce champ, donc
+                # la fiche traverse tout le pipeline et reçoit un courriel. On
+                # paie désormais 0,02 $ pour la découvrir — autant s'en servir.
+                out.junk += 1
+                await db_tools.marquer_inventaire(
+                    pid, etat="ecartee", motif="ferme_definitivement",
+                    tentatives=tentatives,
+                )
+                continue
+
+            motif = sourcing_disqualify_reason(place.name, place.primary_type)
+            if motif:
+                out.junk += 1
+                await db_tools.marquer_inventaire(
+                    pid, etat="ecartee", motif=motif, tentatives=tentatives
+                )
+                continue
+
+            # ⚠️ `city` vient de Google, sans repli sur une région. Une région de
+            # balayage est un RECTANGLE, pas une municipalité, et
+            # `companies.dedup_key` est bâtie sur nom+ville+code postal.
+            #
+            # ⚠️ ET LE SECTEUR EST CELUI QUI A JUSTIFIÉ LA PIOCHE, pas `[0]`. Le
+            # trigger de fusion trie `trouve_par` par ordre ALPHABÉTIQUE : une
+            # fiche `{entretien de piscine, tonte de gazon}` piochée en février
+            # pour la tonte aurait été étiquetée « entretien de piscine », et
+            # `metier_depuis_industry` l'aurait classée hors saison en aval —
+            # après qu'on ait payé ses détails ET sa recherche.
+            trouves = ligne.get("trouve_par") or []
+            en_saison = set(secteurs)
+            secteur = next(
+                (s for s in trouves if s in en_saison),
+                trouves[0] if trouves else None,
+            )
+            res = await db_tools.insert_company(
+                db_tools.CompanyIn(
+                    name=place.name, google_place_id=place.google_place_id,
+                    address=place.formatted_address, city=place.city,
+                    postal_code=place.postal_code, latitude=place.latitude,
+                    longitude=place.longitude, website=place.website,
+                    domain=place.domain, icp_segment="commerce_local",
+                    industry=secteur, google_types=place.google_types,
+                    google_rating=place.google_rating,
+                    google_reviews_count=place.google_reviews_count,
+                    track=payload.track, raw_payload=place.raw_payload,
+                )
+            )
+            if res.status == "inserted":
+                out.inserees += 1
+            else:
+                out.doublons += 1
             await db_tools.marquer_inventaire(
-                pid, etat="ecartee", motif=f"place_id_perime:{e}"[:300],
+                pid, etat="traitee", company_id=res.company_id,
                 tentatives=tentatives,
             )
-            continue
         except Exception as e:  # noqa: BLE001
-            # Transitoire (quota, réseau) : on retentera, et `derniere_tentative`
-            # la renvoie en fin de file en attendant.
             out.echecs += 1
-            logging.getLogger("pioche_wf1").warning("hydratation %s — %r", pid, e)
-            await db_tools.marquer_inventaire(
-                pid, etat="echec", tentatives=tentatives
-            )
-            continue
+            consecutifs += 1
+            dernier_motif = repr(e)[:200]
+            logging.getLogger("pioche_wf1").warning("fiche %s — %r", pid, e)
+            # Transitoire tant que le plafond n'est pas atteint : on REMET en
+            # file. `derniere_tentative` la renvoie en queue, elle ne bloque rien.
+            epuisee = tentatives + 1 >= MAX_TENTATIVES_HYDRATATION
+            try:
+                await db_tools.marquer_inventaire(
+                    pid,
+                    etat="echec" if epuisee else "a_traiter",
+                    tentatives=tentatives,
+                )
+            except Exception as e2:  # noqa: BLE001
+                # L'écriture de repli tombe aussi : ne PAS propager, sinon on
+                # perd le reste du lot pour une panne de journalisation.
+                logging.getLogger("pioche_wf1").error(
+                    "marquage de repli impossible pour %s — %r", pid, e2
+                )
+            if consecutifs >= ECHECS_CONSECUTIFS_COUPE_CIRCUIT:
+                out.error_text = (
+                    f"{consecutifs} echecs d'affilee — panne globale probable : "
+                    f"{dernier_motif}"
+                )
+                break
 
-        motif = sourcing_disqualify_reason(place.name, place.primary_type)
-        if motif:
-            out.junk += 1
-            await db_tools.marquer_inventaire(
-                pid, etat="ecartee", motif=motif, tentatives=tentatives
+    # 🔴 UN LOT QUI N'A RIEN PRODUIT ALORS QU'IL AVAIT DE QUOI PIOCHER EST UNE
+    # PANNE, et le `IF` de n8n ne lit que `error_text`. Sans cette ligne, 20
+    # échecs sur 20 rendaient un 200 tout propre et l'exécution était verte.
+    if out.error_text is None and out.pioches and not (out.inserees or out.doublons):
+        rates = out.echecs + out.introuvables + out.junk
+        if rates:
+            out.error_text = (
+                f"aucune fiche inseree sur {out.pioches} piochees "
+                f"({out.echecs} echecs, {out.introuvables} introuvables, "
+                f"{out.junk} ecartees)"
+                + (f" — dernier motif : {dernier_motif}" if dernier_motif else "")
             )
-            continue
-
-        # ⚠️ `city` vient de Google, sans repli sur une ville de catalogue. Le
-        # repli `p.city or city` de `_run_wf1` n'a plus de sens ici : une entrée
-        # d'inventaire porte une ou plusieurs RÉGIONS de balayage, qui sont des
-        # rectangles et non des municipalités. Un repli inventerait une ville, et
-        # `companies.dedup_key` est bâtie sur nom+ville+code postal.
-        secteur = (ligne.get("trouve_par") or [None])[0]
-        res = await db_tools.insert_company(
-            db_tools.CompanyIn(
-                name=place.name, google_place_id=place.google_place_id,
-                address=place.formatted_address, city=place.city,
-                postal_code=place.postal_code, latitude=place.latitude,
-                longitude=place.longitude, website=place.website,
-                domain=place.domain, icp_segment="commerce_local",
-                industry=secteur, google_types=place.google_types,
-                google_rating=place.google_rating,
-                google_reviews_count=place.google_reviews_count,
-                track=payload.track, raw_payload=place.raw_payload,
-            )
-        )
-        if res.status == "inserted":
-            out.inserees += 1
-        else:
-            out.doublons += 1
-        await db_tools.marquer_inventaire(
-            pid, etat="traitee", company_id=res.company_id, tentatives=tentatives
-        )
-
     return out
 
 
@@ -3136,6 +3299,22 @@ FENETRE_MESURE_RYTHME_JOURS = 14
 # ville prend quelques minutes ; deux heures est déjà très généreux.
 DELAI_BALAYAGE_ORPHELIN_H = 2
 
+# 🔴 AU-DELA, LE PIOCHEUR NE TOURNE PLUS -- ET C'EST LA PANNE QUE RIEN NE VOYAIT.
+#
+# L'alerte de famine surveille le STOCK. Elle ne surveillait pas le PIOCHEUR, et
+# le signal est INVERSE : si le piocheur meurt, `rythme_par_jour` decroit, donc
+# `jours_de_file` AUGMENTE, donc le verdict reste `ok`. Au bout de 14 jours le
+# rythme devient None et le verdict passe `sans_rythme`, qui est silencieux.
+# Autrement dit : un piocheur mort sur un inventaire en bonne sante ne
+# declenchait JAMAIS rien, et la file paraissait de plus en plus confortable
+# precisement parce que plus personne n'y piochait. Delai de detection estime :
+# un mois et demi -- exactement le mode de panne des CINQ SEMAINES de
+# juillet-aout 2026, refait a neuf.
+#
+# La mesure est independante du stock : le `derniere_tentative` le plus RECENT
+# de la table. 48 h laisse passer une fin de semaine de cron rate sans crier.
+DELAI_PIOCHEUR_MUET_H = 48
+
 # 🔴 LE PLANCHER QUI ÉVITE DE CRIER AU LOUP QUAND LE RYTHME EST INCONNU.
 #
 # Tant que le piocheur n'a pas tourné, `derniere_tentative` n'est écrit nulle
@@ -3181,6 +3360,7 @@ class EtatInventaire(BaseModel):
     jours_de_file: float | None = None
     balayages_orphelins: int = 0
     dernier_balayage: str | None = None
+    derniere_pioche: str | None = None
     lu: bool = True                         # False = une lecture est tombée
 
 
@@ -3269,6 +3449,20 @@ async def _lire_etat_inventaire(track: str = "agence-ia") -> EtatInventaire:
         )
         if dernieres:
             etat.dernier_balayage = dernieres[0].get("created_at")
+        # Quand le piocheur a touche l'inventaire pour la derniere fois. Une
+        # seule ligne lue, index `sourcing_inventaire_ordre_idx` a l'appui.
+        pioches = await sb.select(
+            "sourcing_inventaire",
+            params={
+                "select": "derniere_tentative",
+                "track": f"eq.{track}",
+                "derniere_tentative": "not.is.null",
+                "order": "derniere_tentative.desc",
+                "limit": "1",
+            },
+        )
+        if pioches:
+            etat.derniere_pioche = pioches[0].get("derniere_tentative")
         balayees = {
             (r.get("region") or "")
             for r in await sb.select_all(
@@ -3284,6 +3478,37 @@ async def _lire_etat_inventaire(track: str = "agence-ia") -> EtatInventaire:
         logging.getLogger("inventaire").error("journal des balayages illisible — %r", e)
 
     return etat
+
+
+def _piocheur_muet(etat: EtatInventaire) -> bool:
+    """Le piocheur a-t-il cesse de toucher l'inventaire ?
+
+    ⚠️ Ne repond VRAI que s'il a deja tourne au moins une fois. Avant le tout
+    premier lot, `derniere_pioche` est None -- et un inventaire fraichement
+    balaye n'est pas une panne, c'est un inventaire neuf. C'est la meme
+    distinction que le verdict `jamais_balaye` fait un cran plus tot : « pas
+    encore » et « plus rien » ne se crient pas pareil.
+    """
+    if not etat.derniere_pioche:
+        return False
+    vue = _en_datetime_iso(etat.derniere_pioche)
+    if vue is None:
+        return False
+    age_h = (datetime.now(timezone.utc) - vue).total_seconds() / 3600
+    return age_h > DELAI_PIOCHEUR_MUET_H
+
+
+def _en_datetime_iso(valeur: str) -> datetime | None:
+    """ISO PostgREST -> datetime aware. None sur une valeur illisible.
+
+    Une date illisible ne doit pas faire crier au piocheur mort : au pire on
+    rate une alerte, on n'en invente pas une fausse.
+    """
+    try:
+        d = datetime.fromisoformat(valeur.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
 def _verdict_inventaire(etat: EtatInventaire) -> str:
@@ -3302,6 +3527,12 @@ def _verdict_inventaire(etat: EtatInventaire) -> str:
         return "jamais_balaye"
     if etat.balayages_orphelins > 0:
         return "balayage_orphelin"
+    # 🔴 AVANT TOUT CALCUL DE FILE. Un piocheur muet doit primer sur l'état du
+    # stock, parce que le stock ment dans ce cas précis : moins on pioche, plus
+    # la file paraît longue. Placer ce test après le calcul de `jours_de_file`
+    # laisserait le verdict `ok` masquer la panne pendant des semaines.
+    if _piocheur_muet(etat):
+        return "piocheur_muet"
     if etat.jours_de_file is None:
         # Stock connu, rythme pas encore mesurable : le piocheur n'a pas encore
         # tourné. On ne peut pas parler en jours — alors on n'en parle pas.
@@ -3321,6 +3552,11 @@ def _ligne_resume_inventaire(etat: EtatInventaire, verdict: str) -> str:
     """La ligne informative du résumé quotidien — toujours affichée."""
     if verdict == "illisible":
         return "🗺️ Inventaire : ILLISIBLE (voir les logs)"
+    if verdict == "piocheur_muet":
+        return (
+            f"🗺️ Inventaire : {etat.total} connues · {etat.piochable} piochables "
+            f"· 🚨 PIOCHEUR MUET depuis plus de {DELAI_PIOCHEUR_MUET_H} h"
+        )
     if verdict == "jamais_balaye":
         return (
             "🗺️ Inventaire : vide, aucun balayage n'a jamais tourné — "
@@ -3366,6 +3602,21 @@ async def _alerter_famine_inventaire(etat: EtatInventaire, verdict: str) -> bool
             "🚨 Inventaire de sourcing — état ILLISIBLE (lecture en échec).",
             "Impossible de dire s'il reste des entreprises à traiter : "
             "traiter comme une panne.",
+        ]
+    elif verdict == "piocheur_muet":
+        corps = [
+            "🚨 WF-1 — LE PIOCHEUR NE TOURNE PLUS.",
+            f"Aucune entree d'inventaire touchee depuis plus de "
+            f"{DELAI_PIOCHEUR_MUET_H} h (derniere : {etat.derniere_pioche}).",
+            f"Il reste {etat.piochable} entreprise(s) piochable(s) — la file "
+            "n'est PAS le probleme.",
+            "⚠️ Cette panne est invisible autrement : moins on pioche, plus la "
+            "file parait longue, et le verdict passe à « tout va bien ». C'est "
+            "le mode d'echec qui a laisse le sourcing mort cinq semaines a "
+            "l'ete 2026.",
+            "A regarder : le workflow n8n WF-1 est-il ACTIF ? (un re-import "
+            "repose active=false) · Railway repond-il sur /wf1/pioche ? · "
+            "la cle Google est-elle toujours valide ?",
         ]
     elif verdict == "balayage_orphelin":
         corps = [

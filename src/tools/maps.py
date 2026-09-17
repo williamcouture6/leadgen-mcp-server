@@ -182,10 +182,28 @@ async def _get_place_http(place_id: str) -> dict[str, Any]:
                 "X-Goog-FieldMask": PLACE_DETAILS_FIELD_MASK,
             },
         )
-        if r.status_code in (404, 400):
-            # 400 arrive aussi sur un identifiant devenu illisible. Dans les deux
-            # cas c'est définitif : on ne veut PAS que le retry s'en mêle.
-            raise PlaceIntrouvable(f"{r.status_code} sur {place_id}: {r.text[:160]}")
+        if r.status_code == 404:
+            raise PlaceIntrouvable(f"404 sur {place_id}: {r.text[:160]}")
+        if r.status_code == 400:
+            # 🔴 UN 400 N'EST PAS FORCÉMENT UN IDENTIFIANT MORT — ET LES DEUX
+            # CAS NE SE PAIENT PAS PAREIL.
+            #
+            # Ce fichier se contredisait : le commentaire de
+            # `PLACE_DETAILS_FIELD_MASK` dit qu'un masque de la mauvaise FORME
+            # rend un 400 — donc un 400 causé par NOUS — et le code d'à côté
+            # traitait tout 400 comme un identifiant périmé, donc comme
+            # définitif. Or `ecartee` est documentée par la 0070 comme « un
+            # cache que rien n'invalide » : un masque cassé un matin aurait
+            # enterré les 20 fiches du lot, puis 20 de plus le lendemain,
+            # récupérables seulement par un `like` SQL à la main.
+            #
+            # L'asymétrie décide : un faux `echec` sur un identifiant mort coûte
+            # une place de file ; un faux `ecartee` sur un lot sain coûte
+            # l'inventaire. Dans le doute, on NE écarte PAS.
+            corps = r.text[:300]
+            if "NOT_FOUND" in corps or "Invalid resource" in corps:
+                raise PlaceIntrouvable(f"400 sur {place_id}: {corps[:160]}")
+            raise ValueError(f"400 masque/parametre sur {place_id}: {corps[:160]}")
         r.raise_for_status()
         return r.json()
 

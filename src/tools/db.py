@@ -467,8 +467,19 @@ def _en_datetime(valeur: Any) -> datetime | None:
 # L'inventaire — la file du piocheur (WF-1 nouvelle manière)
 # ----------------------------------------------------------------------
 
+# Au-delà, la fiche a échoué trop souvent pour qu'on continue de la servir.
+# 🔴 SANS CE PLAFOND, LA REMISE EN FILE DES ÉCHECS TRANSITOIRES ROUVRE LA
+# FAMINE. Une fiche qui échoue pour une raison structurelle reviendrait en tête
+# chaque matin — le défaut de `next_sourcing_target` corrigé le 2026-09-14, et
+# celui que `list_companies_to_research` et la file d'envoi évitent déjà par le
+# même moyen. Le dictionnaire de la 0070 annonçait ce lecteur ; il n'existait
+# pas, et c'est ce qui rendait le correctif de `echec` dangereux.
+MAX_TENTATIVES_INVENTAIRE = 5
+
+
 async def list_inventaire_a_piocher(
-    limit: int = 20, *, track: str = "agence-ia"
+    limit: int = 20, *, track: str = "agence-ia",
+    secteurs: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Les entreprises à hydrater MAINTENANT, les plus affamées d'abord.
 
@@ -493,7 +504,11 @@ async def list_inventaire_a_piocher(
     ⚠️ `select` nu et pas `select_all` : on veut `limit` lignes, pas la table.
     Le plafond PostgREST de 1000 ne mord donc jamais ici.
     """
-    secteurs = secteurs_a_preparer(track=track)
+    # ⚠️ La liste est passée par l'appelant quand il l'a déjà calculée. La
+    # recalculer ici ferait diverger les deux le jour où la requête chevauche
+    # minuit du dernier jour du mois : on piocherait sur l'ancienne saison et on
+    # rapporterait la nouvelle.
+    secteurs = secteurs_a_preparer(track=track) if secteurs is None else secteurs
     if not secteurs:
         # Aucun métier en fenêtre : il n'y a rien à préparer, et c'est un état
         # normal, pas une panne. L'alerte de famine le dit à sa façon.
@@ -505,6 +520,10 @@ async def list_inventaire_a_piocher(
             "track": f"eq.{track}",
             "etat": "eq.a_traiter",
             "trouve_par": "ov." + db.litteral_tableau(secteurs),
+            # 4. ON CESSE DE SERVIR CE QUI ÉCHOUE TOUJOURS. Voir
+            # `MAX_TENTATIVES_INVENTAIRE` : c'est ce plafond qui rend sûre la
+            # remise en file des échecs transitoires.
+            "tentatives": f"lt.{MAX_TENTATIVES_INVENTAIRE}",
             "order": "derniere_tentative.asc.nullsfirst,created_at.asc",
             "limit": str(limit),
         },
