@@ -16,6 +16,8 @@ variables réellement envoyées à Instantly.
 """
 from __future__ import annotations
 
+import re
+
 from src.lib.compliance_checks import check_site_au_conditionnel
 from src.lib.relances import (
     CLES_RELANCES,
@@ -105,48 +107,142 @@ def test_la_relance_finale_annonce_bien_la_fin() -> None:
 
 # ── La garde que `compliance.py` a cessé d'exercer chaque soir ──────────────
 
-# La seule formulation « site » tolérée dans la relance 3, et pourquoi.
-# « ça ne t'intéresse pas d'avoir […] un site web au goût du jour » est au
-# CONDITIONNEL : elle parle de ce que le prospect n'a pas voulu, jamais d'un
-# site qui existerait. Décision William, confirmée le 2026-09-16.
-_TOLERE_RELANCE_3 = "au goût du jour"
+# 🔴 LA SEULE PHRASE DE LA RELANCE 3 QUI A LE DROIT DE PARLER DU SITE.
+#
+# Elle est tolérée parce qu'elle est AU CONDITIONNEL : elle parle de ce que le
+# prospect n'a pas voulu, jamais d'un site qui existerait. Décision William,
+# confirmée le 2026-09-16.
+#
+# ⚠️ Elle est recopiée ICI EN ENTIER, et pas réduite à « au goût du jour »,
+# parce qu'une première version de ce test tolérait le simple BOUT DE PHRASE —
+# et un conseil de relecture a montré le 2026-09-17 que ça ne protégeait rien.
+# Des quatre motifs de `SITE_DEJA_FAIT_PATTERNS`, « au goût du jour » est le
+# seul qui ne soit pas une tournure verbale figée ; les trois autres exigent
+# `j'en ai profité`, `ton site est prêt|fait|terminé|refait`, `je te l'envoie`.
+# Déplacer un mot suffisait à leur échapper. Ces deux réécritures passaient le
+# test au vert tout en affirmant que le site existe :
+#
+#   « Je crois avoir compris que le site web au goût du jour QUE JE T'AI FAIT
+#     ne t'intéresse pas. »
+#   « TON NOUVEAU SITE web au goût du jour EST DÉJÀ EN LIGNE, je t'ai envoyé
+#     le lien. »
+#
+# La première est une réécriture maladroite parfaitement plausible : elle garde
+# la phrase de William mot pour mot et déplace juste le verbe.
+def _parle_du_site(texte: str) -> bool:
+    """Le mot « site » comme MOT, pas comme suite de lettres.
+
+    ⚠️ Un simple `"site" in texte` disait oui sur « hésite » — donc sur les
+    relances 1 et 2, qui finissent toutes deux par « hésite pas a m'ecrire ».
+    Trouvé en écrivant ce test le 2026-09-17.
+    """
+    return re.search(r"site", texte, re.IGNORECASE) is not None
 
 
-def test_relance_3_ne_dit_pas_le_site_deja_fait() -> None:
+PHRASE_TOLEREE = (
+    "Je crois avoir compris que ça ne t'intéresse pas d'avoir le système "
+    "et un site web au goût du jour."
+)
+
+
+def test_la_phrase_du_site_est_exactement_celle_qui_a_ete_approuvee() -> None:
     """🔴 CETTE GARDE A ÉTÉ DÉPLACÉE ICI, elle n'a pas été retirée.
 
     `check_site_au_conditionnel` se déclenchait sur la relance 3 dans 20
     brouillons sur 20 — mesuré le 2026-09-16 — parce que le motif attrape
     « au goût du jour ». `tools/compliance.py` a donc cessé de la juger corps
-    par corps, et la raison dépasse ce cas précis :
+    par corps, et la raison dépasse ce cas : **les trois relances sont du texte
+    FIXE** (`CORPS_RELANCES`, posé tel quel par `personalize.py`). Le rédacteur
+    n'y écrit rien. Un contrôle déterministe sur un texte constant rend un
+    verdict constant — il ne mesure pas le brouillon du soir, il mesure un
+    fichier du dépôt.
 
-    **les trois relances sont du texte FIXE** (`CORPS_RELANCES`, posé tel quel
-    par `personalize.py`). Le rédacteur n'y écrit rien. Un contrôle
-    déterministe sur un texte constant rend un verdict constant : il ne mesure
-    pas le brouillon du soir, il mesure un fichier du dépôt. À 100 % de
-    déclenchement il n'apprend rien, et il noie les remarques qui, elles,
-    portent sur ce qui vient d'être écrit.
+    ⚠️ **Mais « le texte est constant » n'est PAS le critère.** Le critère est
+    « le texte constant est HONNÊTE ». Le bloc du site des gabarits C et D est
+    tout aussi constant et déclenche tout aussi systématiquement : il reste en
+    place EXPRÈS, pour compter combien de courriels partent en disant le site
+    fait. Ne pas ressortir l'argument de la constance pour l'exempter à son
+    tour — ce serait effacer la seule trace mesurée de la dette du 2026-08-26.
 
-    Ici, le même contrôle est meilleur : il échoue **au moment où quelqu'un
-    édite le texte**, pas trois semaines plus tard sur un brouillon. Si une
-    réécriture de la relance 3 affirmait un jour que le site est fait — « je te
-    l'envoie », « ton site est prêt » — ce test rougirait tout de suite.
-
-    ⚠️ Retirer ce test impose de retirer l'exception dans `tools/compliance.py`.
+    Ce test-ci est la contrepartie de l'exemption : il exige que la phrase soit
+    EXACTEMENT celle que William a approuvée, au caractère près. Toute
+    réécriture, même bien intentionnée, le fait rougir — et c'est voulu : elle
+    doit être relue par un humain avant de partir à des centaines de prospects.
     """
-    r = check_site_au_conditionnel(CORPS_RELANCES["relance_3"])
-    trouve = [m for m in (r.matches or []) if _TOLERE_RELANCE_3 not in m.lower()]
-    assert not trouve, (
-        "la relance 3 affirme maintenant que le site est DÉJÀ FAIT : "
-        f"{trouve}. C'est la dette d'honnêteté refermée le 2026-08-26 "
-        "([[feedback-no-lying-in-outreach]]), et plus personne ne la voit "
-        "passer au juge — ce test est le dernier filet."
+    assert PHRASE_TOLEREE in CORPS_RELANCES["relance_3"], (
+        "la phrase du site de la relance 3 a été réécrite. Elle part telle "
+        "quelle à tous les prospects et plus aucun contrôle ne la lit : "
+        "`tools/compliance.py` exempte `site_au_conditionnel` sur ce corps. "
+        "Relis-la contre la règle du 2026-08-26 — le site n'existe PAS au "
+        "moment du courriel, il se fabrique après un oui — puis mets à jour "
+        "`PHRASE_TOLEREE` en connaissance de cause."
     )
 
 
-def test_les_deux_autres_relances_ne_parlent_pas_du_site() -> None:
-    """La contre-épreuve. Sans elle, l'exception pourrait glisser vers les
-    relances 1 et 2 sans que rien ne le signale : elles, personne ne les
-    exempte, et c'est parce qu'elles n'ont jamais parlé du site."""
-    for cle in ("relance_1", "relance_2"):
-        assert not (check_site_au_conditionnel(CORPS_RELANCES[cle]).matches or []), cle
+def test_la_relance_3_ne_parle_du_site_NULLE_PART_AILLEURS() -> None:
+    """🔴 LE FILET QUI NE JOUE PAS AU CHAT ET À LA SOURIS.
+
+    Chercher des formulations de mensonge une par une est perdu d'avance : il y
+    en a une infinité, et la version précédente de ce test l'a prouvé en
+    laissant passer les deux réécritures citées plus haut.
+
+    On renverse donc la charge. La relance 3 n'a qu'UNE raison légitime de
+    prononcer le mot « site », et c'est la phrase approuvée. Une fois celle-ci
+    retirée, le mot ne doit plus apparaître du tout. N'importe quelle
+    affirmation nouvelle sur le site — quelle que soit sa tournure — doit bien
+    le nommer pour dire quoi que ce soit à son sujet.
+    """
+    reste = CORPS_RELANCES["relance_3"].replace(PHRASE_TOLEREE, "")
+    assert not _parle_du_site(reste), (
+        "la relance 3 parle du site ailleurs que dans la phrase approuvée :\n"
+        f"{reste!r}\n"
+        "Aucun contrôle ne lit plus ce corps. Si cet ajout est voulu, il doit "
+        "passer devant la règle du 2026-08-26 avant, pas après."
+    )
+
+
+def test_le_motif_deterministe_ne_trouve_rien_hors_la_phrase_approuvee() -> None:
+    """La troisième couche, celle qui reste attachée au VRAI contrôle.
+
+    Les deux tests du dessus sont écrits à la main ; celui-ci rejoue
+    `check_site_au_conditionnel` lui-même, pour que l'ajout d'un motif au
+    contrôle profite aussi à la relance 3 — qui, sinon, ne le verrait jamais
+    passer.
+    """
+    reste = CORPS_RELANCES["relance_3"].replace(PHRASE_TOLEREE, "")
+    assert not (check_site_au_conditionnel(reste).matches or [])
+
+
+# La relance 1 parle du site elle aussi, et elle en a le droit : elle rappelle
+# une OFFRE, elle n'annonce pas un livrable. Même traitement que la relance 3 —
+# la phrase est épinglée au caractère près plutôt que devinée par un motif.
+PHRASE_SITE_RELANCE_1 = "Pour le site, l'offre tient toujours."
+
+
+def test_les_deux_autres_relances_ne_parlent_du_site_que_pour_offrir() -> None:
+    """La contre-épreuve, et elle a corrigé ma première version.
+
+    J'avais écrit « les relances 1 et 2 n'ont jamais parlé du site ». C'était
+    faux : la relance 1 dit « Pour le site, l'offre tient toujours ». Une offre
+    qui tient est au présent et ne prétend rien — c'est exactement la forme que
+    la règle du 2026-08-26 autorise, et l'inverse de « je te l'envoie ».
+
+    ⚠️ Les relances 1 et 2 ne sont PAS exemptées dans `tools/compliance.py` :
+    seule la relance 3 l'est. Le contrôle déterministe les lit donc encore à
+    chaque brouillon. Ce test double la lecture au cas où l'exemption
+    glisserait vers elles — ce serait silencieux autrement.
+    """
+    assert PHRASE_SITE_RELANCE_1 in CORPS_RELANCES["relance_1"]
+    assert not _parle_du_site(CORPS_RELANCES["relance_2"])
+
+    for cle, approuvee in (
+        ("relance_1", PHRASE_SITE_RELANCE_1),
+        ("relance_2", None),
+    ):
+        texte = CORPS_RELANCES[cle]
+        assert not (check_site_au_conditionnel(texte).matches or []), cle
+        reste = texte.replace(approuvee, "") if approuvee else texte
+        assert not _parle_du_site(reste), (
+            f"{cle} parle du site ailleurs que dans sa phrase approuvée : "
+            f"{reste!r}"
+        )
