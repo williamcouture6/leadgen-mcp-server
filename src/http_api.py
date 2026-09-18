@@ -3024,7 +3024,8 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
             # (aucun chiffre = rien à vérifier). La dégradation est invisible,
             # et c'est le test de fumée lui-même qui ment.
             "select": (
-                "id,name,nom_usage,website,city,icp_segment,industry,research_json,track,"
+                "id,name,nom_usage,status,recontact_manuel,website,city,icp_segment,"
+                "industry,research_json,track,"
                 "google_rating,google_reviews_count,google_place_id"
             ),
             "id": f"eq.{contact['company_id']}",
@@ -3036,6 +3037,34 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
             contact_id=payload.contact_id, status="error", error_text="company_not_found",
         )
     company = companies[0]
+
+    # 🔴 CETTE ROUTE CONTOURNAIT ENTIEREMENT LA GARDE DU LOT.
+    #
+    # `list_contacts_to_personalize` ecarte les fiches `disqualified`,
+    # `suppressed` et celles que William a mises hors cible. Cette route-ci ne
+    # passe PAS par elle : elle lit le contact et l'entreprise directement, et
+    # `persist=True` est le defaut. Elle pouvait donc ecrire un brouillon pour
+    # une fiche que tout le reste du systeme refuse de servir.
+    #
+    # ⚠️ `suppressed` est le cas qui compte : c'est le statut d'un
+    # desabonnement. Ecrire a une fiche `suppressed` n'est pas une maladresse,
+    # c'est une infraction LCAP — et cette route est justement celle que la
+    # checklist de go-live designe comme « la facon de creer un draft de test ».
+    # Un test de fumee lance sur le mauvais contact suffisait.
+    #
+    # Trouve par un conseil de relecture le 2026-09-17, quelques heures apres le
+    # commit qui fermait le meme trou cote lot — la meme classe de defaut que le
+    # commentaire du SELECT juste au-dessus documente pour les avis (« le
+    # CINQUIEME point du cablage, oublie »).
+    _refus = None
+    if company.get("status") in ("disqualified", "suppressed"):
+        _refus = f"company_{company['status']}"
+    elif company.get("recontact_manuel") in ("hors_cible", "jamais"):
+        _refus = f"decision_humaine_{company['recontact_manuel']}"
+    if _refus:
+        return PersonalizeContactOut(
+            contact_id=payload.contact_id, status="skipped", error_text=_refus,
+        )
 
     # Fetch Cal.com une fois (ou utilise l'override). Si échec : on tombe sur slots=[]
     # et le prompt fallback sur un CTA générique.

@@ -267,8 +267,12 @@ def test_les_trois_select_et_le_dict_ramenent_la_colonne() -> None:
         f"le SELECT de WF-4 a perdu une colonne : {sorted(wf4)}. Sans `status`, "
         "la garde des entreprises disqualifiées ne peut pas décider."
     )
-    contact = _colonnes_du_select(api, '"id,name,nom_usage,website')
-    assert {"name", "nom_usage"} <= contact
+    contact = _colonnes_du_select(api, '"id,name,nom_usage,status')
+    assert {"name", "nom_usage", "status", "recontact_manuel"} <= contact, (
+        f"le SELECT de /personalize/contact a perdu une colonne : {sorted(contact)}. "
+        "Sans `status` ni `recontact_manuel`, cette route peut écrire un "
+        "brouillon pour une fiche désabonnée — une infraction LCAP."
+    )
 
     juge = _colonnes_du_select(api, '"name,nom_usage,research_json')
     assert {"name", "nom_usage"} <= juge, (
@@ -434,3 +438,95 @@ def test_wf4_ecarte_les_entreprises_disqualifiees_et_desabonnees() -> None:
         "la garde de statut a disparu de la boucle d'éligibilité de WF-4 : "
         "une entreprise disqualifiée ou désabonnée peut recevoir un brouillon"
     )
+
+
+def test_la_route_manuelle_refuse_ce_que_le_lot_refuse() -> None:
+    """🔴 `/personalize/contact` CONTOURNAIT ENTIÈREMENT LA GARDE DU LOT.
+
+    `list_contacts_to_personalize` écarte `disqualified`, `suppressed` et les
+    décisions humaines. Cette route ne passe pas par elle : elle lit le contact
+    et l'entreprise directement, et `persist=True` est le défaut.
+
+    ⚠️ `suppressed` est le cas qui compte : c'est le statut d'un désabonnement,
+    et cette route est justement celle que la checklist de go-live désigne comme
+    « la façon de créer un draft de test ». Un test de fumée sur le mauvais
+    contact suffisait à écrire à quelqu'un qui s'est désabonné.
+
+    Trouvé par un conseil de relecture quelques heures après le commit qui
+    fermait le même trou côté lot.
+    """
+    from pathlib import Path
+
+    api = (
+        Path(__file__).resolve().parent.parent / "src/http_api.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'if company.get("status") in ("disqualified", "suppressed"):' in api, (
+        "la garde de statut a disparu de /personalize/contact"
+    )
+    assert 'company.get("recontact_manuel") in ("hors_cible", "jamais")' in api, (
+        "la garde de décision humaine a disparu de /personalize/contact"
+    )
+
+
+def test_la_decision_humaine_ecarte_vraiment_la_fiche() -> None:
+    """🔴 La migration 0032 s'intitule « La décision humaine doit avoir un
+    endroit où vivre, ET ELLE DOIT L'EMPORTER ». Mesuré le 2026-09-17 :
+    `recontact_manuel` n'était lu par AUCUN code Python — seulement par une vue.
+
+    ⚠️ `a_juger` ne bloque PAS, délibérément : il veut dire « un humain doit
+    regarder », pas « ne la contacte pas ».
+    """
+    from src.tools.db import _sans_decision_humaine_contraire as filtre
+
+    lot = [
+        {"name": "normale", "recontact_manuel": None},
+        {"name": "Terminix", "recontact_manuel": "hors_cible"},
+        {"name": "plainte", "recontact_manuel": "jamais"},
+        {"name": "à regarder", "recontact_manuel": "a_juger"},
+        {"name": "colonne absente"},
+    ]
+    gardees = [r["name"] for r in filtre(lot)]
+    assert gardees == ["normale", "à regarder", "colonne absente"], gardees
+
+
+def test_le_filtre_de_decision_reste_en_PYTHON_et_pas_dans_la_requete() -> None:
+    """🔴 DEUX PIÈGES MESURÉS AVANT DE DÉPLOYER, chacun silencieux.
+
+    1. `recontact_manuel=not.in.(hors_cible,jamais)` laisse passer **ZÉRO fiche
+       sur 723** : en SQL, `NULL not in (...)` ne vaut pas vrai mais NULL, donc
+       la ligne est ÉCARTÉE — et 721 fiches ont la colonne à NULL. WF-3 se
+       serait tu entièrement, sans une seule erreur : un lot vide ne plante pas.
+    2. Les paramètres portent DÉJÀ une clé `"or"`, celle qui distingue « jamais
+       recherchée » de « à reprendre après 90 jours ». Une seconde clé `"or"`
+       dans le même littéral l'ÉCRASE en silence — Python ne prévient pas.
+
+    Ce test fige les deux : le filtre reste en Python, et il n'y a qu'un `"or"`.
+    """
+    from pathlib import Path
+
+    db = (
+        Path(__file__).resolve().parent.parent / "src/tools/db.py"
+    ).read_text(encoding="utf-8")
+
+    deb = db.index("async def list_companies_to_research(")
+    fin = db.index(chr(10) + "async def ", deb + 10)
+    corps = db[deb:fin]
+
+    assert corps.count('"or":') == 1, (
+        "une seconde clé `or` est apparue dans les paramètres : elle écrase la "
+        "première EN SILENCE et détruit la sélection de WF-3"
+    )
+    # ⚠️ On interdit la colonne comme CLE DE FILTRE, pas dans le `select` — elle
+    # doit y être, sinon le filtre Python ne la voit pas. Première version
+    # de ce test interdisait le mot PARTOUT, et rougissait sur le `select`
+    # lui-même.
+    assert '"recontact_manuel":' not in corps, (
+        "le filtre de décision humaine est revenu dans la requête : sur une "
+        "colonne à 721 NULL, il écarterait TOUTES les fiches"
+    )
+    assert "recontact_manuel" in corps, (
+        "la colonne a disparu du select : le filtre Python lirait None partout "
+        "et n'écarterait plus personne"
+    )
+    assert "_sans_decision_humaine_contraire(rows)" in corps

@@ -1392,7 +1392,7 @@ async def _retenir(
             # lead_potential_* : SERVENT UNIQUEMENT à ordonner le lot ; ils sont
             # retirés avant d'être rendus (voir CHAMPS_INTERNES).
             "select": (
-                "id,name,nom_usage,status,domain,website,city,icp_segment,industry,research_json,track,"
+                "id,name,nom_usage,status,recontact_manuel,domain,website,city,icp_segment,industry,research_json,track,"
                 "google_rating,google_reviews_count,google_place_id,"
                 # lead_potential_* : SERVENT UNIQUEMENT à ordonner le lot ; ils
                 # sont retirés avant d'être rendus (voir CHAMPS_INTERNES).
@@ -1529,6 +1529,27 @@ async def _retenir(
         # lourde : c'est le statut d'un desabonnement. Ecrire a une fiche
         # `suppressed` n'est pas une maladresse, c'est une infraction LCAP.
         if company.get("status") in ("disqualified", "suppressed"):
+            continue
+        # 🔴 LA DECISION HUMAINE L'EMPORTE — et elle ne l'emportait nulle part.
+        #
+        # La migration 0032 s'intitule « La decision humaine doit avoir un
+        # endroit ou vivre, ET ELLE DOIT L'EMPORTER », et le commentaire de la
+        # colonne dit qu'elle « l'emporte TOUJOURS sur le verdict calcule ».
+        # Mesure du 2026-09-17 : `recontact_manuel` n'etait lu par AUCUN code
+        # Python — seulement par `v_pourquoi_pas_de_courriel`. Une decision de
+        # William apparaissait donc au tableau de bord pendant que le pipeline
+        # redigeait quand meme.
+        #
+        # 📏 Le cas qui l'a montre : *Terminix Canada*, marquee `hors_cible` le
+        # 2026-09-10 (« multinationale Rentokil/Terminix : hors cible agence-ia
+        # (contracteurs QC) — decision William »), balayee le 2026-09-17 par une
+        # remise en file de masse. Rien ne l'aurait arretee.
+        #
+        # ⚠️ `a_juger` n'est PAS bloquant, et c'est un choix : il veut dire « un
+        # humain doit regarder », pas « ne la contacte pas ». Le bloquer gelerait
+        # des fiches sur une demande d'attention. Si ca doit changer, c'est une
+        # decision de William, pas une extension silencieuse de cette liste.
+        if company.get("recontact_manuel") in ("hors_cible", "jamais"):
             continue
         if require_research and not company.get("research_json"):
             continue
@@ -1695,6 +1716,50 @@ async def insert_message_draft(payload: MessageDraftIn) -> dict[str, Any]:
 # Research (Phase 2 — WF-3)
 # ----------------------------------------------------------------------
 
+# 🔴 LA DECISION HUMAINE L'EMPORTE — et elle ne l'emportait NULLE PART.
+#
+# La migration 0032 s'intitule « La decision humaine doit avoir un endroit ou
+# vivre, ET ELLE DOIT L'EMPORTER », et le commentaire de la colonne promet
+# qu'elle « l'emporte TOUJOURS sur le verdict calcule ». Mesure du 2026-09-17 :
+# `recontact_manuel` n'etait lu par AUCUN code Python — seulement par
+# `v_pourquoi_pas_de_courriel`. La decision apparaissait au tableau de bord
+# pendant que le pipeline recherchait et redigeait quand meme.
+#
+# 📏 Le cas : *Terminix Canada*, marquee `hors_cible` le 2026-09-10
+# (« multinationale Rentokil/Terminix : hors cible agence-ia — decision
+# William »), balayee le 2026-09-17 par une remise en file de masse. Rien ne
+# l'aurait arretee.
+#
+# ⚠️ POURQUOI EN PYTHON ET PAS DANS LA REQUETE — deux pieges mesures avant de
+# deployer, chacun silencieux :
+#   1. `recontact_manuel=not.in.(hors_cible,jamais)` laisse passer ZERO fiche
+#      sur 723. En SQL, `NULL not in (...)` ne vaut pas vrai mais NULL, donc la
+#      ligne est ECARTEE — et 721 fiches sur 723 ont la colonne a NULL. WF-3 se
+#      serait tu entierement, sans une seule erreur : un lot vide ne plante pas.
+#   2. `params` porte DEJA une cle `"or"`, celle qui distingue « jamais
+#      recherchee » de « a reprendre apres 90 jours ». Une seconde cle `"or"`
+#      dans le meme litteral l'ECRASE en silence — Python ne previent pas.
+# Deux lignes de Python valent mieux qu'une syntaxe PostgREST qu'on ne peut pas
+# exercer depuis la suite de tests.
+_DECISIONS_QUI_ECARTENT = ("hors_cible", "jamais")
+
+
+def _sans_decision_humaine_contraire(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Retire les fiches que William a mises hors cible ou interdites.
+
+    ⚠️ `a_juger` ne bloque PAS, et c'est un choix : il veut dire « un humain
+    doit regarder », pas « ne la contacte pas ». Le bloquer gelerait des fiches
+    sur une simple demande d'attention. Si ca doit changer, c'est une decision
+    de William, pas un elargissement discret de cette liste.
+    """
+    return [
+        r for r in rows
+        if r.get("recontact_manuel") not in _DECISIONS_QUI_ECARTENT
+    ]
+
+
 async def list_companies_to_research(
     limit: int = 20,
     *,
@@ -1724,7 +1789,7 @@ async def list_companies_to_research(
     # global sur research_json annulerait la seconde porte en silence.
     limite_reprise = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     params: dict[str, str] = {
-        "select": "id,name,domain,website,city,icp_segment,industry,google_place_id,status,track",
+        "select": "id,name,domain,website,city,icp_segment,industry,google_place_id,status,track,recontact_manuel",
         "or": (
             "(and(status.eq.sourced,research_json.is.null),"
             f"and(status.eq.researched_no_contact,last_enriched_at.lt.{limite_reprise}))"
@@ -1747,6 +1812,7 @@ async def list_companies_to_research(
     if require_website:
         params["website"] = "not.is.null"
     rows = await db.select("companies", params=params)
+    rows = _sans_decision_humaine_contraire(rows)
     if require_website or not rows:
         return rows
 
