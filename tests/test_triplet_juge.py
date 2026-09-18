@@ -147,7 +147,17 @@ def test_le_message_du_juge_dit_de_les_juger_AUSSI() -> None:
         body=CORPS_A, subject="s", research_json={}, social_proof=[], contact=None,
         followups=TRIPLET,
     )
-    assert "À JUGER AUSSI" in msg
+    # 🔴 RENVERSE LE 2026-09-17 avec la decision de William. Ce test exigeait
+    # « À JUGER AUSSI », c'est-a-dire la consigne que `d609e32` retirait du
+    # prompt systeme le meme jour. Les deux tests etaient verts EN MEME TEMPS,
+    # chacun gardant un cote de la contradiction — c'est ce qui l'a rendue
+    # invisible jusqu'au conseil de relecture du soir.
+    assert "POUR CONTEXTE SEULEMENT" in msg
+    assert "À JUGER AUSSI" not in msg, (
+        "le message utilisateur redemande au juge de signaler les relances, "
+        "alors que le prompt systeme le lui interdit — et c'est le message "
+        "utilisateur qui gagne, il est lu en dernier"
+    )
 
 
 def test_sans_relances_le_bloc_disparait_entierement() -> None:

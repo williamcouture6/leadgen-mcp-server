@@ -105,10 +105,28 @@ def _message_utilisateur_juge(
         if texte:
             bloc_relances += f"\n**{etiquette}** (en fil, sans objet) :\n{texte}\n"
     if bloc_relances:
+        # 🔴 CE BLOC DISAIT L'INVERSE DU PROMPT SYSTEME, DANS LE MEME APPEL.
+        #
+        # Il portait « À JUGER AUSSI … une violation dans une relance est une
+        # violation de l'envoi » — la consigne exacte que `d609e32` venait de
+        # RETIRER du systeme le 2026-09-17, sur decision de William (« il faut
+        # donc JAMAIS que les relances soient flaguees »).
+        #
+        # ⚠️ Et c'est le message UTILISATEUR qui gagne : le systeme est lu en
+        # premier et mis en cache, le message utilisateur est la derniere chose
+        # que le modele lit avant de repondre. On lui demandait donc encore
+        # exactement le faux positif qu'on venait de fermer.
+        #
+        # Trouve par un conseil de relecture d'ensemble le soir meme. Deux tests
+        # gardaient chacun un cote de la contradiction, donc la suite etait verte
+        # dans les deux sens — c'est ce qui l'a rendue invisible.
         bloc_relances = (
-            "\n## Les relances du même envoi — À JUGER AUSSI\n"
-            "Elles partent au même prospect, à quelques jours d'intervalle. Une "
-            "violation dans une relance est une violation de l'envoi.\n"
+            "\n## Les relances du même envoi — POUR CONTEXTE SEULEMENT\n"
+            "Elles partent au même prospect quelques jours plus tard. Elles sont "
+            "du TEXTE FIXE, identique à tous les destinataires : ne les signale "
+            "jamais. Elles sont là pour que tu saches ce qu'il lira ensuite, et "
+            "que tu ne reproches pas au courriel une absence que la suite "
+            "comble.\n"
             + bloc_relances
             + "\n"
         )

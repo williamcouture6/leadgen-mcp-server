@@ -54,18 +54,36 @@ Décision William, 2026-09-17. Les deux ne datent pas du même jour : le `resear
   ⚠️ Mesuré le 2026-09-16 : un brouillon refusé au motif que « la promesse de
   gratuité n'est ancrée dans aucune règle documentée ». Elle l'est, et la règle
   est à côté de la phrase.
-- 🔴 **L'IMAGE D'OUVERTURE — « t'es dans ta machine », « en haut d'une
-  échelle », « sur un terrain », « chez un client »**. Un **lexique du code**
-  (`lexique_metiers.py`) en fournit une par famille et le rédacteur l'habille
-  (« les deux mains prises sur la souffleuse »). C'est une **illustration du
-  métier**, pas un inventaire de l'équipement du prospect : elle dit qu'il
-  travaille de ses mains et qu'il ne peut pas répondre au téléphone, rien
-  d'autre. Ne cherche pas l'outil dans le `research_json`.
+- 🔴 **L'OUTIL DE L'IMAGE D'OUVERTURE — « t'es dans ta machine », « en haut
+  d'une échelle », « sur un terrain », « chez un client »**. Un **lexique du
+  code** (`lexique_metiers.py`) en fournit une par famille et le rédacteur
+  l'habille (« les deux mains prises sur la souffleuse »). L'OUTIL est une
+  **illustration du métier**, pas un inventaire de l'équipement du prospect :
+  ne le cherche pas dans le `research_json`.
   ⚠️ Mesuré le 2026-09-16 : un brouillon refusé parce que la fiche disait
   « déneigement manuel » et que le courriel parlait d'une souffleuse.
   **Décision William : passer la souffleuse FAIT PARTIE du déneigement
   manuel** — « manuel » l'oppose au camion-charrue et au contrat de flotte,
   pas à l'outil qu'on pousse devant soi.
+
+  🔴 **MAIS CE QUE L'IMAGE AFFIRME SUR LA TAILLE RESTE À SIGNALER, et c'est le
+  seul vrai positif que ce juge ait jamais produit.** L'image dit qu'il est
+  occupé de ses mains et que **personne ne prend l'appel**. Chez une entreprise
+  qui a un répartiteur, une réceptionniste ou un centre d'appels, cette phrase
+  est fausse — et c'est le prospect lui-même qui le sait le mieux.
+
+  📏 Le cas : *Worry Free Snow Blowing*, dont la fiche disait « centre d'appels
+  entièrement doté en personnel lors des tempêtes », a reçu « le déneigement,
+  ça se fait pas les mains libres, t'es dans ta machine ». Tu l'as refusé, à
+  juste titre : « l'image du solo-opérateur dans sa machine est inexacte pour
+  une PME de 25-50 employés avec centre d'appels dédié ».
+
+  ⚠️ **Une version de cette permission, écrite le 2026-09-16 pour régler le cas
+  de la souffleuse, disait « elle dit qu'il travaille de ses mains et qu'il ne
+  peut pas répondre au téléphone, rien d'autre » — ce qui t'interdisait aussi
+  ce refus-là.** Un conseil de relecture l'a trouvé le 2026-09-17. La
+  distinction tient en une ligne : **l'outil ne se vérifie pas, la taille se
+  vérifie** — `size_signals` et `company_summary` la portent.
 - 🔴 **« autant de sortes de X, résidentiel et commercial, que … »** — forme
   IMPOSÉE par le gabarit (`personalize.md`) pour éviter de répéter trois fois
   le même métier. Elle regroupe des VARIANTES ; elle **n'annonce pas une liste
