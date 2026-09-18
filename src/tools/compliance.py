@@ -50,7 +50,7 @@ from ..lib.avis import bloc_faits_verifies
 from ..lib.lexique_metiers import lexique_pour
 from ..lib.metiers import classer_services, resoudre_metiers
 
-from ..lib.relances import RELANCES
+from ..lib.relances import CORPS_RELANCES, RELANCES
 from ..lib.compliance_checks import (
     CheckResult,
     mentions_manquantes_dans_la_config,
@@ -367,28 +367,61 @@ async def compliance_check(
     )
 
     det_results: list[CheckResult] = []
-    # 🔴 LES DEUX RELANCES QUI FERMENT EN DOUCEUR — decision William du
-    # 2026-09-16, apres avoir essaye l'inverse le meme jour.
+    # 🔴 SUR UNE RELANCE, SEUL UN VERDICT BLOQUANT COMPTE.
+    # Decision William, 2026-09-17 : « il faut donc JAMAIS que les relances
+    # soient flaguees ». Remplace deux exceptions posees au coup par coup les
+    # 16 et 17 septembre (`cta_present` sur les fermetures douces, puis
+    # `site_au_conditionnel` sur la relance 3) — on traitait les symptomes.
     #
-    # `check_cta_present` les signalait a chaque brouillon : mesure du
-    # 2026-09-15, 20 sur 20. La remarque etait EXACTE — ni l'une ni l'autre ne
-    # demande de geste — mais elle etait aussi sans issue, puisque c'est voulu.
-    # Une remarque qui tombe sur 100 % des courriels pour une chose assumee
-    # n'apprend rien : elle apprend a ne plus lire la section des remarques,
-    # ou les vraies trouvailles apparaissent.
+    # LE FAIT QUI JUSTIFIE TOUT : les trois relances sont du TEXTE FIXE.
+    # `personalize.py` ecrase INCONDITIONNELLEMENT les trois cles par
+    # `relances.CORPS_RELANCES` apres la redaction — meme si le modele en a
+    # produit une version, c'est la sienne qui est jetee. Elles partent
+    # identiques a tous les destinataires ; pas un mot n'est personnalise.
     #
-    # ⚠️ Deux tentatives ont precede celle-ci, et la trace evite de les refaire :
-    #   · ajouter un CTA aux deux relances (« Hesite pas a m'ecrire! ») —
-    #     William a prefere garder ses textes tels quels ;
-    #   · l'exception cote TEST seule (`FERMETURES_DOUCES` dans
-    #     tests/test_fixtures_corps.py) — elle verdit la suite mais ne change
-    #     rien a ce qui s'ecrit dans `compliance_notes`, donc la remarque
-    #     continuait d'arriver chaque soir.
+    # Un controle deterministe sur un texte constant rend donc un verdict
+    # CONSTANT : il ne mesure pas le brouillon du soir, il mesure un fichier du
+    # depot. Mesure sur les trois corps : `length` (86, 121 et 74 mots contre
+    # une cible de 180-270), `cta_present` (relances 1 et 3) et
+    # `site_au_conditionnel` (relance 3) tombaient sur 100 % des brouillons,
+    # pour des choix assumes. Une remarque qui tombe toujours n'apprend rien ;
+    # elle apprend a ne plus lire la section des remarques.
     #
-    # ⚠️ La relance 2, elle, DOIT continuer d'etre jugee : elle porte un vrai
-    # CTA (« si t'as des questions hesite pas »), et le jour ou une reecriture
-    # le fait sauter, c'est exactement ce qu'on veut apprendre.
-    FERMETURES_DOUCES = frozenset({"relance 1", "relance 3"})
+    # ⚠️ J'AI D'ABORD GARDE LES CONTROLES `block` SUR LES RELANCES, en invoquant
+    # le pied de page LCAP. William a demande pourquoi, puisque le pied de page
+    # est ajoute par Instantly APRES. Il avait raison et j'avais tort :
+    #
+    #   · `check_legal_footer` ne lit PAS le corps, il lit `appended_footer` —
+    #     une SEULE variable d'environnement (`INSTANTLY_CAMPAIGN_FOOTER`),
+    #     passee identique aux quatre corps. Verifie : le corps principal et la
+    #     relance 1 rendent le meme verdict, au mot pres. La question etait donc
+    #     posee quatre fois pour une seule reponse ;
+    #   · et surtout, le LAYER 0 la pose deja AVANT de juger quoi que ce soit
+    #     (`mentions_manquantes_dans_la_config`), en rendant `error` sans rien
+    #     ecrire. C'est LUI la garde legale, pas une relecture par corps.
+    #
+    # `warmup_window` est dans le meme cas : il lit la configuration, jamais le
+    # texte. Aucune garde propre au CORPS d'une relance n'existe — il n'y a donc
+    # rien a sauver, et les relances sortent entierement du filet deterministe.
+    #
+    # ⚠️ Ce qui disparait du filet (les `info`/`warn` sur un texte constant) est
+    # repris par `tests/test_relances_liste_unique.py`, ou il est meilleur : il
+    # echoue a l'EDITION du texte, pas trois semaines plus tard sur un
+    # brouillon. Retirer cette regle impose de retirer ces tests, et l'inverse.
+    # 🔴 ON N'EXEMPTE QUE CE QUI EST VRAIMENT LE TEXTE FIXE, au caractere pres.
+    #
+    # Exempter par ETIQUETTE seule ouvrirait deux trous, tous deux verifiables :
+    #   · l'ecrasement par les constantes est CONDITIONNEL — `personalize.py`
+    #     ne l'applique que `if payload.track == "agence-ia"`. Une autre piste
+    #     garderait la version du MODELE, qui elle peut mentir ;
+    #   · la conformite lit `messages.followups`, une colonne ecrite parfois des
+    #     semaines plus tot. Un vieux brouillon peut porter une relance redigee
+    #     avant que l'ecrasement n'existe.
+    # Dans les deux cas, une relance flaguee serait une VRAIE trouvaille.
+    #
+    # Comparer le texte tranche sans supposer : si c'est la constante, il n'y a
+    # rien a apprendre ; si ce n'est pas elle, le filet reste tendu.
+    _TEXTES_FIXES_DES_RELANCES = frozenset(CORPS_RELANCES.values())
 
     for etiquette, texte, gabarit in corps_a_juger:
         for r in run_all(
@@ -409,32 +442,7 @@ async def compliance_check(
             # fois le même écart.
             moment_saison=moment_saison if etiquette == "courriel" else None,
         ):
-            if r.name == "cta_present" and etiquette in FERMETURES_DOUCES:
-                continue
-            # 🔴 MEME RAISON, AUTRE CHECK : `site_au_conditionnel` se declenchait
-            # sur la relance 3 dans 20 brouillons sur 20 — mesure le 2026-09-16.
-            #
-            # Le motif attrape « au gout du jour », et la relance 3 dit « ca ne
-            # t'interesse pas d'avoir le systeme et un site web au gout du jour ».
-            # C'est une phrase AU CONDITIONNEL sur ce qu'il n'a pas voulu, pas une
-            # affirmation que le site est fait — exactement ce que le check existe
-            # pour interdire. William l'a confirmee bonne.
-            #
-            # 🔴 L'ARGUMENT QUI TRANCHE, ET IL VAUT POUR TOUTE LA FAMILLE : les
-            # trois relances sont du TEXTE FIXE (`relances.CORPS_RELANCES`, pose
-            # tel quel par `personalize.py`). Le redacteur n'y ecrit rien. Un
-            # check deterministe sur un texte constant rend donc un verdict
-            # CONSTANT : il ne mesure pas le brouillon du soir, il mesure un
-            # fichier du depot. A 100 % de declenchement il n'apprend rien et il
-            # noie les vraies remarques — le seul lecteur humain apprend a sauter
-            # la section.
-            #
-            # ⚠️ CE N'EST PAS UNE GARDE RETIREE : elle est DEPLACEE dans la
-            # suite, ou elle est meilleure (elle echoue a l'edition du texte, pas
-            # trois semaines plus tard sur un brouillon). Voir
-            # `test_relance_3_ne_dit_pas_le_site_deja_fait`. Si quelqu'un retire
-            # cette exception, qu'il retire aussi le test.
-            if r.name == "site_au_conditionnel" and etiquette == "relance 3":
+            if etiquette != "courriel" and texte in _TEXTES_FIXES_DES_RELANCES:
                 continue
             # L'étiquette voyage avec le résultat : « cta_present » tout court
             # ne dit pas LEQUEL des trois corps est en faute, et c'est la

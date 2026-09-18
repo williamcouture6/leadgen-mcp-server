@@ -166,7 +166,20 @@ def test_le_prompt_du_juge_sait_que_les_faits_verifies_font_foi() -> None:
         Path(__file__).resolve().parents[1] / "src" / "prompts" / "compliance.md"
     ).read_text(encoding="utf-8")
     assert "FAITS VÉRIFIÉS » EST LA VÉRITÉ" in prompt
-    assert "JUGE LES TROIS CORPS" in prompt
+    # 🔴 RENVERSE LE 2026-09-17 — decision William : « il faut donc JAMAIS que
+    # les relances soient flaguees ». La consigne disait « JUGE LES TROIS
+    # CORPS » ; elle dit maintenant l'inverse, et pour une raison verifiable :
+    # les trois relances sont du TEXTE FIXE (`CORPS_RELANCES`, ecrase
+    # inconditionnellement par `personalize.py`). Elles ne parlent pas de CE
+    # prospect, donc elles ne peuvent pas inventer un fait sur lui — et une
+    # remarque a leur sujet ne peut etre corrigee par aucune reecriture du
+    # brouillon.
+    assert "LES RELANCES SONT LÀ POUR LE CONTEXTE" in prompt
+    assert "TU NE LES SIGNALES JAMAIS" in prompt
+    assert "JUGE LES TROIS CORPS" not in prompt, (
+        "l'ancienne consigne est revenue : elle fait refuser des brouillons "
+        "conformes pour une phrase que personne ne peut changer ici"
+    )
     # L'ancienne offre ne doit plus servir d'exemple de formulation légitime.
     assert "je recontacte vos anciens clients" not in prompt
 
