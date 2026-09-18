@@ -1392,7 +1392,7 @@ async def _retenir(
             # lead_potential_* : SERVENT UNIQUEMENT à ordonner le lot ; ils sont
             # retirés avant d'être rendus (voir CHAMPS_INTERNES).
             "select": (
-                "id,name,nom_usage,domain,website,city,icp_segment,industry,research_json,track,"
+                "id,name,nom_usage,status,domain,website,city,icp_segment,industry,research_json,track,"
                 "google_rating,google_reviews_count,google_place_id,"
                 # lead_potential_* : SERVENT UNIQUEMENT à ordonner le lot ; ils
                 # sont retirés avant d'être rendus (voir CHAMPS_INTERNES).
@@ -1508,6 +1508,27 @@ async def _retenir(
             continue
         company = by_id.get(c["company_id"])
         if not company:
+            continue
+        # 🔴 LE STATUT DE L'ENTREPRISE, ET IL MANQUAIT — trouve par un conseil
+        # de relecture le 2026-09-17, quelques heures apres le commit qui
+        # s'intitulait « une disqualification sort la fiche du circuit ».
+        #
+        # Elle sortait du circuit de RECHERCHE (`list_companies_to_research`
+        # filtre `not.in.(disqualified,no_web_presence)`) mais PAS de celui de
+        # REDACTION : cette boucle testait le brouillon deja ecrit, l'entreprise
+        # deja servie, la recherche, le site, la saison — jamais le statut.
+        #
+        # 📏 Le cas vivant au moment de la correction : *Strathmore Commercial
+        # Landscape Management*, passee `disqualified` le soir meme par la
+        # nouvelle regle (« 25 employes ou plus / repartiteur en place —
+        # entreprise nationale avec 250+ camions »), avec TROIS contacts en
+        # `new` et aucun message. Rien ne l'empechait de sortir dans le lot du
+        # lendemain midi.
+        #
+        # ⚠️ `suppressed` est dans la liste pour une raison differente et plus
+        # lourde : c'est le statut d'un desabonnement. Ecrire a une fiche
+        # `suppressed` n'est pas une maladresse, c'est une infraction LCAP.
+        if company.get("status") in ("disqualified", "suppressed"):
             continue
         if require_research and not company.get("research_json"):
             continue

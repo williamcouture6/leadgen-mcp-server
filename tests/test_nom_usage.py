@@ -252,13 +252,26 @@ def test_les_trois_select_et_le_dict_ramenent_la_colonne() -> None:
     db = (racine / "src/tools/db.py").read_text(encoding="utf-8")
     api = (racine / "src/http_api.py").read_text(encoding="utf-8")
 
-    assert "id,name,nom_usage,domain" in db, (
-        "le SELECT de list_contacts_to_personalize (WF-4) a perdu nom_usage"
+    # ⚠️ ON CHERCHE LES COLONNES, PAS UNE CHAÎNE EXACTE. Une première version
+    # comparait le `select` au caractère près : ajouter `status` à la même liste
+    # l'a fait tomber alors que rien n'était cassé. Un test qui rougit sur un
+    # réordonnancement inoffensif finit par être contourné au lieu d'être lu.
+    def _colonnes_du_select(texte: str, ancre: str) -> set[str]:
+        i = texte.index(ancre)
+        fin = texte.index("),", i)
+        brut = texte[i:fin].replace('"', "").replace("\n", "").replace(" ", "")
+        return {c for c in brut.split(",") if c}
+
+    wf4 = _colonnes_du_select(db, '"id,name,nom_usage')
+    assert {"name", "nom_usage", "status"} <= wf4, (
+        f"le SELECT de WF-4 a perdu une colonne : {sorted(wf4)}. Sans `status`, "
+        "la garde des entreprises disqualifiées ne peut pas décider."
     )
-    assert "id,name,nom_usage,website" in api, (
-        "le SELECT de /personalize/contact a perdu nom_usage"
-    )
-    assert "name,nom_usage,research_json,track,industry," in api, (
+    contact = _colonnes_du_select(api, '"id,name,nom_usage,website')
+    assert {"name", "nom_usage"} <= contact
+
+    juge = _colonnes_du_select(api, '"name,nom_usage,research_json')
+    assert {"name", "nom_usage"} <= juge, (
         "le SELECT du juge a perdu name ou nom_usage — sans `name`, "
         "`nom_a_imprimer` n'a même pas de repli"
     )
@@ -380,4 +393,44 @@ def test_le_second_maillon_positionnel_est_aligne() -> None:
     rang = list(noms).index("nom_entreprise")
     assert positions[rang] == "nom_entreprise", (
         f"le paramètre `nom_entreprise` reçoit `{positions[rang]}` — décalage"
+    )
+
+
+# ── WF-4 ne rédige pas pour une entreprise sortie du circuit ────────────────
+
+
+def test_wf4_ecarte_les_entreprises_disqualifiees_et_desabonnees() -> None:
+    """🔴 DÉFAUT TROUVÉ PAR UN CONSEIL DE RELECTURE LE 2026-09-17, quelques
+    heures après le commit intitulé « une disqualification sort la fiche du
+    circuit ».
+
+    Elle sortait du circuit de RECHERCHE — `list_companies_to_research` filtre
+    `not.in.(disqualified,no_web_presence)` — mais PAS de celui de RÉDACTION.
+    La boucle d'éligibilité de `list_contacts_to_personalize` testait le
+    brouillon déjà écrit, l'entreprise déjà servie, la recherche, le site et la
+    saison. Jamais le statut.
+
+    📏 Le cas vivant au moment de la correction : *Strathmore Commercial
+    Landscape Management*, passée `disqualified` le soir même (« 25 employés ou
+    plus / répartiteur en place — entreprise nationale avec 250+ camions »),
+    TROIS contacts en `new`, aucun message. Rien ne l'empêchait de sortir dans
+    le lot du lendemain midi.
+
+    ⚠️ `suppressed` compte plus lourd encore : c'est le statut d'un
+    désabonnement. Lui écrire n'est pas une maladresse, c'est une infraction
+    LCAP.
+    """
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parent.parent / "src/tools/db.py"
+    ).read_text(encoding="utf-8")
+
+    deb = src.index("def _retenir(")
+    fin = src.index("\ndef ", deb + 10)
+    boucle = src[deb:fin]
+
+    assert 'company.get("status") in ("disqualified", "suppressed")' in boucle, (
+        "la garde de statut a disparu de la boucle d'éligibilité de WF-4 : "
+        "une entreprise disqualifiée ou désabonnée peut recevoir un brouillon"
     )
