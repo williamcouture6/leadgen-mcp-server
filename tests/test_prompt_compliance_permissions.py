@@ -31,6 +31,13 @@ RANG_LATIN = [
     # 2ᵉ paragraphe de C et D. Allonger cette liste fait PARTIE d'ajouter une
     # permission — sans ça le test tombe, ce qui est exactement le but.
     "1undecies",
+    # 🔴 Le 2026-09-17 : le NOM de l'entreprise. Le juge n'en recevait aucun et
+    # deduisait le vrai du `company_summary`, pendant que le redacteur imprimait
+    # le libelle Google coupe. Deux sources de verite, 67 divergences sur 343
+    # fiches joignables, et un brouillon BLOQUE pour « fait invente » alors que
+    # le redacteur avait obei a sa regle. Depuis la migration 0072, le bloc
+    # « Faits verifies » porte le nom, et c'est LUI qui fait foi.
+    "1duodecies",
 ]
 
 

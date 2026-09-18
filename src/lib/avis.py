@@ -13,6 +13,10 @@ loup sur un chiffre exact.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
+from typing import Any, Mapping
+
 # Plancher de qualité — bloquant trouvé par le 2ᵉ conseil de revue.
 # Mesuré : 89 des 255 (35 %) sont en dessous. A.M.G. Neige 2,3 ⭐ sur 27 avis,
 # Groupe Essa 2,9 sur 504, Herbofleurs 3,0 sur **2 avis**. Sans plancher, un
@@ -45,8 +49,216 @@ def bloc_avis_autorise(
 _SEPARATEURS_NOM = ("-", "|", ",", "/", ":", "–", "—")
 
 
+# ── Le nom d'usage : ce que l'entreprise s'appelle vraiment ─────────────────
+#
+# 🔴 CE QUE CE BLOC FERME : DEUX SOURCES DE VERITE POUR UN SEUL NOM.
+#
+# Mesure du 2026-09-17, sur les 343 entreprises ayant un contact joignable :
+# **67 (20 %)** portent un nom que le REDACTEUR imprime differemment de ce que
+# le JUGE lit. Le redacteur recevait `companies.name` (Google Places) coupe par
+# `nom_commercial` ; le juge ne recevait AUCUN nom et deduisait le vrai du
+# `company_summary`, ecrit en lisant le site. Rien ne les reliait.
+#
+# Trois brouillons refuses le meme soir, dont un BLOQUE :
+#   · « Vitres & Gouttieres - 123Entretien » -> le courriel a attribue la note
+#     Google a « Vitres & Gouttieres ». Elle s'appelle 123Entretien. BLOCKED,
+#     « fait invente sur CE prospect » ;
+#   · « Paysagement Deneigement Gagne » -> son vrai nom est Paysagement Gagne ;
+#   · « lavage des vitres Entretien Menager •Jolie Quebec » -> libelle brut
+#     recopie tel quel dans le corps.
+#
+# ⚠️ POURQUOI ON N'A PAS ETENDU `nom_commercial`, et pourquoi il ne faut pas
+# reessayer : sa regle suppose « vrai nom a GAUCHE, mots-cles a DROITE ». Or
+# « Vitres Royal - Lavages de Vitres » a son vrai nom a gauche, et
+# « Exterminateur Laval - Morin Extermination Inc. » a droite. Aucune
+# heuristique deterministe ne choisit le bon cote : chaque regle ajoutee
+# FABRIQUE de nouveaux noms faux. Et 14 des 20 pires cas n'ont aucun
+# separateur — le bourrage est a l'interieur du nom.
+#
+# Decision William, 2026-09-17 (option 2 d'un comparatif a quatre).
+
+# Les memes listes que `tools/research.py:363-387`, RECOPIEES a dessein :
+# `lib/` ne peut pas dependre de `tools/` sans inverser la dependance. Si l'une
+# des deux change, l'autre doit suivre — `tests/test_nom_usage.py` le verifie.
+#
+# ⚠️ `_NOM_MOTS_GEO` de `research.py` n'est PAS reprise, et c'est le point
+# delicat : la-bas on cherche le RADICAL DE MARQUE, donc la geographie est du
+# bruit. Ici on cherche l'EGALITE entre deux ecritures du meme nom, et
+# « Jolie Quebec » perdrait la moitie du sien.
+_MOTS_NON_SIGNIFIANTS = frozenset({
+    # suffixes legaux
+    "inc", "incorporee", "incorporated", "ltee", "ltd", "limitee", "limited",
+    "enr", "senc", "sencrl", "srl", "sa", "cie", "corp", "co",
+    # mots outils
+    "le", "la", "les", "l", "de", "du", "des", "d", "et", "en", "au", "aux",
+    "a", "the", "of", "and", "pour", "chez", "sur", "par",
+    # enveloppes corporatives
+    "groupe", "groupes", "entreprise", "entreprises", "compagnie", "company",
+    "service", "services", "equipe", "team",
+})
+
+# Au-dela, ce n'est plus un nom : c'est un slogan ou une phrase du resume.
+_NOM_USAGE_MAX_MOTS = 6
+# Meme seuil que `research._NOM_RADICAL_MIN`, pour la meme raison : en dessous
+# de 5 caracteres, une sous-chaine apparie n'importe quoi.
+_NOM_USAGE_COMPACT_MIN = 5
+
+
+def _tokens_de_nom(texte: str) -> tuple[list[str], list[str], str]:
+    """(tokens significatifs, tokens BRUTS, forme compacte) — sans accents.
+
+    ⚠️ On GARDE les tokens d'une lettre et les nombres, contrairement a
+    `research._tokens_nom`. Les jeter accepterait « N. Theoret » pour
+    « Deneigement Theoret » — le token « n » est justement ce qui prouve que le
+    candidat dit autre chose.
+    """
+    plat = unicodedata.normalize("NFKD", texte.lower())
+    plat = "".join(c for c in plat if not unicodedata.combining(c))
+    bruts = [t for t in re.split(r"[^a-z0-9]+", plat) if t]
+    significatifs = [t for t in bruts if t not in _MOTS_NON_SIGNIFIANTS]
+    return significatifs, bruts, "".join(bruts)
+
+
+def nom_usage_fiable(candidat: str | None, nom_brut: str | None) -> str | None:
+    """Le nom rendu par le modele, ou None s'il ne se prouve pas depuis Google.
+
+    🔴 CE QU'ELLE PROUVE, ET CE QU'ELLE NE PROUVE PAS. Elle verifie que le
+    candidat est CONTENU dans ce que Google affiche — pas qu'il est le bon nom.
+    Un modele qui rendrait « Deneigement » pour « Paysagement Deneigement
+    Gagne » passerait. C'est un faux positif possible, non mesure ; le dry-run
+    du backfill est ce qui le montrera.
+
+    Le choix assume est la PRECISION contre le rappel : un nom d'usage vrai mais
+    absent du libelle Google (site « AquaVerre », Google « Lavage de vitres
+    Montreal ») est refuse. On ne peut pas le prouver, donc on ne l'imprime pas
+    — et le repli reste le comportement d'avant, jamais pire.
+    """
+    if not isinstance(candidat, str) or not isinstance(nom_brut, str):
+        return None
+    propre = re.sub(r"\s+", " ", candidat).strip()
+
+    # 🔴 DEUX NETTOYAGES TROUVES PAR UN GALOP D'ESSAI SUR 18 FICHES REELLES,
+    # avant tout deploiement. Sans eux, la garde acceptait des noms exacts
+    # mais imprononcables dans un courriel :
+    #
+    #   · « Symetric (Cedres Gatineau) » — le modele GLOSE entre parentheses
+    #     pour rattacher le nom du site au libelle Google. La glose n'est pas
+    #     le nom : on la retire, et il reste « Symetric », qui est justement
+    #     le bon.
+    #   · « Les Entreprises J.S. Lauzon Inc » — le suffixe legal en pleine
+    #     phrase parlee (« ... Inc a 4,2 etoiles sur 13 avis »). Le corps
+    #     tutoie ; il ne dit pas « Inc ».
+    #
+    # Les deux se retirent AVANT la comparaison, jamais apres : un nom reduit
+    # doit encore se prouver contre le libelle Google.
+    # ⚠️ EN QUEUE SEULEMENT. Retirer toutes les parentheses recomposait un nom :
+    # « Foo (Bar) Baz » devenait « Foo Baz », qui ne s'ecrit nulle part. La glose
+    # du modele arrive toujours a la fin (« Symetric (Cedres Gatineau) »).
+    propre = re.sub(r"\s*\([^)]*\)\s*$", "", propre).strip()
+    propre = re.sub(
+        r"[\s,]+(inc|ltee|ltd|limitee|enr|senc|sencrl|srl|cie|corp)\.?$",
+        "", propre, flags=re.IGNORECASE,
+    ).strip()
+    propre = propre.strip(" \t\n-|,/:•·–—.")
+    if not propre:
+        return None
+
+    # 1. Un nom d'usage n'est pas une enumeration. Sans cette regle, le modele
+    #    qui recopie le libelle Google bourre — qu'il a sous les yeux dans son
+    #    prompt — le ferait accepter par l'inclusion : on imprimerait le
+    #    bourrage ENTIER, pire qu'aujourd'hui.
+    # ⚠️ LA VIRGULE EST UNE EXCEPTION, et l'oublier contredisait `nom_commercial`
+    # 100 lignes plus bas — qui la traite deja ainsi depuis le 2026-08-30 :
+    # elle s'ecrit COLLEE au mot qui precede (« Piscines Elegance, Quebec »),
+    # donc exiger une espace devant elle ne couperait jamais rien.
+    #
+    # Sans cette exception, il suffisait au modele de recopier le libelle Google
+    # en remplacant le tiret par une virgule pour que le bourrage ENTIER passe :
+    # « Vitres & Gouttieres, 123Entretien » etait accepte. 33 fiches non
+    # terminales portent une virgule dans leur nom. Trouve par un conseil de
+    # relecture avant tout deploiement.
+    if "•" in propre or "," in propre:
+        return None
+    if any(f" {sep}" in propre for sep in _SEPARATEURS_NOM):
+        return None
+
+    mots_candidat, bruts_candidat, compact_candidat = _tokens_de_nom(propre)
+    mots_brut, bruts_brut, compact_brut = _tokens_de_nom(nom_brut)
+
+    # 2. « Les », « Inc. », « Services » : rien de significatif. C'est le cas
+    #    mesure — le modele a rendu « Les » pour « Lavage de vitres Services
+    #    Aqua-Verre inc. ».
+    if not mots_candidat:
+        return None
+    if len(mots_candidat) > _NOM_USAGE_MAX_MOTS:
+        return None
+
+    # 3. 🔴 INCLUSION SUR LES TOKENS BRUTS, PAS SEULEMENT SIGNIFIANTS.
+    #
+    #    Ne comparer que les tokens significatifs laissait le modele AJOUTER une
+    #    enveloppe que Google ne montre nulle part — « groupe », « service »,
+    #    « les » sont dans `_MOTS_NON_SIGNIFIANTS`, donc invisibles a la
+    #    comparaison. Mesure du conseil de relecture, avant deploiement :
+    #
+    #        ('Groupe Sani',  'Sani Nettoyage')        -> 'Groupe Sani'   ❌
+    #        ('Service Pro',  'Pro Deneigement Laval') -> 'Service Pro'   ❌
+    #        ('Les Toitures', 'Toitures Quebec')       -> 'Les Toitures'  ❌
+    #
+    #    Un mot que rien ne prouve, dans la premiere ligne que le prospect lit :
+    #    c'est exactement le « fait invente sur CE prospect » que cette colonne
+    #    existe pour empecher. La docstring PROMETTAIT l'inclusion ; elle la
+    #    tient maintenant.
+    #
+    #    ⚠️ Ce que ca coute, assume : « SLGN Groupe » (lu sur le site) est refuse
+    #    parce que « groupe » n'est pas dans le libelle Google « SLGN
+    #    Deneigement ». On retombe sur le libelle Google. C'est le bon sens du
+    #    compromis : on n'imprime que ce qu'on peut prouver.
+    #
+    #    Accepte toujours : « Paysagement Gagne » ⊂ « Paysagement Deneigement
+    #    Gagne » (bourrage interne), « 123Entretien » ⊂ « Vitres & Gouttieres -
+    #    123Entretien » (le vrai nom etait a DROITE).
+    if set(bruts_candidat) <= set(bruts_brut):
+        return propre
+
+    # 4. Repli sur la forme collee : « 123 Entretien » (site) contre
+    #    « 123Entretien » (Google), ou « A Point » contre « APoint Deneigement ».
+    if (
+        len(compact_candidat) >= _NOM_USAGE_COMPACT_MIN
+        and compact_candidat in compact_brut
+    ):
+        return propre
+
+    return None
+
+
+def nom_a_imprimer(company: Mapping[str, Any]) -> str:
+    """LE seul point de resolution du nom, pour le redacteur ET pour le juge.
+
+    Les deux doivent appeler CECI, jamais `nom_commercial` directement : c'est
+    le fait qu'ils resolvaient le nom chacun de leur cote qui a produit le
+    blocage du 2026-09-17.
+
+    `nom_usage` vide — c'est-a-dire les 1132 fiches au jour 1 — rend exactement
+    ce que le redacteur imprimait avant. Le repli n'est pas une degradation,
+    c'est le comportement d'hier.
+    """
+    usage = company.get("nom_usage")
+    if isinstance(usage, str) and usage.strip():
+        return usage.strip()
+    return nom_commercial(company.get("name"))
+
+
 def nom_commercial(nom_brut: str | None) -> str:
-    """Le nom d'entreprise tel qu'il doit apparaitre dans le corps.
+    """LE REPLI, quand `companies.nom_usage` est vide — voir `nom_a_imprimer`.
+
+    ⚠️ Cette fonction a ete l'autorite d'impression jusqu'a la migration 0072
+    du 2026-09-17. Elle ne l'est plus : le redacteur et le juge passent
+    desormais par `nom_a_imprimer`, qui prefere le nom lu sur le site. Ne pas
+    l'appeler directement depuis un chemin de prompt — c'est le fait que les
+    deux acteurs resolvaient le nom chacun de leur cote qui a produit le
+    blocage du 2026-09-17.
+
+    Ce qu'elle fait, et qui reste vrai comme repli :
 
     🔴 Les noms en base viennent de fiches Google BOURREES DE MOTS-CLES.
     Mesure reelle : « Vitres Ultra Nettes -lavage de vitres residentiel
@@ -172,6 +384,7 @@ def bloc_faits_verifies(
     *,
     nb_services: int | None = None,
     phrase_du_rush: str | None = None,
+    nom_entreprise: str | None = None,
 ) -> str:
     """Le bloc court et distinct, servi au rédacteur et au juge.
 
@@ -183,6 +396,24 @@ def bloc_faits_verifies(
     la façon dont un chiffre inventé apparaît.
     """
     entete = "## Faits vérifiés (valeurs de colonne — à recopier au mot près, jamais à arrondir ni à embellir)"
+
+    # 🔴 LE NOM DANS LE BLOC : C'EST TOUT L'OBJET DE LA 0072.
+    #
+    # Avant elle, le rédacteur résolvait le nom de son côté (`nom_commercial`)
+    # et le juge n'en recevait AUCUN — il déduisait le vrai du `company_summary`.
+    # Deux sources de vérité, 67 divergences sur 343 fiches joignables, et un
+    # brouillon BLOQUÉ le 2026-09-17 pour « fait inventé » alors que le
+    # rédacteur avait obéi à sa règle.
+    #
+    # Le bloc étant servi aux DEUX (personalize.py et compliance.py), y mettre
+    # le nom est ce qui les remet d'accord — il n'y a plus qu'une valeur.
+    if nom_entreprise:
+        entete += (
+            f"\n- Nom de l'entreprise : **{nom_entreprise}**\n"
+            "  C'est le nom à écrire, tel quel. Il fait foi **même s'il diffère\n"
+            "  du nom qui apparaît dans le research_json** : celui-ci est un\n"
+            "  résumé rédigé à une autre date, pas une valeur de colonne."
+        )
 
     if google_rating is None and google_reviews_count is None:
         return (

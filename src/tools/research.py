@@ -37,6 +37,7 @@ from tenacity import (
 )
 
 from ..config import settings
+from ..lib.avis import nom_usage_fiable
 from ..lib.lead_scoring import JOURS_PLAINTE_RECENTE, NOTE_MAX_PLAINTE
 from ..lib import brandkit_parse as bk_parse
 from ..lib.json_du_modele import objet_json_du_modele
@@ -643,8 +644,19 @@ def sans_diagnostic(research_json: dict[str, Any] | None) -> dict[str, Any]:
     Le diagnostic est de la télémétrie interne : il n'a rien à faire dans un
     prompt LLM aval (personalize, juge compliance), où il ne ferait qu'ajouter
     du bruit et des adresses tierces. Copie superficielle — l'original intact.
+
+    🔴 `nom_usage` PART AUSSI, et pour une raison differente : c'est le candidat
+    BRUT du modele, AVANT la garde. Il reste dans `research_json` comme trace
+    (elle permet de mesurer le taux de refus en SQL), mais le laisser dans le
+    prompt donnerait aux deux acteurs un nom que la garde a peut-etre refuse —
+    a cote du bloc « Faits verifies » qui en dit un autre. On recreerait la
+    divergence que la 0072 ferme. Le nom retenu passe par le bloc, jamais par
+    le dump JSON.
     """
-    return {k: v for k, v in (research_json or {}).items() if k != DIAGNOSTIC_KEY}
+    return {
+        k: v for k, v in (research_json or {}).items()
+        if k not in (DIAGNOSTIC_KEY, "nom_usage")
+    }
 
 
 def _extract_emails_from_html(
@@ -1541,6 +1553,10 @@ _RESEARCH_TOOL: dict[str, Any] = {
         "type": "object",
         "properties": {
             "company_summary": {"type": ["string", "null"]},
+            # ⚠️ PAS dans `required`, et c'est deliberé : un modele force de
+            # remplir un champ le remplit — c'est comme ca qu'on obtient « Les »
+            # comme nom d'entreprise. Mieux vaut `null` qu'une invention.
+            "nom_usage": {"type": ["string", "null"]},
             "services_offered": {"type": "array", "items": {"type": "string"}},
             "size_signals": {
                 "type": ["object", "null"],
@@ -1750,6 +1766,9 @@ class ResearchCompanyOut(BaseModel):
     site_status: str
     tech_keyword_hits: list[str]
     emails_found: list[dict[str, Any]] = []  # [{email, local, domain, kind, source_url}]
+    # Le nom d'usage APRES la garde — None si elle a refuse le candidat du
+    # modele. Voir `lib/avis.nom_usage_fiable` et la migration 0072.
+    nom_usage: str | None = None
 
 
 async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
@@ -1782,6 +1801,28 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
     research_json = dict(llm_result.research_json or {})
     research_json[DIAGNOSTIC_KEY] = site.get(DIAGNOSTIC_KEY) or _diag_passe_neuve("unknown")
 
+    # 🔴 LA GARDE S'APPLIQUE ICI, et nulle part ailleurs : c'est le seul endroit
+    # qui a les deux valeurs sous la main — le candidat du modele et le libelle
+    # Google (`nom`). `update_company_research` ne recoit que `company_id` et le
+    # JSON ; y mettre la garde couterait un SELECT de plus par fiche.
+    #
+    # ⚠️ Le candidat BRUT reste dans `research_json` : c'est la trace qui permet
+    # de mesurer le taux de refus de la garde. `sans_diagnostic` l'ecarte des
+    # prompts aval.
+    #
+    # 🔴 LE CRITERE JUSTE EST « colonne VIDE alors que le JSON porte un
+    # candidat », jamais « les deux different » :
+    #
+    #     select count(*) from companies
+    #     where nom_usage is null and research_json->>'nom_usage' is not null;
+    #
+    # La garde NETTOIE avant de retenir (glose entre parentheses, suffixe
+    # legal), donc « Symetric (Cedres Gatineau) » donne colonne = « Symetric »
+    # et JSON = la chaine glosee. Une simple inegalite compterait ces
+    # acceptations comme des refus — et c'est ce taux qui decide s'il faut
+    # ajuster la garde avant le rattrapage.
+    nom_usage_retenu = nom_usage_fiable(research_json.get("nom_usage"), nom)
+
     # Les signaux comptables sont mesurés ici et priment sur ce que le modèle
     # aurait avancé : un compte d'avis n'est pas matière à interprétation. Une
     # mesure inconnue (`None`) ne recouvre jamais une observation du modèle.
@@ -1805,6 +1846,7 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
             site_status=site.get("status", "unknown"),
             tech_keyword_hits=site.get("tech_keyword_hits", []),
             emails_found=site.get("emails_found", []),
+            nom_usage=nom_usage_retenu,
         )
 
     lp_brut = research_json.get("lead_potential")
@@ -1846,4 +1888,5 @@ async def research_company(payload: ResearchCompanyIn) -> ResearchCompanyOut:
         site_status=site.get("status", "unknown"),
         tech_keyword_hits=site.get("tech_keyword_hits", []),
         emails_found=site.get("emails_found", []),
+        nom_usage=nom_usage_retenu,
     )

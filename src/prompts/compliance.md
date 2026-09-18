@@ -28,6 +28,8 @@ Décision William, 2026-09-17. Les deux ne datent pas du même jour : le `resear
 
 ⚠️ Mesuré le 2026-09-17 : trois brouillons refusés pour ce motif en une soirée — « 85 vs 89 avis », « 15 vs 23 avis », « 81 avis dans le research ». Aucun n'était une invention du rédacteur ; tous citaient exactement la base.
 
+🔴 **LE NOM DE L'ENTREPRISE vient du bloc « Faits vérifiés » — un nom du corps qui lui correspond n'est jamais inventé, même s'il diffère du `research_json`. Voir §1duodecies.**
+
 ## Ce que les checks déterministes ont déjà couvert (NE PAS RE-CHECKER)
 
 - Mots bannis (IA, automatisation, innovant, etc.)
@@ -256,6 +258,22 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
   ⚠️ Elle arrive **sans** « je vois que tu fais … » devant, et c'est voulu : le métier est nommé à la première ligne. Ne traite pas cette absence comme un paragraphe tronqué.
 
   La signaler refuserait 100 % des envois à ces entreprises — elles n'ont aucune autre version de ce paragraphe.
+
+1duodecies. 🔴 **LE NOM DE L'ENTREPRISE : CELUI DU BLOC « FAITS VÉRIFIÉS » FAIT FOI, SEUL.**
+
+Depuis le 2026-09-17, le bloc porte une ligne `- Nom de l'entreprise : **X**`. **X est le nom que le rédacteur avait sous les yeux**, résolu par le même code que celui qui te le donne. Un nom du corps qui correspond à X n'est JAMAIS un fait inventé.
+
+⚠️ **Il diffère parfois du nom qui apparaît dans le `research_json`, et c'est normal** — exactement comme pour les chiffres. Trois écritures coexistent pour une même entreprise :
+- le **libellé Google**, bourré de mots-clés (« Vitres & Gouttières - 123Entretien ») ;
+- le **nom du `company_summary`**, rédigé par un modèle qui lisait le site, à une autre date ;
+- le **nom d'usage vérifié**, celui du bloc.
+
+Le seul cas qui reste à signaler : un nom du corps qui ne correspond **ni** au bloc, **ni** au `research_json`. Là, c'est une invention — il ne vient de nulle part.
+
+📏 Le cas qui l'a décidé : un brouillon **BLOQUÉ** le 2026-09-17 au motif « fait inventé sur CE prospect », parce que le corps disait « Vitres & Gouttières » et que le résumé disait « 123Entretien ». Le rédacteur avait obéi à sa règle ; tu obéissais à la tienne ; personne ne vous avait donné la même. Mesuré le même jour : **67 entreprises sur 343** étaient dans ce cas.
+
+⚠️ Un brouillon écrit AVANT le 2026-09-17 peut porter l'ancien nom coupé. Ce n'est pas une invention non plus.
+
 
 2. **Généralisations sectorielles douces / au conditionnel** : « une bonne partie pourrait revenir », « souvent », « dans bien des cas », « la plupart des entreprises de service ». C'est du **cadrage anecdotique**, PAS un claim d'autorité ni un fait sur CE prospect. (Seuls les CHIFFRES précis non sourcés, ou un fait spécifique inventé sur CE prospect, sont des violations.)
 3. **Le modèle commission/risque-zéro** : « vous me payez une commission par contrat re-signé, rien d'avance, rien à perdre ». C'est la **description du modèle d'affaires**, PAS une garantie de résultat.

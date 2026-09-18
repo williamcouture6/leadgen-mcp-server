@@ -90,6 +90,7 @@ def _message_utilisateur_juge(
     google_reviews_count: int | None = None,
     followups: dict[str, str] | None = None,
     industry: str | None = None,
+    nom_entreprise: str | None = None,
 ) -> str:
     """Ce que le juge voit. Extrait en fonction pure pour être testable sans
     appeler Anthropic — un bloc qui disparaît du prompt doit casser un test,
@@ -129,6 +130,7 @@ def _message_utilisateur_juge(
             google_rating,
             google_reviews_count,
             nb_services=len((research_json or {}).get('services_offered') or []),
+            nom_entreprise=nom_entreprise,
             phrase_du_rush=lexique_pour(
                 next(iter(classer_services(
                     (research_json or {}).get('services_offered'),
@@ -169,6 +171,7 @@ def _llm_judge(
     google_reviews_count: int | None = None,
     followups: dict[str, str] | None = None,
     industry: str | None = None,
+    nom_entreprise: str | None = None,
 ) -> dict[str, Any]:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -178,6 +181,7 @@ def _llm_judge(
     user = _message_utilisateur_juge(
         body, subject, research_json, social_proof, contact,
         google_rating, google_reviews_count, followups, industry,
+        nom_entreprise,
     )
     resp = client.messages.create(
         model=model,
@@ -243,6 +247,7 @@ async def compliance_check(
     google_reviews_count: int | None = None,
     followups: dict[str, str] | None = None,
     industry: str | None = None,
+    nom_entreprise: str | None = None,
 ) -> ComplianceCheckOut:
     """Lance les 2 layers de compliance sur un draft donné.
 
@@ -497,6 +502,7 @@ async def compliance_check(
             llm_verdict = await asyncio.to_thread(
                 _llm_judge, body, subject, research_json, social_proof, contact, model,
                 2500, google_rating, google_reviews_count, followups, industry,
+                nom_entreprise,
             )
         except Exception as e:  # noqa: BLE001
             llm_verdict = {"error": f"LLM judge failed: {type(e).__name__}: {e}"}

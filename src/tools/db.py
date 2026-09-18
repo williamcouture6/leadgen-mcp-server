@@ -1392,7 +1392,7 @@ async def _retenir(
             # lead_potential_* : SERVENT UNIQUEMENT à ordonner le lot ; ils sont
             # retirés avant d'être rendus (voir CHAMPS_INTERNES).
             "select": (
-                "id,name,domain,website,city,icp_segment,industry,research_json,track,"
+                "id,name,nom_usage,domain,website,city,icp_segment,industry,research_json,track,"
                 "google_rating,google_reviews_count,google_place_id,"
                 # lead_potential_* : SERVENT UNIQUEMENT à ordonner le lot ; ils
                 # sont retirés avant d'être rendus (voir CHAMPS_INTERNES).
@@ -1945,6 +1945,8 @@ async def update_company_research(
     company_id: str,
     research_json: dict[str, Any],
     emails_found: list[dict[str, Any]] | None = None,
+    *,
+    nom_usage: str | None = None,
 ) -> dict[str, Any]:
     """Patch companies.research_json (+ colonnes flat lead_potential_* et décideur)
     et pose le status selon ce qui a été TROUVÉ.
@@ -2006,6 +2008,12 @@ async def update_company_research(
     }
     if motif_disqualifiant:
         patch["disqualified_reason"] = motif_disqualifiant
+    # 🔴 LA CLE EST ABSENTE QUAND LA GARDE A REFUSE, jamais posee a None — meme
+    # convention que `disqualified_reason` juste au-dessus, et pour la meme
+    # raison : une re-recherche a 90 jours dont le candidat serait refuse
+    # EFFACERAIT sinon un nom bon, valide par un passage precedent.
+    if nom_usage:
+        patch["nom_usage"] = nom_usage
     patch.update(extract_lead_potential_patch(research_json))
     rows = await db.update(
         "companies",

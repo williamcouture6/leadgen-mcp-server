@@ -29,6 +29,7 @@ from .lib.gabarits import (
 from .lib.metiers import resoudre_metiers
 from .lib.relances import CLES_RELANCES
 from .tools import booking as booking_tools
+from .lib.avis import nom_a_imprimer
 from .tools import compliance as compliance_tools
 from .tools import db as db_tools
 from .tools import maps as maps_tools
@@ -2093,7 +2094,8 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
         )
 
     resultat_maj = await db_tools.update_company_research(
-        payload.company_id, out.research_json, emails_found=out.emails_found
+        payload.company_id, out.research_json, emails_found=out.emails_found,
+        nom_usage=out.nom_usage,
     )
     if resultat_maj["statut_metiers"] in ("echec", "absente"):
         # Le second UPDATE de `update_company_research` ne lève jamais (il ne doit
@@ -2841,6 +2843,11 @@ async def _personalize_one(
                     "google_rating": company_row.get("google_rating"),
                     "google_reviews_count": company_row.get("google_reviews_count"),
                     "google_place_id": company_row.get("google_place_id"),
+                    # ⚠️ SANS CETTE LIGNE, `nom_a_imprimer` ne verrait JAMAIS la
+                    # colonne et retomberait sur le repli POUR TOUJOURS, sans la
+                    # moindre erreur. Ce dict est reconstruit a la main : une
+                    # colonne ajoutee au SELECT n'y arrive pas toute seule.
+                    "nom_usage": company_row.get("nom_usage"),
                 },
                 contact=_contact_for_prompt(contact_row),
                 social_proof=social_proof,
@@ -3017,7 +3024,7 @@ async def personalize_contact(payload: PersonalizeContactIn) -> PersonalizeConta
             # (aucun chiffre = rien à vérifier). La dégradation est invisible,
             # et c'est le test de fumée lui-même qui ment.
             "select": (
-                "id,name,website,city,icp_segment,industry,research_json,track,"
+                "id,name,nom_usage,website,city,icp_segment,industry,research_json,track,"
                 "google_rating,google_reviews_count,google_place_id"
             ),
             "id": f"eq.{contact['company_id']}",
@@ -4265,8 +4272,17 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             # et depuis le 2026-09-14 le secteur y entre. Sans la colonne
             # ici, il lit « aucun métier » sous un courriel qui en nomme un,
             # et son contrôle de saison part sur la mauvaise base.
+            # 🔴 `name` ET `nom_usage` AJOUTES PAR LA 0072. Avant elle, le juge
+            # ne recevait AUCUN nom — il deduisait le vrai du `company_summary`
+            # pendant que le redacteur imprimait le libelle Google coupe. Deux
+            # sources de verite, 67 divergences sur 343 fiches joignables, et un
+            # brouillon BLOQUE le 2026-09-17 pour « fait invente » alors que le
+            # redacteur avait obei a sa regle.
+            # ⚠️ `name` est indispensable AUSSI : sans lui `nom_a_imprimer` n'a
+            # pas de repli quand `nom_usage` est vide — c'est-a-dire partout au
+            # jour 1.
             "select": (
-                "research_json,track,industry,"
+                "name,nom_usage,research_json,track,industry,"
                 "google_rating,google_reviews_count"
             ),
             "id": f"eq.{company_id}",
@@ -4365,6 +4381,13 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             # 2026-09-14 : sans lui, le juge et l'auteur du courriel ne voient
             # pas la meme entreprise.
             industry=(company_rows[0].get("industry") if company_rows else None),
+            # 🔴 LE MEME NOM QUE LE REDACTEUR, resolu par la MEME fonction.
+            # C'est tout l'objet de la 0072 : avant elle le juge n'en recevait
+            # aucun et deduisait le vrai du `company_summary`, ce qui a bloque
+            # un brouillon conforme le 2026-09-17.
+            nom_entreprise=(
+                nom_a_imprimer(company_rows[0]) if company_rows else None
+            ),
             # Le TRIPLET, pas le seul corps de tri. Sans ca, deux tiers du
             # contenu partent sans avoir ete inspectes par personne.
             followups=msg.get("followups") or None,

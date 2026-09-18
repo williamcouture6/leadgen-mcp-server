@@ -22,7 +22,7 @@ from typing import Any
 from anthropic import Anthropic
 from pydantic import BaseModel
 
-from ..lib.avis import bloc_faits_verifies, nom_commercial
+from ..lib.avis import bloc_faits_verifies, nom_a_imprimer
 from ..lib.lexique_metiers import lexique_pour
 from ..lib.gabarits import est_un_gabarit
 from ..lib.relances import CLES_RELANCES, CORPS_RELANCES
@@ -637,9 +637,12 @@ def _format_input_for_llm(
     aujourdhui: date | None = None,
 ) -> str:
     """Reprend exactement le format du proto CLI (`agents/personalize_agent.py`)."""
-    # Coupe au premier separateur : les noms en base sont des fiches Google
-    # bourrees de mots-cles, et le nom brut pousse le corps hors des bornes.
-    place_name = nom_commercial(company.get("name"))
+    # 🔴 UN SEUL POINT DE RESOLUTION DU NOM, partage avec le juge depuis la
+    # 0072. `nom_a_imprimer` prefere `companies.nom_usage` (le nom lu sur le
+    # site, filtre par la garde) et ne retombe sur le decoupage du libelle
+    # Google que si la colonne est vide — c'est-a-dire, au jour 1, partout.
+    # Le repli n'est pas une degradation : c'est le comportement d'hier.
+    place_name = nom_a_imprimer(company)
     website = company.get("website", "") or ""
     # `research_json` porte aussi la télémétrie du scraper d'emails
     # (`diagnostic_courriels`) : compteurs de rejets + adresses tierces jetées.
@@ -685,6 +688,7 @@ def _format_input_for_llm(
                 # de repli est impossible et demande une forme (« autant X que
                 # Y ») que la fiche ne peut pas produire.
                 nb_services=len(research.get("services_offered") or []),
+                nom_entreprise=place_name,
                 # ⚠️ Le DOMINANT, jamais la scène — et ce n'est pas un oubli.
                 # Le dominant ne dépend pas de la date : le juge, qui relit le
                 # courriel plus tard, en retrouve exactement la même phrase.

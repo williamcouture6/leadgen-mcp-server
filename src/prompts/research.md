@@ -35,6 +35,7 @@ Tu n'écris pas l'email. Tu extrais des **faits vérifiables et des signaux** �
 ```json
 {
   "company_summary": "1-2 phrases factuelles sur ce que fait l'entreprise",
+  "nom_usage": "Le nom sous lequel l'entreprise SE PRÉSENTE sur son site — logo, titre de page, pied de page, « À propos ». 1 à 5 mots. Ce n'est PAS le libellé Google, qui traîne des mots-clés de service et des villes. Si le site n'en montre aucun clairement, mets null.",
   "services_offered": ["service 1", "service 2", ...],
   "size_signals": {
     "estimated_employees_range": "5-10 | 10-25 | 25-50 | 50+ | unknown",
@@ -127,6 +128,16 @@ Un travail mal fait, un retard de chantier, un prix contesté ne sont PAS ce sig
 **Ce que le code mesure lui-même** — n'y touche pas, tes valeurs seraient écrasées : le nombre total d'avis, les avis des 30 derniers jours, **la note la plus basse du lot d'avis**, la fermeture le soir et la fin de semaine (lue sur les horaires Google), la présence d'un outil, **le nom des outils vus**, et la présence d'une prise de rendez-vous en ligne.
 
 **Ce que les poids récompensent**, pour que tes constats soient utiles : une PME qui **perd des demandes faute de réponse**. Une boîte fermée le soir et la fin de semaine alors que son site promet l'urgence 24/7, avec un volume d'appels réel et aucun canal automatisé, est le cœur de cible. Un outil déjà en place ou un service de réponse humain font descendre le score sans jamais la disqualifier — elle reste dans la liste, simplement plus bas (et une boîte qui cumule les deux tombe au plancher, donc en fin de file).
+
+**`nom_usage` — le nom qu'on va lui écrire.**
+
+Ce champ décide du nom imprimé dans le courriel. Trois règles :
+
+1. **Il se LIT sur le site**, jamais ne se déduit du libellé Google. Google traîne des mots-clés : « Vitres & Gouttières - 123Entretien » est une fiche Google ; l'entreprise s'appelle **123Entretien**.
+2. **Un prénom + nom de propriétaire n'est pas un nom d'entreprise.** Pour « Déneigement Théoret », le nom est « Déneigement Théoret », pas « N. Théorêt ».
+3. **Dans le doute, `null`.** Le code a un repli sûr. Un nom inventé, lui, part chez le prospect — et c'est le seul destinataire capable de le démentir en une seconde.
+
+⚠️ Le code REFUSE tout nom qui ne partage aucun mot avec la fiche Google, et retombe alors sur le repli. Tu n'as pas à t'en préoccuper — c'est dit ici pour que tu ne « corriges » pas vers un nom que tu crois meilleur mais que rien ne prouve.
 
 **Disqualifications — la liste est FERMÉE.** Tu ne remplis `disqualifications` que dans ces cinq cas :
 
