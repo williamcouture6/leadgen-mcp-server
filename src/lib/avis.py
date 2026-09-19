@@ -159,7 +159,12 @@ def nom_usage_fiable(candidat: str | None, nom_brut: str | None) -> str | None:
         r"[\s,]+(inc|ltee|ltd|limitee|enr|senc|sencrl|srl|cie|corp)\.?$",
         "", propre, flags=re.IGNORECASE,
     ).strip()
-    propre = propre.strip(" \t\n-|,/:•·–—.")
+    # ⚠️ LE POINT N'EST PAS DANS CETTE LISTE, et c'est voulu : il appartient
+    # aux sigles. « Terrassement S.H. » devenait « Terrassement S.H », qui se
+    # lit comme une coquille dans un courriel — vu au galop d'essai du
+    # rattrapage, sur 510 fiches, avant d'ecrire. Le suffixe legal, lui, est
+    # deja retire avec son point par la regle juste au-dessus (`inc\.?$`).
+    propre = propre.strip(" \t\n-|,/:•·–—")
     if not propre:
         return None
 
