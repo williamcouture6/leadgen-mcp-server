@@ -1,123 +1,211 @@
-"""Le juge doit garder le droit de refuser un métier qui décrit un AUTRE geste.
+"""Le juge REÇOIT la liste des métiers — il ne la reconstitue plus.
 
-🔴 DÉFAUT INTRODUIT LE 2026-09-16, TROUVÉ PAR UN CONSEIL DE RELECTURE LE
-2026-09-17 ET CORRIGÉ LE MÊME JOUR.
+🔴 CE FICHIER A ÉTÉ RETOURNÉ LE 2026-09-18, et son histoire est la leçon.
 
-Pour supprimer un faux positif sur « pavage » (le juge refusait « du pavage »
-chez une entreprise qui liste « Nivellement de pavé uni »), une consigne avait
-été ajoutée au prompt du juge :
+**Version du 2026-09-17.** Il exigeait que le prompt du juge RÉENSEIGNE chaque
+règle du dictionnaire : la table libellé → famille, les quatre exclusions
+(gazon en rouleau, clôture de piscine, punaises de gazon, nettoyage de toit),
+les exigences de `toiture` et `piscine`. La raison était juste à l'époque :
 
-    « tu n'as PAS à arbitrer entre poser, réparer et niveler. Découper une
-      famille en sous-métiers est un jugement qui ne t'appartient pas.
-      Le dictionnaire du code a déjà tranché. »
+    « le juge ne reçoit JAMAIS la sortie de `lib/metiers` ; il est le SEUL
+      contrôle qui lit les métiers nommés ; le désarmer revenait à n'avoir
+      plus rien. »
 
-Le cas visé était bon — `RACINES["pavage"]` contient vraiment « pave uni ».
-C'est la GÉNÉRALISATION qui ouvrait un trou, pour deux raisons mesurées :
+**Ce qui a changé.** Le bloc « Faits vérifiés » — déjà servi au rédacteur ET au
+juge — porte désormais `- Métiers reconnus : …`, produit par
+`lib/metiers.metiers_nommables`. La prémisse « il ne reçoit jamais la sortie du
+dictionnaire » est tombée le jour même.
 
-  1. **Le juge ne reçoit jamais les familles résolues.** `_message_utilisateur_juge`
-     lui envoie le corps, les relances, les faits vérifiés, la fiche contact,
-     le `research_json` et `social_proof` — jamais la sortie de `lib/metiers`.
-     On le renvoyait donc à une autorité qu'il ne peut pas consulter.
-  2. **Le dictionnaire fait lui-même cet arbitrage**, et c'est tout l'objet de
-     `EXCLUSIONS` : poser du gazon en rouleau n'est PAS de la tonte, installer
-     une clôture de piscine n'est PAS de l'entretien de piscine. Le commentaire
-     du code dit pourquoi : « il le voit tout de suite ».
+**Pourquoi le retournement était nécessaire, et pas seulement possible.**
+Recopier le dictionnaire dans un prompt crée DEUX vérités. Entre le 15 et le
+18 septembre, chaque phrase ajoutée a réglé un cas en en dérèglant un autre —
+et trois faux positifs mesurés en sont sortis :
 
-Et le juge est le SEUL garde-fou sur ce point : aucun `check_*` déterministe ne
-lit les métiers nommés dans le corps. Le désarmer revenait à n'avoir plus rien.
+  · « tonte » refusée chez *Entretien V Boudreault* (« Entretien de gazon »),
+    TROIS brouillons, trois refus, la même phrase, contact presque gelé ;
+  · « pavage » refusée chez *Scellant Déneigement XTRA* (scellant de revêtement) ;
+  · « ménage » refusée chez *Panorama services* (« Entretien ménager »).
 
-Ce fichier attache le prompt au dictionnaire, pour qu'ils ne puissent plus
-diverger en silence.
+Ce fichier garde maintenant l'inverse : **aucune règle du dictionnaire ne doit
+revenir dans le prompt**, et la liste doit vraiment atteindre le juge.
 """
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
 
-from src.lib.metiers import EXCLUSIONS, EXIGE
+from src.lib.avis import bloc_faits_verifies
+from src.lib.metiers import EXCLUSIONS, EXIGE, metiers_nommables
 
 PROMPT = (
     Path(__file__).resolve().parent.parent / "src" / "prompts" / "compliance.md"
 ).read_text(encoding="utf-8")
 
-# Les formulations qui RETIRAIENT au juge son jugement. Elles ne doivent pas
-# revenir, sous aucune des deux formes essayées.
-PHRASES_QUI_DESARMENT = (
-    "ne t'appartient pas",
-    "dictionnaire du code a déjà tranché",
-    "PAS à arbitrer",
-)
 
-
-@pytest.mark.parametrize("phrase", PHRASES_QUI_DESARMENT)
-def test_aucune_consigne_ne_retire_au_juge_son_jugement(phrase: str) -> None:
-    assert phrase not in PROMPT, (
-        f"« {phrase} » est de retour dans le prompt du juge. Il est le SEUL "
-        "contrôle qui lit les métiers nommés — aucun check déterministe ne le "
-        "fait. Lui dire de s'en remettre à autre chose ne lui laisse qu'une "
-        "conduite possible : tout accepter."
-    )
+# ── Le prompt ne doit plus contenir le dictionnaire ─────────────────────────
 
 
 @pytest.mark.parametrize("famille", sorted(EXCLUSIONS))
-def test_chaque_exclusion_du_dictionnaire_est_expliquee_au_juge(
-    famille: str,
-) -> None:
-    """🔴 LE LIEN QUI MANQUAIT.
+def test_aucune_exclusion_n_est_recopiee_dans_le_prompt(famille: str) -> None:
+    """🔴 L'INVERSE EXACT DE CE QUE CE TEST EXIGEAIT HIER.
 
-    `EXCLUSIONS` dit au CODE de ne pas classer un libellé dans une famille. Mais
-    le rédacteur peut nommer cette famille quand même, et alors seul le juge
-    peut l'attraper. Si une famille entre dans `EXCLUSIONS` sans que le prompt
-    apprenne la distinction, le juge laisse passer exactement le mensonge que
-    l'exclusion voulait empêcher.
+    Une exclusion recopiée dans le prompt est une seconde vérité : le jour où
+    `lib/metiers` change, le prompt dit X et la liste dit Y — et c'est le
+    prompt que le juge lit en premier.
 
-    On exige donc que la famille soit nommée dans le prompt, ET qu'au moins un
-    des libellés exclus y figure — sinon la consigne serait trop vague pour
-    servir.
+    La protection n'est pas perdue, elle est déplacée : une famille exclue
+    n'entre pas dans `metiers_nommables`, donc elle est hors liste, donc le
+    juge la refuse mécaniquement. Vérifié plus bas.
     """
-    assert famille in PROMPT, (
-        f"la famille « {famille} » a une exclusion dans lib/metiers mais le "
-        "prompt du juge ne la nomme jamais"
-    )
-    libelles = EXCLUSIONS[famille]
-    # Les libellés du dictionnaire sont sans accents (ils servent à comparer du
-    # texte déjà normalisé) ; le prompt, lui, s'écrit en français lisible.
-    def _sans_accents(t: str) -> str:
-        import unicodedata
-
-        return "".join(
-            c for c in unicodedata.normalize("NFD", t.lower())
-            if unicodedata.category(c) != "Mn"
+    for libelle in EXCLUSIONS[famille]:
+        assert libelle not in PROMPT.lower(), (
+            f"« {libelle} » est revenu dans le prompt du juge. Le dictionnaire "
+            "ne se recopie pas : il se SERT, par le bloc « Faits vérifiés »."
         )
 
-    prompt_nu = _sans_accents(PROMPT)
-    assert any(_sans_accents(x) in prompt_nu for x in libelles), (
-        f"le prompt nomme « {famille} » mais aucun des libellés exclus "
-        f"{libelles} : la consigne est trop vague pour que le juge sache quoi "
-        "refuser"
-    )
+
+# ⚠️ CERTAINS MOTS D'EXIGENCE SONT DES MOTS FRANÇAIS COURANTS — « entretien »,
+# « nettoyage », « installation », « réparation ». Leur simple présence dans le
+# prompt ne prouve RIEN : « Entretien de gazon » y figure comme exemple
+# historique, pas comme règle. Une première version de ce test les cherchait
+# tous et accusait cet exemple.
+#
+# On ne teste donc que les mots DISTINCTIFS : ceux qu'on n'écrit pas par
+# hasard, et dont la présence signale vraiment une règle recopiée.
+_MOTS_DISTINCTIFS = frozenset({
+    "bardeau", "membrane", "elastomere", "refection", "couvreur",
+    "toiture neuve", "hebdomadaire", "saisonnier",
+})
 
 
 @pytest.mark.parametrize("famille", sorted(EXIGE))
-def test_chaque_exigence_du_dictionnaire_est_expliquee_au_juge(
+def test_aucune_exigence_DISTINCTIVE_n_est_recopiee_dans_le_prompt(
     famille: str,
 ) -> None:
-    """Même raisonnement que pour les exclusions, dans l'autre sens : `EXIGE`
-    demande un mot qui prouve le métier. `toiture` est né du cas Net-Pro, un
-    laveur de toits classé couvreur."""
-    assert famille in PROMPT, (
-        f"la famille « {famille} » exige un mot qui la prouve (lib/metiers."
-        "EXIGE) mais le prompt du juge ne la nomme jamais"
+    """Les mots qui PROUVENT un métier (« bardeau », « membrane » pour
+    `toiture`) n'ont rien à faire dans le prompt : ils décident de la liste, et
+    la liste suffit au juge."""
+    revenus = [
+        m for m in EXIGE[famille]
+        if m in _MOTS_DISTINCTIFS and m in PROMPT.lower()
+    ]
+    assert not revenus, (
+        f"les mots d'exigence de « {famille} » sont revenus dans le prompt : "
+        f"{revenus}. Le dictionnaire ne se recopie pas, il se sert."
     )
 
 
-def test_le_critere_de_la_frontiere_est_ecrit() -> None:
-    """La règle qui tranche les cas nouveaux, et qui date du 2026-09-02 : on
-    accepte ce qui est LARGE, on refuse ce qui est FAUX. Sans elle, le juge n'a
-    que des exemples et rien pour raisonner sur un cas absent de la liste."""
-    assert "LARGE" in PROMPT and "FAUX" in PROMPT
-    assert "c'est pas ça que je fais" in PROMPT, (
-        "le test du destinataire a disparu : c'est lui qui rend la règle "
-        "applicable à un cas qu'on n'a pas prévu"
+def test_la_liste_des_mots_distinctifs_couvre_bien_les_exigences() -> None:
+    """Le témoin du test ci-dessus : si `EXIGE` gagne une famille dont AUCUN
+    mot n'est distinctif, le test du dessus devient vide et vert pour rien."""
+    for famille, mots in EXIGE.items():
+        assert set(mots) & _MOTS_DISTINCTIFS, (
+            f"aucun mot distinctif pour « {famille} » : le test ne vérifie "
+            "plus rien sur cette famille"
+        )
+
+
+def test_le_prompt_renvoie_le_juge_au_BLOC_pas_a_sa_memoire() -> None:
+    """La contre-épreuve des deux tests du dessus : sans elle, SUPPRIMER toute
+    mention des métiers les rendrait verts."""
+    assert "Métiers reconnus" in PROMPT, (
+        "le prompt ne dit plus au juge où trouver la liste"
     )
+    assert "NE REFAIS PAS LE CLASSEMENT" in PROMPT
+    assert "n'est **JAMAIS** une invention" in PROMPT
+    assert "hors de cette liste" in PROMPT
+
+
+def test_une_famille_de_trop_se_corrige_en_reecrivant() -> None:
+    """⚠️ Un métier mal nommé n'est pas un mensonge sur un fait : il se corrige
+    à la plume. En `blocked`, il coûterait le contact sans réécriture
+    (`_patch_verdict_conformite` ne renvoie que les `needs_revision`)."""
+    assert "`needs_revision`, jamais en `blocked`" in PROMPT
+
+
+# ── La protection est bien passée dans le dictionnaire ──────────────────────
+
+
+@pytest.mark.parametrize(
+    ("cas", "services", "famille_interdite"),
+    [
+        # Les quatre cas que le prompt énumérait hier, un par un.
+        ("poser de la tourbe n'est pas tondre",
+         ["Plantations (arbres, arbustes, gazon en rouleau)"], "tonte"),
+        ("poser une clôture n'est pas entretenir une piscine",
+         ["Installation de clôtures de piscine"], "piscine"),
+        ("les punaises de gazon ne sont pas de l'extermination",
+         ["Tonte de gazon", "Traitement des punaises de gazon"], "extermination"),
+        ("nettoyer un toit n'est pas de la toiture",
+         ["Lavage de vitres", "Nettoyage de toitures"], "toiture"),
+    ],
+)
+def test_la_famille_interdite_n_entre_pas_dans_la_liste(
+    cas: str, services: list[str], famille_interdite: str
+) -> None:
+    """🔴 C'EST ICI QUE LA PROTECTION VIT MAINTENANT.
+
+    Le prompt ne dit plus ces règles — le dictionnaire les applique, et la
+    liste en est le résultat. Hors liste = le juge refuse. Ce test prouve que
+    le retrait du prompt n'a rien ouvert.
+    """
+    assert famille_interdite not in metiers_nommables(services), cas
+
+
+def test_le_juge_recoit_la_liste_dans_le_bloc() -> None:
+    """Le dernier maillon : la liste doit vraiment arriver dans le texte."""
+    bloc = bloc_faits_verifies(
+        4.8, 47, metiers_nommables=metiers_nommables(
+            ["Entretien de gazon", "Déneigement résidentiel"]
+        ),
+    )
+    assert "**tonte, déneigement**" in bloc or "**déneigement, tonte**" in bloc
+    assert "n'est JAMAIS une" in bloc
+
+
+def test_le_bloc_dit_explicitement_quand_il_n_y_a_AUCUN_metier() -> None:
+    """⚠️ Le silence se lirait « pas encore cherché », et le juge comblerait —
+    même raison que pour « aucune note en base »."""
+    bloc = bloc_faits_verifies(4.8, 47, metiers_nommables=())
+    assert "AUCUN" in bloc
+    assert "Tout métier" in bloc
+
+
+def test_la_liste_ne_depend_pas_de_la_DATE() -> None:
+    """🔴 CE QUI REND LE RECALCUL CÔTÉ JUGE SÛR.
+
+    Le juge relit parfois un brouillon écrit six jours plus tôt. Si la liste
+    dépendait de la date, il lirait une liste que le rédacteur n'avait pas —
+    exactement le défaut du nom d'entreprise, corrigé le matin même.
+
+    `classer_services` ne lit aucune date, et `EXIGE` non plus.
+    """
+    from src.tools.personalize import metiers_mentionnables
+
+    services = ["Entretien de gazon", "Déneigement résidentiel", "Lavage de vitres"]
+    listes = {
+        metiers_mentionnables(services, date(2026, 1, 15)),
+        metiers_mentionnables(services, date(2026, 7, 15)),
+        metiers_mentionnables(services, date(2026, 12, 31)),
+    }
+    assert len(listes) == 1, f"la liste change avec la date : {listes}"
+
+
+def test_l_alias_du_redacteur_rend_la_MEME_liste_que_lib() -> None:
+    """Les deux acteurs doivent lire la même chose. L'alias existe pour ne pas
+    casser quatre appelants ; s'il divergeait, le rédacteur et le juge
+    verraient deux listes."""
+    from src.tools.personalize import metiers_mentionnables
+
+    for services, industry in (
+        (["Lavage de vitres", "Nettoyage de toitures"], None),
+        (["Excavation sur mesure (fondations, piscines creusées)"], None),
+        (["Entretien de gazon", "Déneigement"], None),
+        ([], "entrepreneur en déneigement"),
+    ):
+        assert (
+            metiers_mentionnables(services, date(2026, 9, 18), industry)
+            == metiers_nommables(services, industry)
+        ), services

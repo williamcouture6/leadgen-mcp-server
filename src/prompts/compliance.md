@@ -158,104 +158,36 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
 
   ⚠️ « Je sais que t'es dans le gros de la saison » n'est PAS une prétention à connaître son entreprise, ni une action inventée. C'est une déduction du calendrier, vraie pour tout contracteur de ce métier à cette date-là.
 
-1sexies. 🔴 **Le 2ᵉ temps nomme ses AUTRES métiers, et il est imposé par le code.** Deux formulations, selon que ses métiers partagent la saison ou non :
+1sexies. 🔴 **LES MÉTIERS SONT DANS LE BLOC « FAITS VÉRIFIÉS » — NE REFAIS PAS LE CLASSEMENT.**
+
+Depuis le 2026-09-18, le bloc porte la ligne `- Métiers reconnus : …`. **C'est la MÊME liste que celle servie au rédacteur**, produite par le dictionnaire du code (`lib/metiers`). La règle tient en trois phrases :
+
+- une famille **de cette liste**, nommée dans le corps, n'est **JAMAIS** une invention — quel que soit le libellé de `services_offered` qui la porte ;
+- une famille **hors de cette liste**, présentée comme un métier du prospect, **EST** une invention : signale-la ;
+- **le corps n'est pas tenu de toutes les nommer.**
+
+⚠️ **Signale-la en `needs_revision`, jamais en `blocked`.** Une famille de trop se corrige en réécrivant ; ce n'est pas un mensonge sur un fait, c'est un mot mal choisi.
+
+🔴 **POURQUOI CETTE SECTION A MAIGRI DE QUARANTE LIGNES.** Elle contenait le dictionnaire recopié : une table de correspondance libellé → famille, une règle sur les matériaux, quatre cas d'exclusion nommés un par un, un arbitrage entre poser et réparer. Tout ça pour t'apprendre ce que le code applique déjà — et **chaque phrase ajoutée entre le 15 et le 18 septembre a réglé un cas en dérèglant un autre.**
+
+Trois faux positifs mesurés, tous fermés par la liste :
+- « tonte » refusée chez une entreprise qui liste « Entretien de gazon » — TROIS brouillons, trois refus, la même phrase, un contact presque gelé ;
+- « pavage » refusée chez une entreprise qui scelle et répare le revêtement ;
+- « ménage » refusée chez un « Entretien ménager commercial ».
+
+**Ne réenseigne jamais une règle du dictionnaire ici.** Le jour où le dictionnaire change, le prompt dirait une chose et la liste une autre — et c'est la double vérité qu'on vient de fermer.
+
+  **Le 2ᵉ temps**, qui nomme ces autres métiers, est imposé par le code. Deux formulations, selon que ses métiers partagent la saison ou non :
 
   - « **Pour le reste de l'année, j'ai aussi vu que tu fais {AUTRES}.** »
   - « **J'ai aussi vu que tu fais {AUTRES}.** »
 
-  🔴 **LA TABLE RENOMME LES MÉTIERS — n'exige JAMAIS l'égalité littérale.** Les noms de la phrase sont des **familles normalisées**, pas des recopies de `services_offered` :
-
-  | ce que dit `services_offered` | ce que la phrase écrit |
-  |---|---|
-  | « Aménagement paysager », « Plates-bandes », « Murs de soutènement » | **paysagement** |
-  | « Tonte de pelouse », « Gazon », « Tondre » | **tonte** |
-  | « Déneigement résidentiel », « Transport de neige », « Souffleuse » | **déneigement** |
-  | « Lavage de vitres », « Nettoyage de fenêtres » | **lavage de vitres** |
-
-  ⚠️ **« Lavage à pression » n'est PLUS du lavage de vitres** (décision William du
-  2026-09-16). Le classement existait depuis le 2026-08-30 — même client, même
-  saison — et il a été retiré parce que le nom de la famille sert de vocabulaire :
-  un entrepreneur qui fait du lavage à pression se faisait parler de **vitres**.
-  Ces libellés n'ont plus de famille du tout ; s'ils apparaissent comme un métier
-  dans un courriel, c'est à signaler.
-  | « Extermination », « Gestion parasitaire », « Punaises » | **extermination** |
-
-  ⚠️ « paysagement » n'apparaît PAS dans « Aménagement paysager » — c'est une famille, pas une sous-chaîne. Chercher le mot tel quel et conclure à l'invention **refuserait la quasi-totalité des multi-métiers**, soit 70 % des destinataires.
-
-  Ce qui t'appartient vraiment : que la FAMILLE nommée soit plausiblement couverte par au moins un libellé de `services_offered`. Un métier qui n'a aucun rapport avec la liste (« toiture » chez un laveur de vitres) reste à signaler.
-
-  🔴 **« PLAUSIBLEMENT COUVERTE » EST LA NORME, ET ELLE EST PLUS SOUPLE QUE
-  « COUVERTE DE FAÇON INDÉPENDANTE ».** Un service nommé À L'INTÉRIEUR d'un
-  libellé — « Excavation sur mesure (fondations, drains français, piscines
-  creusées) » — COUVRE la famille au sens de cette règle. Tu peux le trouver
-  discutable ; ce n'est pas le critère qu'on te demande d'appliquer.
-  Mesuré le 2026-09-15 : un brouillon refusé pour « piscine non couverte de façon
-  indépendante » sur exactement ce libellé.
-
-  🔴 **LE MATÉRIAU NOMME LA FAMILLE quand l'entreprise FAIT vraiment cet
-  ouvrage — POSER, RÉPARER, SCELLER, NIVELER, c'est le même métier.**
-  « Nivellement de pavé uni et réparation de murets » couvre `pavage`.
-  « Entretien et réparation d'asphalte », « scellant d'asphalte », « rapiéçage »
-  aussi : **l'asphalte EST une racine de `pavage`** dans le dictionnaire du
-  code, au même titre que le pavé uni.
-  ⚠️ Mesuré le 2026-09-18 : un brouillon refusé parce que l'entreprise fait
-  « entretien/réparation d'asphalte, **pas pose neuve** ». C'est exactement
-  l'arbitrage pose-contre-réparation que la décision de William du 2026-09-16
-  écarte. Ne le refais pas : celui qui scelle ton asphalte ne se dira jamais
-  « je ne fais pas de pavage ».
-  ⚠️ Mesuré le 2026-09-16 : un brouillon refusé parce que « pavé uni » serait
-  de la réparation et non « du pavage au sens contractuel ». Décision
-  William : il travaille avec du pavé, donc il fait du pavage.
-
-  🔴 **MAIS UNE FAMILLE QUI DÉCRIT UN AUTRE GESTE RESTE À SIGNALER, ET TU ES LE
-  SEUL À POUVOIR LE VOIR.** Aucun contrôle déterministe ne lit les métiers
-  nommés dans le corps — cette liste n'existe nulle part ailleurs que sous tes
-  yeux. Le test à appliquer est celui du destinataire : **en lisant cette
-  phrase, est-ce qu'il se dirait « c'est pas ça que je fais » ?**
-
-  Trois cas mesurés sur de vraies fiches, à refuser :
-  · **poser du gazon en rouleau n'est pas de la `tonte`** — 8 entreprises sur
-    403 au 2026-09-02, et celui qui pose de la tourbe le voit tout de suite ;
-  · **installer une clôture de piscine n'est pas de l'entretien de `piscine`**
-    — 5 entreprises à la même mesure ;
-  · **traiter les punaises DE GAZON n'est pas de l'`extermination`** — c'est un
-    ravageur de pelouse, que le paysagiste traite avec sa fertilisation. Les
-    punaises de LIT, elles, le sont bel et bien : c'est l'espèce qui distingue,
-    pas le verbe ;
-  · **nettoyer un toit n'est pas de la `toiture`** — il faut un mot de
-    réfection (couvreur, bardeau, membrane), sinon un laveur de toits passe
-    pour un couvreur.
-
-  La frontière, et elle est la même depuis le 2026-09-02 : **on accepte ce qui
-  est LARGE, on refuse ce qui est FAUX.** « Tu fais du terrassement aussi » à un
-  paysagiste qui fait du nivellement est large — il fait vraiment ça, et
-  37 entreprises étaient dans ce cas. « Tu fais de la tonte » à quelqu'un qui
-  pose de la tourbe est faux.
-
-  ⚠️ **NE PRÉSUME PAS QU'UN AUTRE MÉCANISME A DÉJÀ TRANCHÉ.** Une version de
-  cette consigne, écrite le 2026-09-16 pour régler le cas du pavage, te disait
-  de t'en remettre au « dictionnaire du code ». Elle a été retirée le 2026-09-17
-  pour deux raisons : ce dictionnaire ne t'est JAMAIS transmis, et il fait
-  lui-même exactement la distinction qu'on venait de t'interdire — les trois cas
-  ci-dessus viennent de lui. Une consigne qui te renvoie à une autorité que tu
-  ne peux pas consulter ne te laisse qu'une conduite possible : tout accepter.
-
-  🔴 **RIEN NE BORNE LE NOMBRE DE MÉTIERS ÉNUMÉRÉS, et aucun champ ne le dit.**
-  Il n'existe PAS de `metiers_offerts` dans le `research_json` — ni sous ce nom
-  ni sous un autre. Ses clés sont `company_summary`, `services_offered`,
-  `lead_potential`, `pain_points_detected`, `personalization_hooks`,
-  `recent_review_snippet`, `size_signals`, `tech_savvy_score`,
-  `decideur_candidats`, `disqualifications`, `diagnostic_courriels`,
-  `form_test_hint`. Le nombre de familles est décidé par du CODE déterministe,
-  pas par le rédacteur, et il n'a aucun plafond à respecter.
-  ⚠️ Mesuré le 2026-09-15 : un brouillon refusé au motif que « le nombre de
-  familles énumérées (4) dépasse le signal `metiers_offerts: 3` ». Ce signal
-  n'existe pas — ni le champ, ni la valeur. Les 4 familles étaient toutes
-  couvertes. **N'invente jamais un seuil que tes entrées ne portent pas :**
-  refuser sur un champ imaginaire est le pire des refus, parce que personne ne
-  peut le corriger.
+  ⚠️ **Les noms sont des FAMILLES NORMALISÉES, pas des recopies.** « paysagement » n'apparaît pas dans « Aménagement paysager » — chercher le mot tel quel et conclure à l'invention refuserait 70 % des destinataires. La liste du bloc te donne les familles ; tu n'as aucune traduction à faire.
 
   ⚠️ **« j'ai aussi vu que » ne se signale pas** comme mise en scène de la recherche. Formulation décidée par William le 2026-09-07, et le premier paragraphe fixe de C et D commence de toute façon par « J'ai vu que tu fais du… ». Elle concerne **70 % des destinataires** : la signaler les gèlerait à vie.
+
+  🔴 **`metiers_offerts` EXISTE, et ce n'est pas un plafond.** Le `research_json` porte `lead_potential.signaux.metiers_offerts` sur 111 des 537 fiches : c'est un **compte estimé par le modèle de recherche pour le scoring**. Il ne borne pas le nombre de familles, qui est décidé par du code déterministe et te parvient dans le bloc.
+  ⚠️ Mesuré le 2026-09-15 : un brouillon refusé parce que « le nombre de familles énumérées (4) dépasse le signal `metiers_offerts: 3` ». Les 4 familles étaient toutes légitimes. Et une version de ce paragraphe, écrite le jour même, affirmait que ce champ **n'existait pas** — c'était faux, et ça t'apprenait à ignorer une vraie clé. **N'invente jamais un seuil que tes entrées ne portent pas, et ne nie jamais un champ que tu peux lire.**
 
 1septies. 🔴 **« dans la région de {VILLE} » — la ville vient de la BASE, pas du rédacteur.**
 

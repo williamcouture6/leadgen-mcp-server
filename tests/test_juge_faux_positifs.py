@@ -39,40 +39,63 @@ def test_le_juge_sait_que_les_canaux_sont_une_phrase_fixe() -> None:
     assert "pas** ce que le prospect possède" in PROMPT
 
 
-def test_le_juge_sait_qu_aucun_champ_ne_borne_le_nombre_de_metiers() -> None:
-    """Le refus le plus coûteux des trois : il porte sur un champ imaginaire.
+def test_le_juge_sait_que_metiers_offerts_NE_BORNE_RIEN() -> None:
+    """🔴 CE TEST FIGEAIT UNE FAUSSETE, et elle a vecu deux jours.
 
-    Le prompt liste maintenant les VRAIES clés du research_json, pour que
-    l'absence soit vérifiable plutôt qu'affirmée.
+    Le refus d'origine (2026-09-15) disait : « le nombre de familles enumerees
+    (4) depasse le signal `metiers_offerts: 3` ». La correction ecrite le
+    lendemain affirmait qu'« il n'existe PAS de `metiers_offerts` dans le
+    `research_json` — ni sous ce nom ni sous un autre ». **C'etait faux** :
+    mesure le 2026-09-18, `lead_potential.signaux.metiers_offerts` est present
+    sur 111 des 537 fiches recherchees.
+
+    On apprenait donc au juge a nier un champ qu'il peut lire — et ce test
+    gardait le mensonge. La verite est plus simple : le champ existe, c'est un
+    COMPTE estime par le modele de recherche pour le scoring, et il ne borne
+    rien. Le nombre de familles vient du bloc « Faits verifies ».
     """
-    assert "metiers_offerts" in PROMPT, "le faux champ doit être nommé pour être nié"
-    assert "n'invente jamais un seuil" in PROMPT.lower()
-    for vraie_cle in ("services_offered", "lead_potential", "pain_points_detected"):
-        assert vraie_cle in PROMPT, vraie_cle
-
-
-def test_le_juge_applique_plausiblement_couverte_et_pas_plus_strict() -> None:
-    """Un service nommé DANS un libellé couvre la famille. Le juge avait
-    appliqué « de façon indépendante », qui n'est écrit nulle part."""
     bas = PROMPT.lower()
-    assert "plausiblement couverte" in bas
-    assert "de façon indépendante" in bas, (
-        "la norme plus stricte doit être nommée pour être écartée"
+    assert "metiers_offerts" in PROMPT, "le champ doit etre nomme pour etre cadre"
+    assert "n'invente jamais un seuil" in bas
+    assert "compte estimé" in bas, (
+        "le prompt doit dire CE QUE le champ est, pas qu'il n'existe pas"
+    )
+    assert "ni sous ce nom" not in bas, (
+        "l'affirmation fausse (« il n'existe PAS ») est revenue dans le prompt"
     )
 
 
-def test_le_tableau_des_familles_ne_classe_plus_le_lavage_a_pression() -> None:
-    """🔴 RENVERSÉ LE 2026-09-16. Le tableau enseignait « Lavage à pression →
-    lavage de vitres », ce qui n'est plus vrai depuis que William l'a retiré du
-    dictionnaire. Un tableau d'exemples périmé est pire qu'absent : il dit au
-    juge d'accepter exactement ce qu'on vient d'interdire.
+def test_le_champ_existe_vraiment() -> None:
+    """Le temoin du test ci-dessus : si le schema de recherche cessait de
+    produire ce champ, la consigne deviendrait fausse dans l'autre sens."""
+    from pathlib import Path
+
+    schema = (
+        Path(__file__).resolve().parent.parent / "src/tools/research.py"
+    ).read_text(encoding="utf-8")
+    assert "metiers_offerts" in schema, (
+        "le champ a disparu du schema de recherche : la consigne du juge parle "
+        "d'un champ qui n'est plus produit"
+    )
+
+
+def test_le_juge_ne_reconstitue_plus_le_classement_des_familles() -> None:
+    """🔴 REMPLACE « plausiblement couverte », retiree le 2026-09-18.
+
+    Cette norme demandait au juge de decider lui-meme si un libelle couvrait
+    une famille. C'est exactement le jugement qu'on lui retire : il recoit
+    desormais la liste resolue dans le bloc « Faits verifies ».
+
+    Les trois faux positifs qui ont motive le changement — « tonte » chez un
+    « Entretien de gazon », « pavage » chez un scelleur de revetement,
+    « menage » chez un « Entretien menager » — venaient tous de ce jugement.
     """
-    ligne_famille = [
-        L for L in PROMPT.splitlines()
-        if "**lavage de vitres**" in L and L.strip().startswith("|")
-    ]
-    assert ligne_famille, "la ligne du tableau a disparu"
-    assert not any("pression" in L for L in ligne_famille), ligne_famille
+    bas = PROMPT.lower()
+    assert "plausiblement couverte" not in bas, (
+        "la norme est revenue : elle redemande au juge de classer lui-meme"
+    )
+    assert "ne refais pas le classement" in bas
+    assert "métiers reconnus" in bas
 
 
 @pytest.mark.parametrize(

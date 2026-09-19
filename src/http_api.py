@@ -27,6 +27,7 @@ from .lib.gabarits import (
     tete_fixe_servable_pour_entreprise,
 )
 from .lib.metiers import resoudre_metiers
+from .tools.personalize import metier_de_la_scene
 from .lib.relances import CLES_RELANCES
 from .tools import booking as booking_tools
 from .lib.avis import nom_a_imprimer
@@ -4325,9 +4326,19 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             # `compliance_tentatives` alimente la garde anti-boucle du juge :
             # sans elle dans le SELECT, elle arrive à None et la 3e tentative
             # n'arrive jamais (voir migration 0045).
+            # 🔴 `metier_scene` AJOUTE LE 2026-09-18. La scene depend de la
+            # DATE — elle suit la fenetre saisonniere — donc la recalculer au
+            # moment du jugement peut rendre une AUTRE scene que celle ecrite :
+            # un brouillon redige le 31 juillet (scene `tonte`) et juge le
+            # 1er aout verrait `deneigement` gagner. On lit donc celle qui a
+            # ete ecrite (migration 0058), jamais une recalculee.
+            #
+            # ⚠️ La LISTE des metiers, elle, se recalcule sans risque : elle ne
+            # depend d'aucune date. Voir `tools/compliance.py`.
             "select": (
                 "id,subject,body_text,contact_id,generated_by_agent_run,"
-                "compliance_check_passed,compliance_tentatives,followups"
+                "compliance_check_passed,compliance_tentatives,followups,"
+                "metier_scene"
             ),
             "id": f"eq.{payload.message_id}",
             "limit": "1",
@@ -4521,6 +4532,17 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             # un brouillon conforme le 2026-09-17.
             nom_entreprise=(
                 nom_a_imprimer(company_rows[0]) if company_rows else None
+            ),
+            # ⚠️ Repli sur un recalcul quand la colonne est vide : les 31
+            # brouillons anterieurs a la migration 0058 ne la portent pas. Ils
+            # sont tous deja juges, donc le repli ne sert qu'a ne pas planter.
+            metier_scene=(
+                msg.get("metier_scene")
+                or metier_de_la_scene(
+                    (research_json or {}).get("services_offered"),
+                    date.today(),
+                    company_rows[0].get("industry") if company_rows else None,
+                )
             ),
             # Le TRIPLET, pas le seul corps de tri. Sans ca, deux tiers du
             # contenu partent sans avoir ete inspectes par personne.

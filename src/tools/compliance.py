@@ -48,7 +48,12 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from ..lib.avis import bloc_faits_verifies
 from ..lib.lexique_metiers import lexique_pour
-from ..lib.metiers import classer_services, resoudre_metiers
+from ..lib.metiers import (
+    classer_services,
+    metier_venu_du_secteur,
+    metiers_nommables,
+    resoudre_metiers,
+)
 
 from ..lib.relances import CORPS_RELANCES, RELANCES
 from ..lib.compliance_checks import (
@@ -91,6 +96,7 @@ def _message_utilisateur_juge(
     followups: dict[str, str] | None = None,
     industry: str | None = None,
     nom_entreprise: str | None = None,
+    metier_scene: str | None = None,
 ) -> str:
     """Ce que le juge voit. Extrait en fonction pure pour être testable sans
     appeler Anthropic — un bloc qui disparaît du prompt doit casser un test,
@@ -149,6 +155,36 @@ def _message_utilisateur_juge(
             google_reviews_count,
             nb_services=len((research_json or {}).get('services_offered') or []),
             nom_entreprise=nom_entreprise,
+            # 🔴 LA LISTE EST RECALCULEE ICI, depuis les MEMES entrees que le
+            # redacteur (`services_offered` + `industry`), et c'est un choix.
+            #
+            # Elle ne depend d'AUCUNE date — `classer_services` n'en lit pas —
+            # donc elle est identique a l'ecriture et au jugement, meme separes
+            # de six jours. Verifie sur trois dates ecartees de six mois.
+            #
+            # ⚠️ Et quand le DICTIONNAIRE change entre les deux, la divergence
+            # est le comportement VOULU : une famille retiree du dictionnaire
+            # rend le brouillon faux AUJOURD'HUI ; il doit etre refuse, et la
+            # reecriture relira le nouveau dictionnaire. Une liste figee a
+            # l'ecriture ferait approuver et ENVOYER ce brouillon.
+            #
+            # ⚠️ Ne PAS lire `messages.metiers` : elle porte
+            # `resoudre_metiers(...).metiers`, c'est-a-dire TOUTES les familles
+            # reconnues, exigences non tenues comprises. Pour un nettoyeur de
+            # toits elle contient `toiture` — servir celle-la ferait accepter
+            # exactement ce qu'on veut refuser.
+            metiers_nommables=metiers_nommables(
+                (research_json or {}).get('services_offered'), industry
+            ),
+            metier_du_secteur=metier_venu_du_secteur(
+                (research_json or {}).get('services_offered'), industry
+            ),
+            # ⚠️ LA SCENE, ELLE, DEPEND DE LA DATE : elle suit la fenetre
+            # saisonniere. On la lit donc sur `messages.metier_scene`, ecrite a
+            # la redaction (migration 0058). Sans ca, un brouillon ecrit le
+            # 31 juillet et juge le 1er aout se verrait reprocher une scene que
+            # le code aurait changee entre-temps.
+            metier_scene=metier_scene,
             phrase_du_rush=lexique_pour(
                 next(iter(classer_services(
                     (research_json or {}).get('services_offered'),
@@ -190,6 +226,7 @@ def _llm_judge(
     followups: dict[str, str] | None = None,
     industry: str | None = None,
     nom_entreprise: str | None = None,
+    metier_scene: str | None = None,
 ) -> dict[str, Any]:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -199,7 +236,7 @@ def _llm_judge(
     user = _message_utilisateur_juge(
         body, subject, research_json, social_proof, contact,
         google_rating, google_reviews_count, followups, industry,
-        nom_entreprise,
+        nom_entreprise, metier_scene,
     )
     resp = client.messages.create(
         model=model,
@@ -266,6 +303,7 @@ async def compliance_check(
     followups: dict[str, str] | None = None,
     industry: str | None = None,
     nom_entreprise: str | None = None,
+    metier_scene: str | None = None,
 ) -> ComplianceCheckOut:
     """Lance les 2 layers de compliance sur un draft donné.
 
@@ -520,7 +558,7 @@ async def compliance_check(
             llm_verdict = await asyncio.to_thread(
                 _llm_judge, body, subject, research_json, social_proof, contact, model,
                 2500, google_rating, google_reviews_count, followups, industry,
-                nom_entreprise,
+                nom_entreprise, metier_scene,
             )
         except Exception as e:  # noqa: BLE001
             llm_verdict = {"error": f"LLM judge failed: {type(e).__name__}: {e}"}

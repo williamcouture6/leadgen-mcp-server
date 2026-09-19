@@ -168,23 +168,55 @@ def test_avoir_une_equipe_n_est_pas_un_motif_de_refus() -> None:
         )
 
 
-def test_l_asphalte_est_nomme_comme_racine_de_pavage() -> None:
-    """📏 Un brouillon refusé parce que l'entreprise fait « entretien/réparation
-    d'asphalte, pas pose neuve » — l'arbitrage pose-contre-réparation que la
-    décision du 2026-09-16 écarte.
+def test_l_asphalte_arrive_au_juge_PAR_LA_LISTE() -> None:
+    """🔴 CE TEST A CHANGE DE MOYEN LE 2026-09-18, pas d'objet.
 
-    🔴 Ce test lie le prompt au DICTIONNAIRE plutôt qu'à une chaîne : si
-    `asphalte` cessait d'être une racine de `pavage`, la consigne deviendrait
-    fausse et ce test le dirait.
+    Le 2026-09-17, un brouillon avait ete refuse parce que l'entreprise fait
+    « entretien/reparation d'asphalte, PAS pose neuve » — l'arbitrage
+    pose-contre-reparation que la decision de William du 2026-09-16 ecarte.
+    La correction d'alors : ecrire dans le prompt que l'asphalte est du pavage,
+    et que poser vaut reparer.
+
+    Le lendemain, cette phrase est PARTIE avec tout le dictionnaire recopie.
+    Le juge ne l'apprend plus — il la LIT, dans la liste du bloc « Faits
+    verifies », calculee par le code.
+
+    Ce test suit le meme fait, par le chemin neuf : les services reels de
+    *Scellant Deneigement XTRA* doivent rendre `pavage` dans la liste que le
+    juge recoit. Si `asphalte` cessait d'etre une racine de `pavage`, il
+    rougirait — comme avant, mais sur le mecanisme qui decide vraiment.
     """
-    from src.lib.metiers import RACINES
+    from src.lib.avis import bloc_faits_verifies
+    from src.lib.metiers import RACINES, metiers_nommables
 
+    services = [
+        "Scellant d'asphalte au bitume",
+        "Réparation de fissures d'asphalte à chaud",
+        "Réparation de nids-de-poule",
+        "Déneigement résidentiel",
+    ]
     assert "asphalte" in RACINES["pavage"], (
-        "l'asphalte n'est plus une racine de pavage : la consigne du prompt "
-        "est devenue fausse"
+        "l'asphalte n'est plus une racine de pavage : le refus du 2026-09-17 "
+        "redeviendrait legitime"
     )
+    nommables = metiers_nommables(services)
+    assert "pavage" in nommables, nommables
+
+    bloc = bloc_faits_verifies(4.7, 85, metiers_nommables=nommables)
+    assert "pavage" in bloc, (
+        "le juge ne voit pas `pavage` dans sa liste : il refera l'arbitrage "
+        "pose-contre-reparation, et le refusera comme le 2026-09-17"
+    )
+
+
+def test_le_prompt_n_enseigne_PLUS_l_asphalte() -> None:
+    """La contre-epreuve : la phrase ajoutee le 2026-09-17 doit avoir disparu.
+
+    La garder ferait deux verites — le prompt dirait une chose, la liste une
+    autre — et c'est exactement ce que le changement du 2026-09-18 ferme.
+    """
     texte = PROMPT.read_text(encoding="utf-8")
-    assert "asphalte" in texte.lower()
-    assert re.search(r"POSER, RÉPARER, SCELLER, NIVELER", texte), (
-        "la consigne ne dit plus explicitement que réparer vaut poser"
+    assert "asphalte" not in texte.lower(), (
+        "le dictionnaire est revenu dans le prompt : il se sert, il ne se "
+        "recopie pas"
     )

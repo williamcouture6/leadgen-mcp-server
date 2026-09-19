@@ -383,6 +383,85 @@ def _consigne_de_repli(nb_services: int | None, phrase_du_rush: str | None) -> s
     )
 
 
+def _bloc_metiers(
+    nommables: tuple[str, ...] | None,
+    scene: str | None,
+    du_secteur: str | None,
+) -> str:
+    """Les lignes « metiers » du bloc — servies au REDACTEUR ET AU JUGE.
+
+    🔴 CE QU'ELLES FERMENT. Le redacteur recevait deja les familles resolues
+    (`lib/metiers.metiers_nommables`) ; le JUGE ne recevait RIEN et refaisait le
+    classement de tete, sans dictionnaire. Trois jours de faux positifs
+    (15-18 septembre 2026), tous mesures :
+
+      · « tonte » refusee chez *Entretien V Boudreault* — `Entretien de gazon`
+        est pourtant une racine de `tonte`. TROIS brouillons, trois refus, la
+        meme phrase ;
+      · « pavage » refusee chez *Scellant Deneigement XTRA* (« scellant
+        d'asphalte ») — `asphalte` est une racine de `pavage` ;
+      · « menage » refusee chez *Panorama services* (« Entretien menager
+        commercial ») — `RACINES['menage']` la porte.
+
+    A chaque fois, une phrase de plus dans `prompts/compliance.md` pour
+    apprendre au juge une regle que le dictionnaire applique deja, et un
+    nouveau trou ailleurs. Le bloc remplace ces phrases par la REPONSE.
+
+    ⚠️ LE PERIMETRE EST LA LIGNE LA PLUS IMPORTANTE. La liste vaut pour les
+    FAMILLES (« tu fais du X »). L'enumeration du 2e paragraphe (« autant de
+    sortes de deneigement, de toitures... ») recopie les LIBELLES BRUTS de
+    `services_offered` et se juge contre eux. Sans cette phrase, mesure sur
+    111 brouillons : 10 refus neufs, tous faux — des « deneigement de toiture »
+    lus comme la famille `toiture`.
+    """
+    if nommables is None:
+        return ""
+    if not nommables:
+        return (
+            f"{LN}- Métiers reconnus : **AUCUN**."
+            "\n  Le corps ne doit nommer AUCUN métier du prospect. Tout métier"
+            "\n  nommé comme étant le sien est une invention."
+        )
+
+    lignes = [
+        f"{LN}- Métiers reconnus (familles normalisées, résolues par le "
+        f"dictionnaire du code — **la même liste que celle servie au "
+        f"rédacteur**) : **{', '.join(nommables)}**",
+        "  Une famille de cette liste, nommée dans le corps, n'est JAMAIS une",
+        "  invention — quel que soit le libellé de `services_offered` qui la",
+        "  porte. « Entretien de gazon » vaut tonte, « scellant d'asphalte »",
+        "  vaut pavage, « Entretien ménager » vaut ménage. Ne refais pas ce",
+        "  classement : il est déjà fait, et c'est cette liste qui en est le",
+        "  résultat.",
+        "  Une famille HORS de cette liste, présentée comme un métier du",
+        "  prospect, EST une invention : signale-la.",
+        "  Le corps n'est pas tenu de toutes les nommer.",
+        "  ⚠️ Cette liste vaut pour les FAMILLES (« tu fais du X », « les PME",
+        "  de X »). L'énumération « autant de sortes de … que … » recopie les",
+        "  LIBELLÉS BRUTS de `services_offered` : juge-la contre ces libellés,",
+        "  jamais contre cette liste.",
+        "  ⚠️ Elle dit qu'une famille est LÉGITIME, pas que tout ce qu'on en",
+        "  dit l'est. Une affirmation inventée autour d'un métier réel reste à",
+        "  signaler.",
+    ]
+    if scene:
+        lignes += [
+            f"- Métier de la première ligne : **{scene}** — choisi par la",
+            "  SAISON, jamais par l'importance. Un contracteur dont c'est",
+            "  l'activité d'appoint ouvre quand même dessus si sa saison est la",
+            "  plus proche. Ne signale pas un « cadrage inversé ».",
+        ]
+    if du_secteur:
+        lignes += [
+            f"- ⚠️ **{du_secteur}** n'est porté par aucun libellé de service :",
+            "  il vient du mot-clé de sourcing Google Maps. Le code l'ajoute",
+            "  quand aucun métier de l'entreprise n'a de saison, pour qu'elle",
+            "  reste joignable (décision William, 2026-09-02). Le rédacteur a",
+            "  obéi à cette règle : ne le signale pas.",
+        ]
+    return "\n".join(lignes)
+
+
 def bloc_faits_verifies(
     google_rating: float | None,
     google_reviews_count: int | None,
@@ -390,6 +469,9 @@ def bloc_faits_verifies(
     nb_services: int | None = None,
     phrase_du_rush: str | None = None,
     nom_entreprise: str | None = None,
+    metiers_nommables: tuple[str, ...] | None = None,
+    metier_scene: str | None = None,
+    metier_du_secteur: str | None = None,
 ) -> str:
     """Le bloc court et distinct, servi au rédacteur et au juge.
 
@@ -421,12 +503,17 @@ def bloc_faits_verifies(
         )
 
     if google_rating is None and google_reviews_count is None:
+        # ⚠️ CETTE BRANCHE SORT TOT, et c'est le piege : une ligne ajoutee au
+        # `return` final ne l'atteint jamais. Trouve le 2026-09-18 en cablant
+        # les metiers — le juge ne les voyait pas sur les fiches sans avis.
+        # Meme cause que le defaut du nom, corrige le meme jour.
         return (
             f"{entete}\n"
             "- Avis Google : **aucune note et aucun avis en base pour cette entreprise.**\n"
             "  N'écris AUCUN chiffre d'étoiles ni d'avis."
             + LN
             + _consigne_de_repli(nb_services, phrase_du_rush)
+            + _bloc_metiers(metiers_nommables, metier_scene, metier_du_secteur)
         )
 
     note = formater_note(google_rating) if google_rating is not None else "aucune note"
@@ -460,4 +547,5 @@ def bloc_faits_verifies(
         f"- Note Google : {note}\n"
         f"- Nombre d'avis : {compte}\n"
         f"{consigne}"
+        f"{_bloc_metiers(metiers_nommables, metier_scene, metier_du_secteur)}"
     )

@@ -33,6 +33,8 @@ from ..lib.metiers import (
     MOMENT_DEBUT,
     MOMENT_EN_COURS,
     classer_services,
+    metier_venu_du_secteur,
+    metiers_nommables,
     resoudre_metiers,
 )
 from . import research as research_tools
@@ -178,53 +180,19 @@ def metiers_mentionnables(
     aujourdhui: date,
     industry: str | None = None,
 ) -> tuple[str, ...]:
-    """Les métiers que le courriel a le droit de NOMMER, dans l'ordre.
+    """Alias de `lib.metiers.metiers_nommables` — voir la-bas pour le pourquoi.
 
-    🔴 CE QUI NE PEUT PAS OUVRIR LA FENÊTRE NE SE MENTIONNE PAS NON PLUS —
-    règle de William, 2026-09-16.
+    🔴 LA REGLE A DEMENAGE DANS `lib` LE 2026-09-18, pour que le JUGE puisse
+    l'appeler sans dependre de `tools/personalize`. Elle vivait ici, donc seul
+    le redacteur l'avait ; le juge refaisait le classement de tete et se
+    trompait. Voir `lib/metiers.metiers_nommables`.
 
-    `EXIGE` encode déjà « ce que le métier est VRAIMENT » : la famille `piscine`
-    ne compte que si un libellé porte un verbe d'entretien (entretien,
-    nettoyage, ouverture, fermeture, traitement, analyse). Sans ce signal, la
-    fenêtre saisonnière ne s'ouvrait déjà pas — mais le rédacteur, lui, nommait
-    quand même le métier.
-
-    Le cas qui l'a montré, le 2026-09-15 : « Excavation sur mesure (fondations,
-    drains français, piscines creusées) » faisait écrire à Groupe Everest qu'il
-    fait de la piscine. Il en CREUSE ; il n'en vend pas l'entretien. Le juge de
-    conformité a refusé le brouillon, à raison.
-
-    🔴 DEUX USAGES, UNE SEULE RÈGLE, et c'est pour ça que cette fonction existe
-    plutôt qu'un filtre recopié deux fois. Le premier jet ne filtrait que le
-    2ᵉ temps — et la SCÈNE continuait de tomber sur `piscine`, parce qu'hors
-    saison elle retombe sur le métier dominant, qui ignore l'exigence. Vérifié
-    sur Groupe Everest en juin : aucune de ses fenêtres n'est ouverte, donc la
-    scène retombait sur le dominant, donc sur la piscine, donc l'ouvreur entier
-    parlait de piscines.
-
-    📏 Mesuré sur les 526 fiches qui ont des services : **25** cessent de nommer
-    `piscine`, et **AUCUNE** ne perd tous ses métiers — chacune en garde de deux
-    à cinq. Ce sont des paysagistes qui font des CONTOURS de piscine.
-
-    ⚠️ Une autre piste a été mesurée puis ÉCARTÉE : traiter comme incidente
-    toute famille qui n'apparaît qu'entre parenthèses. Sur les 27 fiches
-    concernées, la plupart étaient légitimes — « Aménagement paysager complet
-    (excavation, dallage, pavage) » vend vraiment du pavage. La parenthèse
-    ÉNUMÈRE ce que le service inclut : le SENS distingue une mention incidente,
-    la position non.
-
-    ⚠️ `EXIGE` ne contient que `piscine` aujourd'hui. Toute famille qu'on y
-    ajoutera héritera automatiquement de cette règle — c'est voulu : une
-    exigence dit « ce libellé ne prouve pas le métier », et cette phrase vaut
-    autant pour la fenêtre que pour le courriel.
+    ⚠️ `aujourdhui` est conserve et IGNORE. La liste n'a jamais dependu de la
+    date — `classer_services` n'en lit pas. Le parametre reste pour ne pas
+    casser les quatre appelants et leurs tests ; le retirer est un menage a
+    faire un jour de calme, pas au milieu d'un correctif.
     """
-    r = resoudre_metiers(services_offered, aujourdhui, industry)
-    if not r.metiers:
-        return ()
-    tenues = classer_services(services_offered, industry).exigence_satisfaite
-    return tuple(
-        m for m in r.metiers if m not in EXIGE or m in tenues
-    )
+    return metiers_nommables(services_offered, industry)
 
 
 def metier_de_la_scene(
@@ -689,6 +657,21 @@ def _format_input_for_llm(
                 # Y ») que la fiche ne peut pas produire.
                 nb_services=len(research.get("services_offered") or []),
                 nom_entreprise=place_name,
+                # 🔴 LA MEME LISTE QUE LE JUGE, par le meme bloc — c'est tout
+                # l'objet du changement du 2026-09-18. Le redacteur l'avait
+                # deja (via `metiers_mentionnables`) ; le juge ne l'avait pas,
+                # et refaisait le classement de tete.
+                metiers_nommables=metiers_nommables(
+                    research.get("services_offered"), company.get("industry")
+                ),
+                metier_scene=metier_de_la_scene(
+                    research.get("services_offered"),
+                    aujourdhui or date.today(),
+                    company.get("industry"),
+                ),
+                metier_du_secteur=metier_venu_du_secteur(
+                    research.get("services_offered"), company.get("industry")
+                ),
                 # ⚠️ Le DOMINANT, jamais la scène — et ce n'est pas un oubli.
                 # Le dominant ne dépend pas de la date : le juge, qui relit le
                 # courriel plus tard, en retrouve exactement la même phrase.

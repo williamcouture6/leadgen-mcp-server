@@ -1069,6 +1069,76 @@ def colonnes_metiers(
     }
 
 
+def metier_venu_du_secteur(
+    services_offered: list[str] | None,
+    industry: str | None = None,
+) -> str | None:
+    """La famille que SEUL le mot-cle de sourcing porte, ou None.
+
+    🔴 POURQUOI ELLE EST SIGNALEE AU JUGE. Quand aucun metier de l'entreprise
+    n'a de saison, le code ajoute celle du secteur pour qu'elle reste joignable
+    (decision William, 2026-09-02, cas *Niwa*). Le courriel ouvre alors sur un
+    metier qu'AUCUN libelle de service ne porte.
+
+    📏 Le cas : *S.O.S Mini Excavation* — services « mini-excavation,
+    terrassement, enlevement d'arbres », mot-cle Google « entrepreneur en
+    deneigement ». Le courriel a ouvert sur la neige, et le juge l'a BLOQUE :
+    « aucun service de deneigement dans le research_json ». Il avait
+    factuellement raison, et le code avait decide l'inverse.
+
+    Decision William, 2026-09-18 : on le MARQUE et on l'accepte. Le refuser
+    annulerait la decision du 2026-09-02 par un chemin detourne — le brouillon
+    serait reecrit a l'identique, puis le contact gele au 2e tour.
+
+    📏 6 fiches sur 511 joignables sont dans ce cas.
+    """
+    r = classer_services(services_offered, industry)
+    if r.source not in ("industry", "services_offered+industry"):
+        return None
+    return metier_depuis_industry(industry)
+
+
+def metiers_nommables(
+    services_offered: list[str] | None,
+    industry: str | None = None,
+) -> tuple[str, ...]:
+    """Les familles que le courriel a le droit de NOMMER, dans l'ordre.
+
+    🔴 CE QUI NE PEUT PAS OUVRIR LA FENETRE NE SE MENTIONNE PAS NON PLUS —
+    regle de William, 2026-09-16. `EXIGE` encode « ce que le metier est
+    VRAIMENT » : la famille `piscine` ne compte que si un libelle porte un
+    verbe d'entretien, `toiture` que si un libelle porte un mot de refection.
+    Sans ce signal la fenetre ne s'ouvrait deja pas — mais le redacteur, lui,
+    nommait quand meme le metier.
+
+    🔴 POURQUOI ELLE VIT DANS `lib` DEPUIS LE 2026-09-18, et c'est le point.
+    Elle etait dans `tools/personalize`, donc SEUL le redacteur l'avait. Le
+    JUGE de conformite refaisait le classement de tete, sans dictionnaire, et
+    se trompait : « tonte » refusee alors que `Entretien de gazon` la couvre,
+    « pavage » refusee chez un scelleur d'asphalte, « menage » refusee chez un
+    entretien menager. Trois jours passes a ecrire dans le prompt du juge des
+    regles que cette fonction applique deja.
+
+    Elle est desormais servie aux DEUX par `lib/avis.bloc_faits_verifies` —
+    meme mecanisme que le nom d'entreprise (migration 0072), et pour la meme
+    raison : une seule resolution, deux lecteurs.
+
+    ⚠️ AUCUNE DATE. `classer_services` n'en lit pas, et `EXIGE` non plus. La
+    liste est donc la MEME a l'ecriture et au jugement, meme separes de six
+    jours — c'est ce qui rend le recalcul cote juge sur. Verifie le 2026-09-18
+    sur trois dates ecartees de six mois : liste identique.
+
+    ⚠️ Ne pas confondre avec `resoudre_metiers(...).metiers`, qui rend TOUTES
+    les familles reconnues, exigences non tenues comprises. Pour un nettoyeur
+    de toits, celle-la rend `toiture` et celle-ci non. Servir la mauvaise au
+    juge lui ferait accepter exactement ce qu'on veut refuser.
+    """
+    r = classer_services(services_offered, industry)
+    if not r.metiers:
+        return ()
+    return tuple(m for m in r.metiers if m not in EXIGE or m in r.exigence_satisfaite)
+
+
 def resoudre_metiers(
     services_offered: list[str] | None,
     aujourdhui: date,
