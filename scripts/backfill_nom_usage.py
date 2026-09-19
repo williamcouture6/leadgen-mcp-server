@@ -71,7 +71,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.lib.avis import nom_commercial, nom_usage_fiable  # noqa: E402
+from src.lib.avis import nom_a_imprimer, nom_commercial, nom_usage_fiable  # noqa: E402
 from src import supabase_client as sb  # noqa: E402
 
 # Le critère de rattrapage, recopié de la migration 0072 pour que les deux
@@ -199,33 +199,59 @@ def groupe_de_controle(temoins: list[dict[str, Any]]) -> list[str]:
     return echecs
 
 
-async def _avec_brouillon_en_attente() -> set[str]:
-    """Les entreprises dont un brouillon attend le juge — voir condition 2."""
+async def _brouillons_en_attente() -> dict[str, str]:
+    """{id du brouillon non juge -> id de son entreprise}.
+
+    🔴 CETTE FONCTION SERVAIT A ECARTER CES ENTREPRISES. Elle sert maintenant a
+    les CORRIGER, et la difference est une boucle qu'on a mise trois passages a
+    voir :
+
+        brouillon en attente  ->  on n'ose pas toucher au nom
+                ^                              |
+        WF-4 reecrit avec     <----  le nom reste celui de Google
+         le vieux nom
+
+    Chaque tour re-protegeait l'entreprise de sa propre correction. Elle n'en
+    sortait jamais. Mesure du 2026-09-18 : *Panorama services* ecartee DEUX
+    FOIS en six heures pour cette raison, et *Jolie Quebec* reecrite avec
+    « lavage des vitres Entretien Menager •Jolie Quebec » apres avoir ete
+    corrigeable pendant 24 minutes que personne n'a vues.
+
+    ⚠️ CE QUI A CHANGE ET QUI AUTORISE CE RENVERSEMENT : la condition 2 de la
+    migration 0072 a ete ecrite quand un `needs_revision` GELAIT le contact a
+    vie. Depuis le 2026-09-18, il renvoie a la reecriture. Un nom qui change
+    sous un brouillon en attente ne coute donc plus un prospect — au pire une
+    reecriture. Et on se l'epargne meme, en supprimant le brouillon devenu
+    caduc : il sera reecrit AVEC le bon nom, au lieu d'etre juge contre lui.
+    """
     messages = await sb.select_all(
         "messages",
         params={
-            "select": "contact_id",
+            "select": "id,contact_id",
             "status": "eq.draft",
             "compliance_check_passed": "is.null",
         },
         order="id.asc",
     )
-    ids = [m["contact_id"] for m in messages if m.get("contact_id")]
-    if not ids:
-        return set()
-    entreprises: set[str] = set()
+    par_contact = {m["contact_id"]: m["id"] for m in messages if m.get("contact_id")}
+    if not par_contact:
+        return {}
+    ids = list(par_contact)
+    par_brouillon: dict[str, str] = {}
     for i in range(0, len(ids), 100):
         tranche = ids[i:i + 100]
         contacts = await sb.select_all(
             "contacts",
             params={
-                "select": "company_id",
+                "select": "id,company_id",
                 "id": "in.(" + ",".join(tranche) + ")",
             },
             order="id.asc",
         )
-        entreprises.update(c["company_id"] for c in contacts if c.get("company_id"))
-    return entreprises
+        for c in contacts:
+            if c.get("company_id"):
+                par_brouillon[par_contact[c["id"]]] = c["company_id"]
+    return par_brouillon
 
 
 async def principal(ecrire: bool) -> int:
@@ -265,15 +291,31 @@ async def principal(ecrire: bool) -> int:
         return 1
     print("✅ groupe de contrôle passé.")
 
-    gelees = await _avec_brouillon_en_attente()
-    print(f"{len(gelees)} entreprise(s) écartée(s) : un brouillon attend le juge.")
+    en_attente = await _brouillons_en_attente()
+    par_entreprise = {ent: br for br, ent in en_attente.items()}
+    print(f"{len(en_attente)} brouillon(s) en attente de jugement.")
 
     acceptes: list[tuple[str, str, str]] = []
     refuses: list[tuple[str, str]] = []
+    # Les brouillons devenus caducs : leur entreprise change de nom, donc leur
+    # corps porte un nom que le bloc « Faits verifies » contredira. On les
+    # renvoie a la reecriture pour que WF-4 les refasse AVEC le bon nom,
+    # plutot que de les faire juger contre lui.
+    caducs: list[tuple[str, str, str]] = []
     for f in fiches:
-        if f["id"] in gelees:
-            continue
         nom = nom_usage_de(f)
+        # ⚠️ ON COMPARE SANS LA CASSE NI LES ACCENTS. « Panorama services »
+        # contre « Panorama Services », c'est une majuscule : le juge lira les
+        # deux comme le meme nom, et reecrire un brouillon pour ca gaspille une
+        # place du lot. Seul un nom REELLEMENT different justifie la reecriture
+        # — « lavage des vitres Entretien Menager •Jolie Quebec » contre
+        # « Jolie Quebec », lui, la justifie.
+        if (
+            nom
+            and f["id"] in par_entreprise
+            and _sans_accents(nom) != _sans_accents(nom_a_imprimer(f))
+        ):
+            caducs.append((par_entreprise[f["id"]], f["name"], nom))
         if nom:
             acceptes.append((f["id"], f["name"], nom))
         else:
@@ -291,9 +333,33 @@ async def principal(ecrire: bool) -> int:
     for nom, cand in refuses[:20]:
         print(f"  {nom[:58]:60s} <- candidat : {cand[:40]}")
 
+    if caducs:
+        print(f"\n--- {len(caducs)} brouillon(s) à réécrire (leur nom change) ---")
+        for _bid, avant, apres in caducs:
+            print(f"  {avant[:52]:54s} -> {apres}")
+
     if not ecrire:
         print("\n(à blanc — rien n'a été écrit. Relancer avec --ecrire.)")
         return 0
+
+    # 🔴 `failed` PLUTOT QUE SUPPRIMER, et ce n'est pas un pis-aller :
+    #   · le client n'expose pas de `delete` — ce depot ne supprime que par SQL,
+    #     avec archivage, et jamais depuis un script de rattrapage ;
+    #   · `failed` LIBERE l'entreprise (`db._retenir` exclut `not.in.(failed)`),
+    #     donc WF-4 en reecrit un neuf : c'est exactement l'effet voulu ;
+    #   · le corps reste lisible en base. Un brouillon ecrit sous un nom devenu
+    #     faux est une trace utile le jour ou on se demande pourquoi une fiche
+    #     a ete reecrite.
+    # C'est aussi, mot pour mot, ce que fait le juge depuis le 2026-09-18 quand
+    # il rend « a revoir ». Deux chemins, un seul mecanisme.
+    for bid, _avant, _apres in caducs:
+        await sb.update(
+            "messages",
+            {"status": "failed"},
+            filters={"id": f"eq.{bid}", "status": "eq.draft"},
+        )
+    if caducs:
+        print(f"{len(caducs)} brouillon(s) renvoyé(s) à la réécriture.")
 
     for i, (cid, _avant, nom) in enumerate(acceptes, 1):
         # ⚠️ Le filtre porte AUSSI sur `nom_usage=is.null` : si WF-3 a écrit
