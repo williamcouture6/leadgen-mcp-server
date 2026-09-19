@@ -128,8 +128,22 @@ def _fiche_propre(fiche: dict[str, Any]) -> bool:
     return nom_commercial(nom) == nom and len(nom.split()) <= 3
 
 
-def groupe_de_controle(fiches: list[dict[str, Any]]) -> list[str]:
-    """Les échecs qui interdisent d'écrire. Liste vide = on peut y aller."""
+def groupe_de_controle(temoins: list[dict[str, Any]]) -> list[str]:
+    """Les échecs qui interdisent d'écrire. Liste vide = on peut y aller.
+
+    🔴 `temoins` EST UNE POPULATION STABLE, PAS LES FICHES À ÉCRIRE. La nuance
+    a coûté un faux refus le 2026-09-18, au deuxième passage du rattrapage :
+
+    la première version mesurait sur les fiches candidates. Au premier passage
+    (510 fiches, mélange représentatif) le taux était bon. Au second il ne
+    restait que 35 fiches — c'est-à-dire, **par construction, celles que le
+    premier passage n'a PAS su résoudre**. Le taux est tombé à 43 % et le
+    script a refusé d'écrire, alors que rien n'avait changé dans l'extraction.
+
+    Mesurer un outil sur un résidu trié pour sa difficulté ne dit rien sur
+    l'outil. Le témoin lit donc TOUTES les fiches recherchées, qu'elles aient
+    déjà un nom ou non : la référence ne bouge pas d'un passage à l'autre.
+    """
     echecs: list[str] = []
 
     # a. des négatifs mesurés en base : la garde DOIT les refuser
@@ -164,7 +178,7 @@ def groupe_de_controle(fiches: list[dict[str, Any]]) -> list[str]:
     # ⚠️ Le seuil de 80 % n'a PAS bougé. C'est le repère qui était faux, pas la
     # barre qui était trop haute — baisser un seuil pour faire passer un
     # contrôle, c'est supprimer le contrôle.
-    propres = [f for f in fiches if _fiche_propre(f)]
+    propres = [f for f in temoins if _fiche_propre(f)]
     if propres:
         def _repere(f: dict[str, Any]) -> str:
             nom = f.get("name") or ""
@@ -230,7 +244,20 @@ async def principal(ecrire: bool) -> int:
     )
     print(f"{len(fiches)} fiche(s) candidates au rattrapage.")
 
-    echecs = groupe_de_controle(fiches)
+    # Le témoin lit sa propre population, indépendante de ce qu'il reste à
+    # écrire — voir le docstring de `groupe_de_controle`.
+    temoins = await sb.select_all(
+        "companies",
+        params={
+            "select": "id,name,nom_usage,research_json,status",
+            "research_json": "not.is.null",
+            "status": "not.in.(" + ",".join(STATUTS_EXCLUS) + ")",
+        },
+        order="id.asc",
+    )
+    print(f"{len(temoins)} fiche(s) au groupe de contrôle (population stable).")
+
+    echecs = groupe_de_controle(temoins)
     if echecs:
         print("\n🔴 GROUPE DE CONTRÔLE EN ÉCHEC — rien n'est écrit :")
         for e in echecs:
