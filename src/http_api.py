@@ -4015,6 +4015,13 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
 
 # ---------------- Compliance (Phase 2 — WF-5) ----------------
 
+# Combien de fois un brouillon « à revoir » peut être réécrit avant que le refus
+# devienne définitif. Deux : la première réécriture corrige la maladresse, la
+# seconde confirme que le problème n'est pas dans la plume. Au-delà, insister
+# coûterait une place du lot chaque jour pour la même fiche.
+_MAX_REECRITURES = 2
+
+
 def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dict[str, Any]:
     """Le patch à écrire sur `messages` après une passe de conformité.
 
@@ -4060,12 +4067,44 @@ def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dic
     if verdict == "error":
         return {"compliance_verdict": verdict}
 
+    tentatives = (tentatives_avant or 0) + 1
     patch: dict[str, Any] = {
         "compliance_verdict": verdict,
-        "compliance_tentatives": (tentatives_avant or 0) + 1,
+        "compliance_tentatives": tentatives,
     }
     if verdict != "non_juge":
         patch["compliance_check_passed"] = verdict == "approved"
+
+    # 🔴 « À REVOIR » RENVOIE À LA RÉÉCRITURE ; SEUL « BLOQUÉ » EST DÉFINITIF.
+    # Décision William, 2026-09-18 : « il faut faire en sorte de mieux tuner le
+    # juge, car je commence à manquer de patience pour ce problème. »
+    #
+    # LE DÉFAUT, MESURÉ : `needs_revision` écrivait EXACTEMENT la même chose que
+    # `blocked` — `compliance_check_passed = false` — et la sélection de WF-5 ne
+    # reprend que `is.null`. Le brouillon quittait donc le lot POUR TOUJOURS et
+    # son contact restait gelé à vie. Au 2026-09-18 : **12 entreprises gelées
+    # sur 93 jugées (13 %)**, et la relecture des motifs a montré que la
+    # majorité étaient des FAUX POSITIFS.
+    #
+    # Le cas qui l'a rendu intenable : *Haute voltige déneigement*, gelée alors
+    # que le juge écrit noir sur blanc « aucune fabrication ni violation
+    # bloquante détectée » — il la refusait pour du STYLE.
+    #
+    # 🔴 POURQUOI `failed` ET PAS UN RETOUR À `null` : `null` ferait rejuger le
+    # MÊME texte par le MÊME juge, indéfiniment. `failed` libère l'entreprise
+    # (`db._retenir` exclut `not.in.(failed)` — c'est la règle « retirer un
+    # brouillon à la main doit la libérer, pas la geler »), donc WF-4 en écrit
+    # un NEUF. Ce qui a été refusé est réécrit, pas relu.
+    #
+    # ⚠️ LE PLAFOND EST INDISPENSABLE. Sans lui, un brouillon que le juge refuse
+    # systématiquement tourne en rond et consomme une place du lot chaque jour.
+    # Au-delà de `_MAX_REECRITURES`, le refus redevient définitif — on aura
+    # alors la preuve que ce n'est pas un accident de rédaction.
+    #
+    # ⚠️ `blocked` N'EST PAS CONCERNÉ. Il dit « mensonge vérifiable », et un
+    # mensonge ne se corrige pas en réécrivant : il vient de la donnée.
+    if verdict == "needs_revision" and tentatives <= _MAX_REECRITURES:
+        patch["status"] = "failed"
     return patch
 
 

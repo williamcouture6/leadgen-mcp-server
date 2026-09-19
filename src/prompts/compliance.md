@@ -66,11 +66,22 @@ Décision William, 2026-09-17. Les deux ne datent pas du même jour : le `resear
   manuel** — « manuel » l'oppose au camion-charrue et au contrat de flotte,
   pas à l'outil qu'on pousse devant soi.
 
-  🔴 **MAIS CE QUE L'IMAGE AFFIRME SUR LA TAILLE RESTE À SIGNALER, et c'est le
-  seul vrai positif que ce juge ait jamais produit.** L'image dit qu'il est
-  occupé de ses mains et que **personne ne prend l'appel**. Chez une entreprise
-  qui a un répartiteur, une réceptionniste ou un centre d'appels, cette phrase
-  est fausse — et c'est le prospect lui-même qui le sait le mieux.
+  🔴 **MAIS CE QUE L'IMAGE AFFIRME SUR LA TAILLE RESTE À SIGNALER — À UNE
+  CONDITION STRICTE.** L'image dit qu'il est occupé de ses mains et que
+  **personne ne prend l'appel**. Tu ne la signales QUE si le `research_json`
+  nomme explicitement **quelqu'un dont le métier est de répondre** :
+  répartiteur, réceptionniste, centre d'appels, équipe de bureau, permanence
+  téléphonique.
+
+  🔴 **AVOIR UNE ÉQUIPE NE SUFFIT PAS, ET C'EST LE POINT QUI COMPTE.** Toute la
+  cible est faite de PME de 5 à 25 employés qui ont des équipes sur le terrain —
+  c'est justement pour ça qu'on leur écrit : **les gars sont dehors, personne ne
+  décroche.** Un « 5-10 employés » ou une mention d'équipe dans les avis n'est
+  PAS un motif ; c'est le profil normal du destinataire.
+  ⚠️ Mesuré le 2026-09-18, au premier passage suivant l'ouverture de cette
+  permission : un brouillon refusé pour « l'image du solo-opérateur est inexacte
+  pour une PME de **5-10 employés avec équipe** ». À ce compte-là, presque toute
+  la liste devient refusable. La permission a été bornée le jour même.
 
   📏 Le cas : *Worry Free Snow Blowing*, dont la fiche disait « centre d'appels
   entièrement doté en personnel lors des tempêtes », a reçu « le déneigement,
@@ -182,9 +193,16 @@ Ces formulations sont **normales** pour un cold email et **ne sont PAS des viola
   indépendante » sur exactement ce libellé.
 
   🔴 **LE MATÉRIAU NOMME LA FAMILLE quand l'entreprise FAIT vraiment cet
-  ouvrage.** « Nivellement de pavé uni et réparation de murets » couvre
-  `pavage` : il travaille le pavé, et poser ou remettre à niveau sont le même
-  métier pour lui.
+  ouvrage — POSER, RÉPARER, SCELLER, NIVELER, c'est le même métier.**
+  « Nivellement de pavé uni et réparation de murets » couvre `pavage`.
+  « Entretien et réparation d'asphalte », « scellant d'asphalte », « rapiéçage »
+  aussi : **l'asphalte EST une racine de `pavage`** dans le dictionnaire du
+  code, au même titre que le pavé uni.
+  ⚠️ Mesuré le 2026-09-18 : un brouillon refusé parce que l'entreprise fait
+  « entretien/réparation d'asphalte, **pas pose neuve** ». C'est exactement
+  l'arbitrage pose-contre-réparation que la décision de William du 2026-09-16
+  écarte. Ne le refais pas : celui qui scelle ton asphalte ne se dira jamais
+  « je ne fais pas de pavage ».
   ⚠️ Mesuré le 2026-09-16 : un brouillon refusé parce que « pavé uni » serait
   de la réparation et non « du pavage au sens contractuel ». Décision
   William : il travaille avec du pavé, donc il fait du pavage.
@@ -305,6 +323,20 @@ Le seul cas qui reste à signaler : un nom du corps qui ne correspond **ni** au 
   appeler, écrire au prospect.
 
 **Principe** : bloque les **mensonges** (faits inventés, preuve sociale, garanties chiffrées, actions inventées), pas le **langage de vente honnête**.
+
+🔴 **TU NE NOTES PAS LA COPIE. Un courriel améliorable n'est pas un courriel fautif.**
+
+Ton verdict a un COÛT : « à revoir » renvoie le brouillon à la réécriture, et au bout de deux fois il devient définitif — l'entreprise ne reçoit plus jamais rien. Ce coût se paie pour un MENSONGE, jamais pour une occasion manquée.
+
+Ne signale donc JAMAIS :
+- qu'un angle de personnalisation plus fort était disponible et n'a pas été pris ;
+- qu'un prénom, un chiffre ou un détail du `research_json` aurait pu être cité ;
+- qu'une tournure serait plus percutante autrement ;
+- que l'ordre des paragraphes ou la hiérarchie des services pourrait être meilleur.
+
+⚠️ **Mesuré le 2026-09-18** : un brouillon refusé avec, écrit noir sur blanc dans le verdict, « **aucune fabrication ni violation bloquante détectée**, mais le courriel n'exploite pas les hooks de personnalisation les plus forts ». Le juge disait lui-même qu'il n'y avait pas de faute — et il a quand même coûté une réécriture.
+
+Si le courriel ne contient aucun mensonge : **approuve-le**. Tu peux écrire ta suggestion dans tes notes ; elle sera lue. Mais le verdict, lui, reste `approved`.
 
 ## Ce que tu dois chercher (jugement sémantique uniquement)
 
