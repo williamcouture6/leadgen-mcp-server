@@ -74,6 +74,20 @@ def test_aucune_exclusion_n_est_recopiee_dans_le_prompt(famille: str) -> None:
 #
 # On ne teste donc que les mots DISTINCTIFS : ceux qu'on n'écrit pas par
 # hasard, et dont la présence signale vraiment une règle recopiée.
+# ⚠️ LES ACCENTS. `EXIGE` porte les mots SANS accents (il compare du texte
+# deja normalise) ; le prompt, lui, s'ecrit en francais. Comparer les deux
+# directement rendait « refection » et « elastomere » INCAPABLES de matcher
+# « réfection » et « élastomère » : deux des huit mots ne pouvaient jamais
+# rougir. Releve par un conseil de relecture le 2026-09-19.
+def _sans_accents(t: str) -> str:
+    import unicodedata
+
+    plat = unicodedata.normalize("NFKD", t.lower())
+    return "".join(c for c in plat if not unicodedata.combining(c))
+
+
+PROMPT_NU = _sans_accents(PROMPT)
+
 _MOTS_DISTINCTIFS = frozenset({
     "bardeau", "membrane", "elastomere", "refection", "couvreur",
     "toiture neuve", "hebdomadaire", "saisonnier",
@@ -89,7 +103,7 @@ def test_aucune_exigence_DISTINCTIVE_n_est_recopiee_dans_le_prompt(
     la liste suffit au juge."""
     revenus = [
         m for m in EXIGE[famille]
-        if m in _MOTS_DISTINCTIFS and m in PROMPT.lower()
+        if m in _MOTS_DISTINCTIFS and _sans_accents(m) in PROMPT_NU
     ]
     assert not revenus, (
         f"les mots d'exigence de « {famille} » sont revenus dans le prompt : "
@@ -154,15 +168,34 @@ def test_la_famille_interdite_n_entre_pas_dans_la_liste(
     assert famille_interdite not in metiers_nommables(services), cas
 
 
-def test_le_juge_recoit_la_liste_dans_le_bloc() -> None:
-    """Le dernier maillon : la liste doit vraiment arriver dans le texte."""
+@pytest.mark.parametrize(
+    ("cas", "note", "avis"),
+    [
+        # 🔴 LA BRANCHE A SORTIE ANTICIPEE EST LA PLUS IMPORTANTE : une ligne
+        # ajoutee au `return` final ne l'atteint pas. C'est le piege qui a ete
+        # trouve en cablant les metiers, et un conseil de relecture a releve
+        # que le test d'origine ne l'exercait PAS — retirer les metiers de
+        # cette branche laissait tout vert.
+        ("aucun avis (sortie anticipée)", None, None),
+        ("sous le plancher de qualité", 3.2, 4),
+        ("note citable", 4.8, 47),
+        ("note sans compte", 4.8, None),
+        ("compte sans note", None, 47),
+    ],
+)
+def test_la_liste_arrive_dans_TOUTES_les_branches_du_bloc(
+    cas: str, note: float | None, avis: int | None
+) -> None:
+    """Le dernier maillon : la liste doit vraiment arriver dans le texte,
+    quelle que soit la situation d'avis de l'entreprise."""
     bloc = bloc_faits_verifies(
-        4.8, 47, metiers_nommables=metiers_nommables(
+        note, avis, metiers_nommables=metiers_nommables(
             ["Entretien de gazon", "Déneigement résidentiel"]
         ),
     )
-    assert "**tonte, déneigement**" in bloc or "**déneigement, tonte**" in bloc
-    assert "n'est JAMAIS une" in bloc
+    assert "Métiers reconnus" in bloc, cas
+    assert "tonte" in bloc and "déneigement" in bloc, cas
+    assert "n'est JAMAIS une" in bloc, cas
 
 
 def test_le_bloc_dit_explicitement_quand_il_n_y_a_AUCUN_metier() -> None:
@@ -174,23 +207,56 @@ def test_le_bloc_dit_explicitement_quand_il_n_y_a_AUCUN_metier() -> None:
 
 
 def test_la_liste_ne_depend_pas_de_la_DATE() -> None:
-    """🔴 CE QUI REND LE RECALCUL CÔTÉ JUGE SÛR.
+    """🔴 CE QUI REND LE RECALCUL CÔTÉ JUGE SÛR — et le test l'a prouvé par
+    accident pendant une heure.
 
     Le juge relit parfois un brouillon écrit six jours plus tôt. Si la liste
     dépendait de la date, il lirait une liste que le rédacteur n'avait pas —
-    exactement le défaut du nom d'entreprise, corrigé le matin même.
+    exactement le défaut du nom d'entreprise, corrigé la veille.
 
-    `classer_services` ne lit aucune date, et `EXIGE` non plus.
+    ⚠️ LA PREMIÈRE VERSION DE CE TEST ÉTAIT TAUTOLOGIQUE, relevée par un
+    conseil de relecture. Elle appelait l'ALIAS avec trois dates — or l'alias
+    jette son paramètre `aujourdhui` (c'est tout son propos). Les trois appels
+    étaient le même appel : `metiers_mentionnables(services, "PAS UNE DATE")`
+    rendait le résultat normal. Il ne pouvait plus rougir, et il gardait le
+    fait le plus important du design.
+
+    On vérifie donc la PROPRIÉTÉ à la source : aucune date n'entre dans le
+    chemin de calcul.
     """
-    from src.tools.personalize import metiers_mentionnables
+    import ast
+    import inspect
+    from pathlib import Path
 
-    services = ["Entretien de gazon", "Déneigement résidentiel", "Lavage de vitres"]
-    listes = {
-        metiers_mentionnables(services, date(2026, 1, 15)),
-        metiers_mentionnables(services, date(2026, 7, 15)),
-        metiers_mentionnables(services, date(2026, 12, 31)),
+    from src.lib import metiers as mod
+
+    # 1. la signature ne prend pas de date
+    params = inspect.signature(metiers_nommables).parameters
+    assert "aujourdhui" not in params and "date" not in params, (
+        f"une date est entrée dans la signature : {list(params)}"
+    )
+
+    # 2. le corps n'appelle rien qui lise l'horloge, ni directement ni par
+    #    `resoudre_metiers` (qui, lui, prend une date).
+    source = Path(mod.__file__).read_text(encoding="utf-8")
+    arbre = ast.parse(source)
+    corps = next(
+        n for n in ast.walk(arbre)
+        if isinstance(n, ast.FunctionDef) and n.name == "metiers_nommables"
+    )
+    appels = {
+        n.func.id for n in ast.walk(corps)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
     }
-    assert len(listes) == 1, f"la liste change avec la date : {listes}"
+    assert "resoudre_metiers" not in appels, (
+        "`metiers_nommables` appelle `resoudre_metiers`, qui prend une date : "
+        "la liste peut désormais changer entre l'écriture et le jugement"
+    )
+    assert not (appels & {"today", "now", "date", "datetime"}), appels
+
+    # 3. et la preuve par l'usage, sur des saisons opposées
+    services = ["Entretien de gazon", "Déneigement résidentiel", "Lavage de vitres"]
+    assert metiers_nommables(services) == metiers_nommables(services)
 
 
 def test_l_alias_du_redacteur_rend_la_MEME_liste_que_lib() -> None:
@@ -209,3 +275,77 @@ def test_l_alias_du_redacteur_rend_la_MEME_liste_que_lib() -> None:
             metiers_mentionnables(services, date(2026, 9, 18), industry)
             == metiers_nommables(services, industry)
         ), services
+
+
+# ── Le maillon sans filet, relevé par un conseil de relecture ───────────────
+
+
+def test_le_juge_VOIT_VRAIMENT_la_liste_dans_son_message() -> None:
+    """🔴 LE TROU QUE TOUS LES AUTRES TESTS LAISSAIENT.
+
+    Ils assertent sur `bloc_faits_verifies` directement. Mais entre le bloc et
+    le juge il y a `_message_utilisateur_juge`, qui doit lui passer la liste —
+    et **rien ne le vérifiait**. Si le kwarg `metiers_nommables=` disparaissait
+    de `tools/compliance.py`, les 2250 tests restaient verts et le juge
+    redevenait aveugle : exactement l'état qu'on vient de corriger.
+
+    C'est la même classe de trou que `test_le_juge_recoit_VRAIMENT_le_nom`
+    avait fermée pour le nom d'entreprise, la veille. On la ferme ici aussi.
+    """
+    from src.tools.compliance import _message_utilisateur_juge
+
+    msg = _message_utilisateur_juge(
+        body="corps",
+        subject="objet",
+        research_json={
+            "services_offered": ["Entretien de gazon", "Déneigement résidentiel"]
+        },
+        social_proof=[],
+        metier_scene="déneigement",
+    )
+    assert "Métiers reconnus" in msg, (
+        "le juge ne reçoit PAS la liste : le câblage de "
+        "`_message_utilisateur_juge` est rompu"
+    )
+    assert "tonte" in msg, "la liste arrive vide ou fausse"
+    assert "Métier de la première ligne : **déneigement**" in msg, (
+        "la scène n'arrive pas au juge : il reprochera un « cadrage inversé »"
+    )
+    # Le témoin : sans lui, un message vide passerait les assertions du dessus
+    # si elles étaient écrites autrement.
+    assert "Faits vérifiés" in msg and "corps" in msg
+
+
+def test_le_juge_recoit_le_marquage_du_metier_du_SECTEUR() -> None:
+    """📏 *S.O.S Mini Excavation* — services d'excavation, mot-clé Google
+    « entrepreneur en déneigement ». Le code ajoute `déneigement` pour qu'elle
+    reste joignable (décision William, 2026-09-02) ; le juge l'avait BLOQUÉE le
+    2026-09-17 : « aucun service de déneigement dans le research_json ».
+
+    Décision William, 2026-09-18 : on le MARQUE et on l'accepte.
+    """
+    from src.tools.compliance import _message_utilisateur_juge
+
+    msg = _message_utilisateur_juge(
+        body="corps",
+        subject="objet",
+        research_json={"services_offered": ["Mini-excavation", "Terrassement"]},
+        social_proof=[],
+        industry="entrepreneur en déneigement",
+    )
+    assert "mot-clé de sourcing" in msg, (
+        "le marquage du métier venu du secteur n'arrive pas : le juge "
+        "re-bloquera S.O.S Mini Excavation"
+    )
+
+
+def test_sans_service_le_juge_est_prevenu_qu_il_n_y_a_AUCUN_metier() -> None:
+    """⚠️ Le silence se lirait « pas encore cherché », et le juge comblerait —
+    même raison que pour « aucune note en base »."""
+    from src.tools.compliance import _message_utilisateur_juge
+
+    msg = _message_utilisateur_juge(
+        body="corps", subject="objet",
+        research_json={"services_offered": []}, social_proof=[],
+    )
+    assert "Métiers reconnus : **AUCUN**" in msg

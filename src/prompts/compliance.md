@@ -170,10 +170,9 @@ Depuis le 2026-09-18, le bloc porte la ligne `- Métiers reconnus : …`. **C'es
 
 🔴 **POURQUOI CETTE SECTION A MAIGRI DE QUARANTE LIGNES.** Elle contenait le dictionnaire recopié : une table de correspondance libellé → famille, une règle sur les matériaux, quatre cas d'exclusion nommés un par un, un arbitrage entre poser et réparer. Tout ça pour t'apprendre ce que le code applique déjà — et **chaque phrase ajoutée entre le 15 et le 18 septembre a réglé un cas en dérèglant un autre.**
 
-Trois faux positifs mesurés, tous fermés par la liste :
-- « tonte » refusée chez une entreprise qui liste « Entretien de gazon » — TROIS brouillons, trois refus, la même phrase, un contact presque gelé ;
-- « pavage » refusée chez une entreprise qui scelle et répare le revêtement ;
-- « ménage » refusée chez un « Entretien ménager commercial ».
+Trois faux positifs mesurés, tous fermés par la liste — et **je ne les raconte pas ici**, exprès : un exemple concret se relit comme une règle, et une règle recopiée est la seconde vérité qu'on vient de fermer. Ils sont dans `tests/test_juge_arbitre_encore_les_metiers.py`, où ils exercent le dictionnaire au lieu de t'instruire.
+
+⚠️ Une première version de ce paragraphe les racontait. Un conseil de relecture a montré le jour même que l'un d'eux — « pavage refusée chez une entreprise qui scelle et répare le revêtement » — **était l'arbitrage pose-contre-réparation, reformulé**. La règle avait survécu au retrait ; seul le mot avait changé.
 
 **Ne réenseigne jamais une règle du dictionnaire ici.** Le jour où le dictionnaire change, le prompt dirait une chose et la liste une autre — et c'est la double vérité qu'on vient de fermer.
 
@@ -182,7 +181,7 @@ Trois faux positifs mesurés, tous fermés par la liste :
   - « **Pour le reste de l'année, j'ai aussi vu que tu fais {AUTRES}.** »
   - « **J'ai aussi vu que tu fais {AUTRES}.** »
 
-  ⚠️ **Les noms sont des FAMILLES NORMALISÉES, pas des recopies.** « paysagement » n'apparaît pas dans « Aménagement paysager » — chercher le mot tel quel et conclure à l'invention refuserait 70 % des destinataires. La liste du bloc te donne les familles ; tu n'as aucune traduction à faire.
+  ⚠️ **Les noms sont des FAMILLES NORMALISÉES, pas des recopies de `services_offered`.** N'exige jamais l'égalité littérale entre un nom du corps et un libellé : la liste du bloc te donne les familles, tu n'as aucune traduction à faire ni aucune correspondance à deviner.
 
   ⚠️ **« j'ai aussi vu que » ne se signale pas** comme mise en scène de la recherche. Formulation décidée par William le 2026-09-07, et le premier paragraphe fixe de C et D commence de toute façon par « J'ai vu que tu fais du… ». Elle concerne **70 % des destinataires** : la signaler les gèlerait à vie.
 

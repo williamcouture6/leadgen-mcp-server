@@ -4536,9 +4536,16 @@ async def compliance_check(payload: ComplianceCheckIn) -> compliance_tools.Compl
             # ⚠️ Repli sur un recalcul quand la colonne est vide : les 31
             # brouillons anterieurs a la migration 0058 ne la portent pas. Ils
             # sont tous deja juges, donc le repli ne sert qu'a ne pas planter.
+            # ⚠️ `is None` ET PAS `or` : une chaine vide tomberait dans le
+            # repli, qui recalcule AVEC LA DATE DU JOUR — exactement ce que
+            # l'en-tete du SELECT interdit. Sans consequence aujourd'hui (les
+            # 31 lignes sans colonne sont toutes deja jugees), mais un repli
+            # qui ment en silence le 15 novembre est un repli a corriger
+            # maintenant. Releve par un conseil de relecture.
             metier_scene=(
                 msg.get("metier_scene")
-                or metier_de_la_scene(
+                if msg.get("metier_scene") is not None
+                else metier_de_la_scene(
                     (research_json or {}).get("services_offered"),
                     date.today(),
                     company_rows[0].get("industry") if company_rows else None,

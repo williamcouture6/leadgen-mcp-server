@@ -407,12 +407,25 @@ def _bloc_metiers(
     apprendre au juge une regle que le dictionnaire applique deja, et un
     nouveau trou ailleurs. Le bloc remplace ces phrases par la REPONSE.
 
-    ⚠️ LE PERIMETRE EST LA LIGNE LA PLUS IMPORTANTE. La liste vaut pour les
-    FAMILLES (« tu fais du X »). L'enumeration du 2e paragraphe (« autant de
-    sortes de deneigement, de toitures... ») recopie les LIBELLES BRUTS de
-    `services_offered` et se juge contre eux. Sans cette phrase, mesure sur
-    111 brouillons : 10 refus neufs, tous faux — des « deneigement de toiture »
-    lus comme la famille `toiture`.
+    🔴 LE PERIMETRE EST LA LIGNE LA PLUS IMPORTANTE, ET LA PREMIERE VERSION
+    ETAIT TROP ETROITE. Elle n'exemptait que l'enumeration du 2e paragraphe.
+
+    Un conseil de relecture a mesure ce qu'elle laissait passer, quelques
+    heures apres l'ecriture : SIX brouillons en base nomment `toiture` alors
+    que la famille n'est pas dans leur liste (exigence non tenue) — et quatre
+    le font HORS de l'enumeration, dans l'ouvreur genere de A et B :
+
+        « Le deneigement DE TOITURE, ca se fait pas les mains libres »
+        « Quand quelqu'un cherche quelqu'un pour deneiger SA TOITURE »
+
+    Aucun ne pretend que l'entreprise fait de la toiture. Le mot decrit le
+    TRAVAIL de deneigement, sur un toit. Deux de ces brouillons etaient deja
+    APPROUVES ; la regle etroite les aurait fait refuser le lendemain, puis
+    reecrire a l'identique — le redacteur relit les memes libelles — puis geler
+    au 2e tour. La boucle *Entretien V Boudreault*, sur une autre famille.
+
+    La regle porte donc sur la PRETENTION, pas sur le mot : « le courriel
+    dit-il que c'est SON metier ? »
     """
     if nommables is None:
         return ""
@@ -436,10 +449,18 @@ def _bloc_metiers(
         "  Une famille HORS de cette liste, présentée comme un métier du",
         "  prospect, EST une invention : signale-la.",
         "  Le corps n'est pas tenu de toutes les nommer.",
-        "  ⚠️ Cette liste vaut pour les FAMILLES (« tu fais du X », « les PME",
-        "  de X »). L'énumération « autant de sortes de … que … » recopie les",
-        "  LIBELLÉS BRUTS de `services_offered` : juge-la contre ces libellés,",
-        "  jamais contre cette liste.",
+        "  ⚠️ **LA LISTE GOUVERNE UNE PRÉTENTION, PAS UN MOT.** Elle vaut",
+        "  quand le corps AFFIRME que le prospect exerce un métier : « tu fais",
+        "  du X », « les PME de X », « j'ai aussi vu que tu fais X ».",
+        "  Elle ne vaut PAS quand le mot décrit simplement le travail :",
+        "    · « le déneigement **de toiture**, ça se fait pas les mains",
+        "      libres » — c'est du déneigement, sur un toit ;",
+        "    · « quelqu'un qui cherche à faire déneiger **sa toiture** » —",
+        "      c'est le besoin du client, pas le métier du prospect ;",
+        "    · l'énumération « autant de sortes de … que … », qui recopie les",
+        "      LIBELLÉS BRUTS de `services_offered` — juge-la contre eux.",
+        "  Demande-toi toujours : **le courriel dit-il que c'est SON métier ?**",
+        "  Si non, la liste ne s'applique pas.",
         "  ⚠️ Elle dit qu'une famille est LÉGITIME, pas que tout ce qu'on en",
         "  dit l'est. Une affirmation inventée autour d'un métier réel reste à",
         "  signaler.",
