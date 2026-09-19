@@ -30,7 +30,9 @@ API = Path(__file__).resolve().parent.parent / "src/http_api.py"
 PROMPT = Path(__file__).resolve().parent.parent / "src/prompts/compliance.md"
 
 
-def _patch_de_verdict(verdict: str, tentatives_avant: int | None):
+def _patch_de_verdict(
+    verdict: str, tentatives_avant: int | None, refus_deja_subis: int = 0
+):
     """Rejoue la fonction de persistance sans monter toute la route."""
     from src import http_api
 
@@ -49,7 +51,7 @@ def _patch_de_verdict(verdict: str, tentatives_avant: int | None):
             if '"compliance_verdict": verdict' in corps and "_MAX_REECRITURES" in corps:
                 cible = n.name
     assert cible, "la fonction qui persiste le verdict est introuvable"
-    return getattr(http_api, cible)(verdict, tentatives_avant)
+    return getattr(http_api, cible)(verdict, tentatives_avant, refus_deja_subis)
 
 
 @pytest.mark.parametrize("tentatives", [None, 0, 1])
@@ -80,15 +82,46 @@ def test_bloque_reste_definitif() -> None:
 
 
 def test_le_plafond_rend_le_refus_definitif() -> None:
-    """⚠️ SANS PLAFOND, un brouillon que le juge refuse systématiquement tourne
-    en rond et consomme une place du lot chaque jour."""
+    """⚠️ SANS PLAFOND, un contact que le juge refuse systématiquement tourne en
+    rond et consomme une place du lot chaque jour."""
     from src.http_api import _MAX_REECRITURES
 
-    patch = _patch_de_verdict("needs_revision", _MAX_REECRITURES)
+    patch = _patch_de_verdict("needs_revision", 0, _MAX_REECRITURES)
     assert "status" not in patch, (
         f"au-delà de {_MAX_REECRITURES} réécritures, le refus doit redevenir "
-        "définitif — sinon la même fiche revient indéfiniment"
+        "définitif — sinon le même contact revient indéfiniment"
     )
+
+
+def test_le_plafond_NE_compte_PAS_les_tentatives_du_brouillon() -> None:
+    """🔴 LE DÉFAUT QUE CE TEST AURAIT ATTRAPÉ, et qui a vécu trois heures.
+
+    La première version du plafond lisait `messages.compliance_tentatives`.
+    Elle ne pouvait PAS fonctionner : ce compteur porte sur UN brouillon, et
+    chaque réécriture en crée un NEUF, dont le compteur repart à zéro.
+
+    📏 Mesuré le 2026-09-18 : *Entretien V Boudreault*, TROIS brouillons en onze
+    heures, tous refusés pour la même phrase (« tu fais de la tonte »), et
+    `compliance_tentatives = 1` sur les trois. Le plafond n'était jamais
+    atteint — il comptait un objet neuf à chaque tour.
+
+    Ce qui boucle est le couple (contact, données) : le rédacteur relit les
+    mêmes services et réécrit le même texte. Ce test fige la distinction.
+    """
+    from src.http_api import _MAX_REECRITURES
+
+    # Un brouillon déjà passé DIX fois devant le juge, mais dont le CONTACT
+    # n'a jamais été réécrit : il doit encore avoir droit à sa réécriture.
+    patch = _patch_de_verdict("needs_revision", 10, 0)
+    assert patch.get("status") == "failed", (
+        "le plafond s'est remis à compter les passages du juge sur UN "
+        "brouillon — il ne se déclenchera jamais, puisqu'une réécriture crée "
+        "un message neuf"
+    )
+
+    # L'inverse : un brouillon neuf chez un contact déjà réécrit au plafond.
+    patch = _patch_de_verdict("needs_revision", 0, _MAX_REECRITURES)
+    assert "status" not in patch
 
 
 def test_approuve_ne_touche_pas_au_statut() -> None:

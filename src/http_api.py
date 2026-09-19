@@ -4022,7 +4022,53 @@ async def _run_wf4(payload: RunWf4In) -> RunWf4Out:
 _MAX_REECRITURES = 2
 
 
-def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dict[str, Any]:
+async def _refus_deja_subis(message_id: str) -> int:
+    """Combien de fois ce CONTACT a deja vu un brouillon refuse et reecrit.
+
+    🔴 C'EST LE COMPTE QUI FAIT LE PLAFOND, et le premier n'etait pas celui-la.
+    `messages.compliance_tentatives` compte les passages du juge sur UN
+    brouillon ; une reecriture en cree un neuf, dont le compteur repart a zero.
+    Mesure du 2026-09-18 : trois brouillons pour la meme entreprise en onze
+    heures, tous refuses pour la meme phrase, `compliance_tentatives = 1` sur
+    les trois.
+
+    Ce qui boucle, c'est le couple (contact, donnees) : le redacteur relit les
+    memes services et reecrit le meme texte. On compte donc les brouillons
+    `failed` deja portes par ce contact avec un verdict de refus.
+
+    ⚠️ Une panne de lecture rend 0, donc on reecrit. C'est le bon sens du
+    fail-safe ici : au pire une reecriture de trop, jamais un contact gele par
+    accident de requete.
+    """
+    from . import supabase_client as db
+
+    try:
+        courant = await db.select(
+            "messages",
+            params={"select": "contact_id", "id": f"eq.{message_id}", "limit": "1"},
+        )
+        if not courant or not courant[0].get("contact_id"):
+            return 0
+        anterieurs = await db.select(
+            "messages",
+            params={
+                "select": "id",
+                "contact_id": f"eq.{courant[0]['contact_id']}",
+                "status": "eq.failed",
+                "compliance_verdict": "eq.needs_revision",
+                "limit": "10",
+            },
+        )
+        return len(anterieurs)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _patch_verdict_conformite(
+    verdict: str,
+    tentatives_avant: int | None,
+    refus_deja_subis: int = 0,
+) -> dict[str, Any]:
     """Le patch à écrire sur `messages` après une passe de conformité.
 
     `non_juge` est le seul verdict qui NE touche PAS `compliance_check_passed` :
@@ -4103,7 +4149,24 @@ def _patch_verdict_conformite(verdict: str, tentatives_avant: int | None) -> dic
     #
     # ⚠️ `blocked` N'EST PAS CONCERNÉ. Il dit « mensonge vérifiable », et un
     # mensonge ne se corrige pas en réécrivant : il vient de la donnée.
-    if verdict == "needs_revision" and tentatives <= _MAX_REECRITURES:
+    # 🔴 LE PLAFOND COMPTE LES REFUS DU CONTACT, PAS CEUX DU BROUILLON.
+    #
+    # Premiere version, le 2026-09-18 : `tentatives <= _MAX_REECRITURES`, ou
+    # `tentatives` vient de `messages.compliance_tentatives`. Elle ne pouvait
+    # PAS fonctionner — chaque reecriture cree un message NEUF, dont le
+    # compteur repart a zero. Mesure le soir meme : *Entretien V Boudreault*,
+    # TROIS brouillons en onze heures, tous refuses pour la meme phrase, et
+    # `compliance_tentatives = 1` sur les trois. Le plafond n'etait jamais
+    # atteint : il comptait un objet qui est neuf a chaque tour.
+    #
+    # Le rattrapage ne change rien non plus : le redacteur relit les memes
+    # donnees et reecrit le meme texte. Ce qui boucle, c'est le couple
+    # (contact, donnees) — c'est donc lui qu'il faut compter.
+    #
+    # ⚠️ Meme classe de defaut que celles trouvees toute la journee : une garde
+    # qui a l'air posee mais qui mesure le mauvais objet. Le test la verifie sur
+    # le CONTACT, pas sur le message.
+    if verdict == "needs_revision" and refus_deja_subis < _MAX_REECRITURES:
         patch["status"] = "failed"
     return patch
 
@@ -4208,7 +4271,10 @@ async def _persister_verdict_conformite(
 
     echec_persist: str | None = None
     try:
-        patch = _patch_verdict_conformite(out.verdict, tentatives_avant)
+        patch = _patch_verdict_conformite(
+            out.verdict, tentatives_avant,
+            refus_deja_subis=await _refus_deja_subis(message_id),
+        )
         patch["compliance_notes"] = compliance_tools.format_compliance_notes(out)
         lignes = await db.update(
             "messages", patch, filters={"id": f"eq.{message_id}"},
