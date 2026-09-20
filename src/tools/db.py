@@ -1904,7 +1904,19 @@ async def list_companies_to_discover(
     research_json. Ce sont les boîtes pour lesquelles tenter une découverte web.
     (track 'agence-ia' = ex-REACTI renommé, pivot 2026-06-07.)
     """
-    return await db.select(
+    # 🔴 ON SUR-LIT, PUIS ON ÉCARTE CELLES QUI ONT DÉJÀ UN COURRIEL.
+    #
+    # Les quatre filtres ci-dessus décrivent « aucun site, aucune recherche » —
+    # ils ne disent RIEN des contacts. Une entreprise sans site mais dont on
+    # possède déjà l'adresse n'a aucune raison de repasser par la découverte :
+    # c'est ~0,09 $ pour retrouver ce qu'on a.
+    #
+    # Le trou était dormant tant que `status='sourced'` impliquait « jamais
+    # traitée ». Le backfill du 2026-09-20 l'a réveillé en remettant 528 fiches
+    # en `sourced` : 26 des 112 candidates avaient déjà un courriel, dont 21
+    # venaient de là. Tout reset futur le rouvrirait de la même façon — d'où un
+    # correctif dans la SÉLECTION, pas un rattrapage en base.
+    candidates = await db.select(
         "companies",
         params={
             "select": "id,name,city,address,raw_payload,status,track",
@@ -1913,9 +1925,23 @@ async def list_companies_to_discover(
             "research_json": "is.null",
             "status": "eq.sourced",
             "order": "created_at.asc",
-            "limit": str(limit),
+            "limit": str(limit * 4),
         },
     )
+    if not candidates:
+        return []
+    # ⚠️ `_select_par_tranches` et pas un `in.(...)` nu : 345 identifiants font
+    # déjà ~13 ko d'URL, et la troncature serait silencieuse.
+    avec_courriel = {
+        r["company_id"]
+        for r in await _select_par_tranches(
+            "contacts",
+            ids=[c["id"] for c in candidates],
+            cle="company_id",
+            params={"select": "company_id", "email": "not.is.null"},
+        )
+    }
+    return [c for c in candidates if c["id"] not in avec_courriel][:limit]
 
 
 # Un modèle qui répond « aucune » remplit quand même le tableau. Sans ce
