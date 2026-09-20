@@ -3365,6 +3365,12 @@ SEUIL_JOURS_URGENCE = 2
 # n8n aurait menti dès le premier lot incomplet.
 FENETRE_MESURE_RYTHME_JOURS = 14
 
+# En deçà de ce nombre de jours OBSERVÉS, un rythme n'est pas une mesure.
+# Trois jours, c'est le minimum pour qu'un lot manqué ou un week-end ne double
+# pas le chiffre. Sous ce seuil, on affiche le stock sans l'exprimer en jours :
+# mieux vaut dire « je ne sais pas encore » que « 2317 jours ».
+JOURS_MIN_POUR_UN_RYTHME = 3
+
 # Au-delà, une passe encore 'running' est morte en vol. Un balayage complet d'une
 # ville prend quelques minutes ; deux heures est déjà très généreux.
 DELAI_BALAYAGE_ORPHELIN_H = 2
@@ -3475,22 +3481,45 @@ async def _lire_etat_inventaire(track: str = "agence-ia") -> EtatInventaire:
                     + _litteral_tableau_pg(etat.secteurs_a_preparer),
                 },
             )
-        # Le rythme réel de consommation, mesuré. `derniere_tentative` est écrit
-        # par le piocheur à chaque tentative, réussie ou non.
-        depuis = (
-            datetime.now(timezone.utc)
-            - timedelta(days=FENETRE_MESURE_RYTHME_JOURS)
-        ).isoformat()
-        consommees = await sb.count(
-            "sourcing_inventaire",
+        # Le rythme réel de consommation, mesuré sur le JOURNAL des exécutions.
+        #
+        # 🔴 IL SE DIVISE PAR LES JOURS RÉELLEMENT COUVERTS, PAS PAR 14.
+        # La première version comptait les fiches touchées sur 14 jours et
+        # divisait par 14, quel que soit l'âge du système. Mesuré le 2026-09-20,
+        # au deuxième jour de vie du piocheur : 4 fiches touchées → 0,29/jour →
+        # la ligne annonçait « 662 piochables (~2317 j au rythme de 0/j) ».
+        # Un rythme affiché à zéro dont on divise quand même, et une autonomie
+        # de six ans. C'est faux au sens où ça ne veut rien dire — et une ligne
+        # qui ne veut rien dire s'apprend à ne plus se lire.
+        depuis = datetime.now(timezone.utc) - timedelta(
+            days=FENETRE_MESURE_RYTHME_JOURS
+        )
+        lots = await sb.select(
+            "sourcing_pioches",
             params={
+                "select": "pioches,created_at",
                 "track": f"eq.{track}",
-                "derniere_tentative": f"gte.{depuis}",
+                "created_at": f"gte.{depuis.isoformat()}",
+                "order": "created_at.asc",
             },
         )
-        if consommees > 0:
-            etat.rythme_par_jour = consommees / FENETRE_MESURE_RYTHME_JOURS
-            etat.jours_de_file = etat.piochable / etat.rythme_par_jour
+        if lots:
+            consommees = sum((l.get("pioches") or 0) for l in lots)
+            premier = _en_datetime_iso(lots[0].get("created_at") or "")
+            # Les jours réellement observés : on ne prête pas au système une
+            # inactivité antérieure à sa naissance.
+            jours = FENETRE_MESURE_RYTHME_JOURS
+            if premier is not None:
+                jours = min(
+                    FENETRE_MESURE_RYTHME_JOURS,
+                    max(1.0, (datetime.now(timezone.utc) - premier).days or 1),
+                )
+            # ⚠️ Sous ce seuil d'observation, un rythme n'est pas une mesure,
+            # c'est un accident. On préfère se taire — le verdict `sans_rythme`
+            # affiche alors le stock sans prétendre l'exprimer en jours.
+            if consommees > 0 and jours >= JOURS_MIN_POUR_UN_RYTHME:
+                etat.rythme_par_jour = consommees / jours
+                etat.jours_de_file = etat.piochable / etat.rythme_par_jour
     except Exception as e:  # noqa: BLE001
         logging.getLogger("inventaire").error("lecture inventaire échouée — %r", e)
         etat.lu = False
@@ -3668,7 +3697,11 @@ def _ligne_resume_inventaire(etat: EtatInventaire, verdict: str) -> str:
     )
     file = f"{etat.piochable} piochables"
     if etat.jours_de_file is not None:
-        file += f" (~{etat.jours_de_file:.1f} j au rythme de {etat.rythme_par_jour:.0f}/j)"
+        cadence = (
+            f"{etat.rythme_par_jour:.1f}" if etat.rythme_par_jour < 10
+            else f"{etat.rythme_par_jour:.0f}"
+        )
+        file += f" (~{etat.jours_de_file:.0f} j au rythme de {cadence}/j)"
     ligne = f"🗺️ Inventaire : {etat.total} connues · {file}"
     if etat.traitees > 0:
         ligne += f" · {etat.traitees} déjà traitées"
