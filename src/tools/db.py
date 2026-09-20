@@ -616,6 +616,71 @@ def _repartir_par_region(
     return sortie
 
 
+async def journaliser_pioche(
+    *, track: str, secteurs: list[str], compteurs: dict[str, int],
+    restant_apres: int | None, duree_ms: int, error_text: str | None,
+) -> None:
+    """Écrit UNE ligne par exécution du piocheur, même quand elle n'a rien pioché.
+
+    🔴 C'EST CE « MÊME QUAND ELLE N'A RIEN PIOCHÉ » QUI PORTE TOUT. Sans ligne,
+    « le piocheur n'a pas tourné » et « il a tourné et la file était vide »
+    laissent exactement la même trace : aucune. Le verdict `piocheur_muet`
+    lisait `sourcing_inventaire.derniere_tentative`, qui ne bouge QUE si une
+    fiche a été touchée — donc un matin hors saison aurait déclenché une fausse
+    alerte au bout de 48 h, sur un système parfaitement sain.
+
+    ⚠️ NE LÈVE JAMAIS. Une panne de journalisation ne doit pas faire échouer un
+    lot qui a réussi : au pire on perd une ligne d'historique, on ne perd pas le
+    travail. Même principe que `slack.notify`.
+    """
+    try:
+        await db.insert(
+            "sourcing_pioches",
+            {
+                "track": track,
+                "secteurs": secteurs,
+                "pioches": compteurs.get("pioches", 0),
+                "inserees": compteurs.get("inserees", 0),
+                "doublons": compteurs.get("doublons", 0),
+                "junk": compteurs.get("junk", 0),
+                "introuvables": compteurs.get("introuvables", 0),
+                "echecs": compteurs.get("echecs", 0),
+                "restant_apres": restant_apres,
+                "duree_ms": duree_ms,
+                "error_text": error_text,
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error("journal de pioche non ecrit — %r", e)
+
+
+async def compter_restant_a_piocher(
+    *, track: str = "agence-ia", secteurs: list[str] | None = None
+) -> int | None:
+    """Combien d'entrées restent piochables. None si la lecture tombe.
+
+    ⚠️ `db.count` et pas `len(select(...))` : PostgREST tronque à 1000 lignes
+    sans rien signaler, et un compte tronqué dirait « il en reste » pour
+    toujours. Même règle que `_compter_envoyables_restants`.
+    """
+    secteurs = secteurs_a_preparer(track=track) if secteurs is None else secteurs
+    if not secteurs:
+        return 0
+    try:
+        return await db.count(
+            "sourcing_inventaire",
+            params={
+                "track": f"eq.{track}",
+                "etat": "eq.a_traiter",
+                "trouve_par": "ov." + db.litteral_tableau(secteurs),
+                "tentatives": f"lt.{MAX_TENTATIVES_INVENTAIRE}",
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error("comptage du restant a piocher echoue — %r", e)
+        return None
+
+
 async def marquer_inventaire(
     google_place_id: str,
     *,

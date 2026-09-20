@@ -772,3 +772,154 @@ def test_une_ligne_sans_region_ne_disparait_pas() -> None:
     assert len(lot) == 2
 
 
+
+
+# ------------------------------------------------- le journal des pioches
+
+@pytest.mark.anyio
+async def test_un_lot_VIDE_ecrit_quand_meme_sa_ligne(monkeypatch) -> None:
+    """🔴 LE POINT ENTIER DE CETTE TABLE. Sans ligne, « le piocheur n'a pas
+    tourné » et « il a tourné, la file était vide » laissent exactement la même
+    trace : aucune. Le verdict `piocheur_muet` lisait
+    `sourcing_inventaire.derniere_tentative`, qui ne bouge QUE si une fiche est
+    touchée — donc un matin hors saison aurait crié « PIOCHEUR MUET » au bout de
+    48 h sur un système parfaitement sain. Une fausse alerte programmée pour le
+    premier changement de saison."""
+    from src.tools import db as dbt
+
+    journal: list[dict] = []
+
+    async def _journal(**kw):
+        journal.append(kw)
+
+    async def _restant(**_k):
+        return 0
+
+    marques = _Marques()
+    http_api = _brancher(
+        monkeypatch, lot=[], get_place=None, marques=marques,
+    )
+    monkeypatch.setattr(dbt, "journaliser_pioche", _journal)
+    monkeypatch.setattr(dbt, "compter_restant_a_piocher", _restant)
+
+    out = await http_api._pioche_wf1(http_api.PiocheWf1In(limit=20))
+
+    assert out.pioches == 0
+    assert len(journal) == 1, "un lot vide DOIT laisser sa trace"
+    assert journal[0]["compteurs"]["pioches"] == 0
+    assert journal[0]["restant_apres"] == 0
+
+
+@pytest.mark.anyio
+async def test_une_selection_en_echec_ecrit_aussi_sa_ligne(monkeypatch) -> None:
+    """Sinon ce matin-là serait indiscernable d'un matin où le cron n'a pas
+    tourné — et c'est justement la distinction que la table existe pour faire."""
+    from src import http_api
+    from src.tools import db as dbt
+
+    journal: list[dict] = []
+
+    async def _journal(**kw):
+        journal.append(kw)
+
+    async def _ko(*_a, **_k):
+        raise RuntimeError("PostgREST 503")
+
+    async def _restant(**_k):
+        return None
+
+    monkeypatch.setattr(dbt, "list_inventaire_a_piocher", _ko)
+    monkeypatch.setattr(dbt, "secteurs_a_preparer", lambda **_k: ["s"])
+    monkeypatch.setattr(dbt, "journaliser_pioche", _journal)
+    monkeypatch.setattr(dbt, "compter_restant_a_piocher", _restant)
+
+    out = await http_api._pioche_wf1(http_api.PiocheWf1In(limit=20))
+
+    assert "selection" in (out.error_text or "")
+    assert len(journal) == 1
+    assert journal[0]["error_text"]
+    assert journal[0]["restant_apres"] is None, (
+        "une lecture tombée doit rester NULL, pas devenir zéro"
+    )
+
+
+@pytest.mark.anyio
+async def test_un_essai_a_blanc_n_ecrit_PAS_de_ligne(monkeypatch) -> None:
+    """Un `dry_run` n'est pas une exécution : l'inscrire ferait croire au
+    verdict que le piocheur tourne alors qu'on ne faisait que regarder."""
+    from src.tools import db as dbt
+
+    journal: list[dict] = []
+
+    async def _journal(**kw):
+        journal.append(kw)
+
+    marques = _Marques()
+    http_api = _brancher(
+        monkeypatch, lot=[{"google_place_id": "ChIJx", "tentatives": 0}],
+        get_place=None, marques=marques,
+    )
+    monkeypatch.setattr(dbt, "journaliser_pioche", _journal)
+
+    await http_api._pioche_wf1(http_api.PiocheWf1In(limit=1, dry_run=True))
+    assert journal == []
+
+
+@pytest.mark.anyio
+async def test_une_panne_de_journal_ne_fait_PAS_echouer_le_lot(monkeypatch) -> None:
+    """Perdre une ligne d'historique est moins grave que perdre le travail.
+    Même principe que `slack.notify`, qui ne lève jamais."""
+    from src.tools import db as dbt
+
+    async def _ok(_pid):
+        return _place()
+
+    marques = _Marques()
+    http_api = _brancher(
+        monkeypatch, lot=[{"google_place_id": "ChIJx", "tentatives": 0}],
+        get_place=_ok, marques=marques,
+    )
+
+    async def _restant(**_k):
+        raise RuntimeError("compte impossible")
+
+    monkeypatch.setattr(dbt, "compter_restant_a_piocher", _restant)
+
+    # `compter_restant_a_piocher` lève ici ; le vrai code l'attrape en interne,
+    # mais on vérifie que même une panne non prévue ne perd pas l'insertion.
+    try:
+        out = await http_api._pioche_wf1(http_api.PiocheWf1In(limit=1))
+    except Exception:  # noqa: BLE001
+        pytest.fail("une panne de journalisation ne doit pas emporter le lot")
+    assert out.inserees == 1
+
+
+@pytest.mark.anyio
+async def test_le_verdict_lit_le_JOURNAL_et_pas_les_fiches(monkeypatch) -> None:
+    """La source de « le piocheur tourne-t-il ? » doit être `sourcing_pioches`,
+    jamais `sourcing_inventaire.derniere_tentative` : la seconde confond
+    « n'a pas tourné » avec « n'avait rien à faire »."""
+    from src import http_api
+    from src import supabase_client as sb
+
+    tables: list[str] = []
+
+    async def _faux_select(table, *, params=None, **_k):
+        tables.append(table)
+        return []
+
+    async def _faux_count(*_a, **_k):
+        return 0
+
+    async def _faux_select_all(table, *, order=None, params=None, **_k):
+        tables.append(table)
+        return []
+
+    monkeypatch.setattr(sb, "select", _faux_select)
+    monkeypatch.setattr(sb, "count", _faux_count)
+    monkeypatch.setattr(sb, "select_all", _faux_select_all)
+
+    await http_api._lire_etat_inventaire()
+    assert "sourcing_pioches" in tables, (
+        "le verdict piocheur_muet doit lire le journal des exécutions"
+    )

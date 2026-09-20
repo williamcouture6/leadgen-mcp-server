@@ -1806,6 +1806,9 @@ async def _pioche_wf1(payload: PiocheWf1In) -> PiocheWf1Out:
         )
     except Exception as e:  # noqa: BLE001
         out.error_text = f"selection: {e!r}"
+        # Même une sélection en échec laisse sa ligne : sans elle, ce matin-là
+        # serait indiscernable d'un matin où le cron n'a pas tourné.
+        await _journaliser(out, secteurs, payload.track, debut)
         return out
 
     consecutifs = 0
@@ -1963,7 +1966,37 @@ async def _pioche_wf1(payload: PiocheWf1In) -> PiocheWf1Out:
                 f"{out.junk} ecartees)"
                 + (f" — dernier motif : {dernier_motif}" if dernier_motif else "")
             )
+
+    if not payload.dry_run:
+        await _journaliser(out, secteurs, payload.track, debut)
     return out
+
+
+async def _journaliser(
+    out: PiocheWf1Out, secteurs: list[str], track: str, debut: float
+) -> None:
+    """Une ligne de journal par exécution, y compris vide ou en échec.
+
+    ⚠️ GARDE PROPRE, EN PLUS DE CELLES DES DEUX AIDES. `compter_restant_a_piocher`
+    et `journaliser_pioche` attrapent déjà leurs erreurs — mais s'en remettre à
+    ça, c'est faire dépendre un lot RÉUSSI de la discipline de deux fonctions
+    qu'on ne relit pas. Perdre une ligne d'historique est moins grave que perdre
+    vingt hydratations payées. Même principe que `slack.notify`, qui ne lève
+    jamais.
+    """
+    try:
+        restant = await db_tools.compter_restant_a_piocher(
+            track=track, secteurs=secteurs
+        )
+        await db_tools.journaliser_pioche(
+            track=track, secteurs=secteurs,
+            compteurs=out.model_dump(),
+            restant_apres=restant,
+            duree_ms=int((time.monotonic() - debut) * 1000),
+            error_text=out.error_text,
+        )
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger("pioche_wf1").error("journal de pioche perdu — %r", e)
 
 
 # ---------------- Research (Phase 2 — WF-3) ----------------
@@ -3393,6 +3426,16 @@ class EtatInventaire(BaseModel):
     par_secteur: dict[str, int] = {}
     secteurs_a_preparer: list[str] = []
     regions_jamais_balayees: list[str] = []
+    # 🔴 CE QU'IL MANQUE DE BALAYAGE, PAR SECTEUR — et pas seulement par région.
+    # L'alerte ne savait raisonner qu'en régions parce qu'en septembre un seul
+    # secteur était balayé. Simulé sur décembre : elle criait bien « plus rien à
+    # piocher », mais concluait « toutes les régions ont été balayées, il faut
+    # rebalayer plus finement » — un CONSEIL FAUX. Les dix régions l'avaient été
+    # pour le DÉNEIGEMENT ; ce qu'il fallait faire, c'était balayer les six
+    # autres métiers dont la fenêtre venait de s'ouvrir. Une alerte qui dit la
+    # mauvaise action se paie trois mois plus tard, quand le contexte est oublié.
+    # secteur -> régions restant à balayer pour lui.
+    secteurs_a_balayer: dict[str, list[str]] = {}
     rythme_par_jour: float | None = None    # None = pas encore mesurable
     jours_de_file: float | None = None
     balayages_orphelins: int = 0
@@ -3488,29 +3531,50 @@ async def _lire_etat_inventaire(track: str = "agence-ia") -> EtatInventaire:
             etat.dernier_balayage = dernieres[0].get("created_at")
         # Quand le piocheur a touche l'inventaire pour la derniere fois. Une
         # seule ligne lue, index `sourcing_inventaire_ordre_idx` a l'appui.
+        # 🔴 ON LIT LE JOURNAL, PAS LES FICHES TOUCHÉES. La première version
+        # prenait le `derniere_tentative` le plus récent de
+        # `sourcing_inventaire` — qui ne bouge QUE si une fiche a été touchée.
+        # Un matin hors saison, le piocheur tourne normalement et ne touche
+        # rien : au bout de 48 h l'alerte aurait crié « PIOCHEUR MUET » sur un
+        # système parfaitement sain. Une fausse alerte programmée pour le
+        # premier changement de saison — et une fausse alerte s'apprend à être
+        # ignorée avant d'avoir jamais servi.
+        # `sourcing_pioches` porte une ligne PAR EXÉCUTION, vide comprise.
         pioches = await sb.select(
-            "sourcing_inventaire",
+            "sourcing_pioches",
             params={
-                "select": "derniere_tentative",
+                "select": "created_at",
                 "track": f"eq.{track}",
-                "derniere_tentative": "not.is.null",
-                "order": "derniere_tentative.desc",
+                "order": "created_at.desc",
                 "limit": "1",
             },
         )
         if pioches:
-            etat.derniere_pioche = pioches[0].get("derniere_tentative")
-        balayees = {
-            (r.get("region") or "")
-            for r in await sb.select_all(
-                "sourcing_balayages",
-                order="id",
-                params={"select": "region", "track": f"eq.{track}"},
-            )
-        }
+            etat.derniere_pioche = pioches[0].get("created_at")
+        # On lit le COUPLE (secteur, région) : une région balayée pour le
+        # déneigement ne l'est pas pour la tonte, et c'est exactement la
+        # confusion qui rendait le conseil faux.
+        passes = await sb.select_all(
+            "sourcing_balayages",
+            order="id",
+            params={
+                "select": "region,secteur",
+                "track": f"eq.{track}",
+                "statut": "eq.completed",
+            },
+        )
+        couples = {(r.get("secteur") or "", r.get("region") or "") for r in passes}
+        balayees = {region for _s, region in couples}
         etat.regions_jamais_balayees = [
             v for v in db_tools.DEFAULT_CITIES if v not in balayees
         ]
+        # Pour chaque métier dont la saison se prépare, ce qu'il reste à balayer.
+        for secteur in etat.secteurs_a_preparer:
+            manquantes = [
+                r for r in db_tools.DEFAULT_CITIES if (secteur, r) not in couples
+            ]
+            if manquantes:
+                etat.secteurs_a_balayer[secteur] = manquantes
     except Exception as e:  # noqa: BLE001
         logging.getLogger("inventaire").error("journal des balayages illisible — %r", e)
 
@@ -3696,17 +3760,24 @@ async def _alerter_famine_inventaire(etat: EtatInventaire, verdict: str) -> bool
                 f"{etat.traitees} sont déjà traitées — inutilisables ce mois-ci. "
                 "Un compteur global dirait que tout va bien."
             )
-        if etat.regions_jamais_balayees:
-            corps.append(
-                "À faire : balayer "
-                + ", ".join(etat.regions_jamais_balayees[:6])
-                + (" …" if len(etat.regions_jamais_balayees) > 6 else "")
-                + "."
-            )
+        if etat.secteurs_a_balayer:
+            corps.append("À faire — `scripts/balayage.py` :")
+            for secteur, manquantes in sorted(
+                etat.secteurs_a_balayer.items(), key=lambda kv: -len(kv[1])
+            ):
+                ou = (
+                    "les 10 régions"
+                    if len(manquantes) == len(db_tools.DEFAULT_CITIES)
+                    else ", ".join(manquantes[:4])
+                    + (" …" if len(manquantes) > 4 else "")
+                )
+                corps.append(f"  · --secteur \"{secteur}\"  →  {ou}")
         else:
             corps.append(
-                "À faire : toutes les régions du catalogue ont été balayées — "
-                "il faut soit rebalayer plus finement, soit ajouter des régions."
+                "À faire : tous les métiers en fenêtre ont déjà été balayés "
+                "dans les 10 régions. Il faut donc soit rebalayer plus finement "
+                "(le balayage n'est pas exhaustif : ~1 % lui échappe), soit "
+                "ajouter des régions au catalogue."
             )
 
     envoyee = await slack_lib.notify(

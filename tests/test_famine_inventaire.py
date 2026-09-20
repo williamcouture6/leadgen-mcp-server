@@ -236,7 +236,7 @@ async def test_le_message_nomme_les_chiffres_et_l_action(monkeypatch) -> None:
     etat = _etat(
         total=5800, piochable=48, rythme_par_jour=20.0, jours_de_file=48 / 20,
         secteurs_a_preparer=["entrepreneur en déneigement"],
-        regions_jamais_balayees=["Longueuil", "Sherbrooke"],
+        secteurs_a_balayer={"entrepreneur en déneigement": ["Longueuil", "Sherbrooke"]},
         dernier_balayage="2026-09-10T10:00:00Z",
     )
     assert await http_api._alerter_famine_inventaire(etat, "famine") is True
@@ -245,7 +245,16 @@ async def test_le_message_nomme_les_chiffres_et_l_action(monkeypatch) -> None:
     assert "48" in msg
     assert "2.4" in msg
     assert "entrepreneur en déneigement" in msg
+    # 🔴 L'ACTION DOIT NOMMER LE SECTEUR, PAS SEULEMENT LA RÉGION. Simulé sur
+    # décembre le 2026-09-20 : l'alerte criait bien « plus rien à piocher » mais
+    # concluait « toutes les régions ont été balayées, rebalayer plus finement »
+    # — un conseil FAUX. Les dix régions l'avaient été pour le DÉNEIGEMENT ; ce
+    # qu'il fallait, c'était balayer les six métiers dont la fenêtre venait de
+    # s'ouvrir. Une alerte qui dit la mauvaise action se paie trois mois plus
+    # tard, quand le contexte est oublié.
     assert "Longueuil" in msg
+    assert "balayage.py" in msg, "l'alerte doit donner la commande a lancer"
+    assert "--secteur" in msg
     # LE point 2 : le total ne doit jamais s'afficher seul, sans le hors-saison.
     assert "DORMENT" in msg  # le total ne s'affiche jamais seul
 
