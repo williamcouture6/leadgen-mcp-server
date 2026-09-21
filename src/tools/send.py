@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -163,11 +164,79 @@ async def count_pushed_today(track: str | None = None) -> int:
     return len(rows)
 
 
-async def _is_suppressed(email: str | None, domain: str | None) -> tuple[bool, str | None]:
-    """True si l'email OU le domain est sur suppression_list.
+def _valeurs_in(valeurs: Iterable[str]) -> str:
+    """Un filtre PostgREST `in.("a","b")` — valeurs CITÉES, jamais nues.
 
-    Couvre les 3 cas de suppression_list : email exact, domaine entier.
-    (phone n'est pas pertinent pour l'envoi email.)
+    🔴 PAS DE `ilike` ICI, ET CE N'EST PAS UN DÉTAIL DE STYLE. Mesuré sur la
+    base de production le 2026-09-20 : 5 adresses contiennent `_` et 1 contient
+    `%` — les deux jokers de SQL. Un `ilike` ferait correspondre
+    `jean_roy@x.ca` à `jeanXroy@x.ca` et refuserait de servir une adresse
+    parfaitement étrangère au désabonnement qu'on cherche. La comparaison doit
+    rester une ÉGALITÉ.
+    """
+    citees = []
+    for v in dict.fromkeys(valeurs):           # dédoublonne en gardant l'ordre
+        echappee = v.replace("\\", "\\\\").replace('"', '\\"')
+        citees.append(f'"{echappee}"')
+    return f"in.({','.join(citees)})"
+
+
+async def _adresse_refusee_ailleurs(email: str | None) -> str | None:
+    """Le statut fautif si CETTE ADRESSE porte, sur une AUTRE ligne de
+    `contacts`, un statut absent de `CONTACT_STATUTS_DEMARCHABLES`. Sinon None.
+
+    🔴 POURQUOI CETTE TROISIÈME JAMBE EXISTE (dernier 🔴 de la checklist
+    go-live, trouvaille C6 du conseil PT1). La garde 3a lit bien
+    `contacts.status` — mais celui du contact qu'elle a EN MAIN. Or une même
+    adresse vit sur plusieurs lignes : le scraping la trouve sur la page
+    d'accueil et sur la page contact. Qu'une ligne passe `opted_out` n'apprend
+    rien à sa jumelle restée `new`, et c'est la jumelle que la garde 3a
+    examine. Mesuré avant tout envoi : **502 contacts portent une adresse pour
+    492 adresses distinctes** — neuf adresses sont déjà en double.
+
+    ⚠️ `suppression_list` devrait rattraper ce cas, et c'est bien pour ça que
+    l'autre moitié de C6 (2026-08-26) fait crier `_add_to_suppression` sur
+    #alertes quand son écriture échoue. Quand elle échoue, le statut du contact
+    est la SEULE trace qui reste : il fallait quelqu'un pour la relier à
+    l'adresse.
+
+    📏 La liste blanche est celle de la garde 3a, pas une politique neuve —
+    voir `CONTACT_STATUTS_DEMARCHABLES` plus bas. Une onzième valeur ajoutée un
+    jour à l'enum `contact_status` sera donc refusée tant que personne ne
+    l'aura explicitement autorisée.
+
+    🔴 CETTE LECTURE ÉCHOUE EN SE FERMANT — l'exception remonte, le brouillon
+    reste `draft` et repassera. C'est l'INVERSE de sa jumelle
+    `_interested_lead_is_suppressed` (`reply.py`), qui rend `None` sur panne et
+    laisse passer. Les deux ont raison : là-bas bloquer coûte un lead chaud
+    perdu en silence, ici laisser passer coûte un courriel à un désabonné. On
+    refuse par défaut du côté où l'erreur est irréversible.
+    """
+    if not email:
+        return None
+    rows = await db.select(
+        "contacts",
+        params={
+            "select": "status,email",
+            "email": _valeurs_in([email, email.lower()]),
+        },
+    )
+    for r in rows:
+        statut = r.get("status")
+        if statut is not None and statut not in CONTACT_STATUTS_DEMARCHABLES:
+            return statut
+    return None
+
+
+async def _is_suppressed(email: str | None, domain: str | None) -> tuple[bool, str | None]:
+    """True si l'adresse ne doit PAS être servie — trois jambes.
+
+    1. l'email est sur `suppression_list` ;
+    2. le domaine entier est sur `suppression_list` ;
+    3. l'adresse porte un statut non démarchable sur une AUTRE ligne de
+       `contacts` — voir `_adresse_refusee_ailleurs`.
+
+    (`phone` n'est pas pertinent pour l'envoi email.)
     """
     if email:
         em_rows = await db.select(
@@ -183,6 +252,12 @@ async def _is_suppressed(email: str | None, domain: str | None) -> tuple[bool, s
         )
         if dom_rows:
             return True, f"domain on suppression ({dom_rows[0].get('reason')})"
+    statut_ailleurs = await _adresse_refusee_ailleurs(email)
+    if statut_ailleurs is not None:
+        return True, (
+            f"adresse partagée avec un contact {statut_ailleurs!r} "
+            "(démarchables : " + ", ".join(sorted(CONTACT_STATUTS_DEMARCHABLES)) + ")"
+        )
     return False, None
 
 
