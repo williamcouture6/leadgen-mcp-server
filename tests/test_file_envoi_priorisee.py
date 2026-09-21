@@ -77,7 +77,17 @@ def _monde(
             # file (avec `limit`) et celle des frères d'entreprise (sans). Sans
             # cette distinction, la seconde écrase la première et l'assertion
             # sur `order` ne trouve plus rien.
-            cle = table if "limit" in (params or {}) or table != "contacts" else "freres"
+            # ⚠️ On distingue par le FILTRE, pas par la présence d'un `limit`.
+            # La lecture des frères est passée par `_select_par_tranches` le
+            # 2026-09-20 (l'URL dépassait 14 ko et un 414 aurait vidé le lot en
+            # silence), et la pagination par tranches ajoute un `limit` — le
+            # discriminant précédent classait donc les frères comme la page, et
+            # écrasait l'assertion sur `order`.
+            p = params or {}
+            est_freres = table == "contacts" and str(
+                p.get("company_id", "")
+            ).startswith("in.(")
+            cle = "freres" if est_freres else table
             params_vus[cle] = dict(params or {})
         if table == "contacts":
             return contacts

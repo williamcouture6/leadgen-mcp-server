@@ -77,12 +77,19 @@ class _BaseDeuxFreres:
         return await self.select(table, params or {})
 
     async def select(self, table: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        # ⚠️ ON DISTINGUE PAR LE FILTRE, PAS PAR LA PRÉSENCE D'UN `limit`.
+        # La lecture des frères est passée par `_select_par_tranches` le
+        # 2026-09-20 — l'URL dépassait 14 ko et un 414 aurait vidé le lot EN
+        # SILENCE, soit exactement le défaut que ce fichier protège. Or la
+        # pagination par tranches ajoute un `limit` : l'ancien discriminant
+        # rendait donc la PAGE quand on demandait les FRÈRES, et PROGAZON
+        # redevenait éligible. Le faux mentait, pas le code.
+        if table == "contacts" and str(params.get("company_id", "")).startswith("in.("):
+            ids = params["company_id"].removeprefix("in.(").rstrip(")").split(",")
+            return [c for c in self.tous_les_contacts if c["company_id"] in ids]
         if table == "contacts" and "limit" in params:
             deb = int(params.get("offset", 0))
             return self.contacts_de_la_file[deb:deb + int(params["limit"])]
-        if table == "contacts":
-            ids = params["company_id"].removeprefix("in.(").rstrip(")").split(",")
-            return [c for c in self.tous_les_contacts if c["company_id"] in ids]
         if table == "companies":
             ids = params["id"].removeprefix("in.(").rstrip(")").split(",")
             return [

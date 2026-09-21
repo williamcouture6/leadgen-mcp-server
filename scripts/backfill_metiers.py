@@ -100,7 +100,7 @@ async def run(track: str, dry_run: bool) -> None:
         order="id.asc",
         page_size=TAILLE_PAGE,
         params={
-            "select": "id,name,research_json,metiers_verifies_a_la_main",
+            "select": "id,name,research_json,metiers_verifies_a_la_main,industry",
             "track": f"eq.{track}",
             "research_json": "not.is.null",
             # Voir le docstring : écarté ici ET dans le critère de complétude.
@@ -120,7 +120,14 @@ async def run(track: str, dry_run: bool) -> None:
             print(f"  SAUTÉE (vérifiée à la main) {co['id'][:8]} {co.get('name')}")
             continue
 
-        patch = dbt.extract_metiers_patch(co.get("research_json"))
+        # ⚠️ `industry` DOIT être passé : sans lui, la colonne et le verdict
+        # divergent sur les fiches dont le seul métier vient du secteur de
+        # sourcing. Mesuré le 2026-09-20 : services `[pavage]` + secteur
+        # `paysagiste` rend `fenetre_mois=[]` sans industry — donc JAMAIS
+        # démarchable — et `[1..6]` avec.
+        patch = dbt.extract_metiers_patch(
+            co.get("research_json"), co.get("industry")
+        )
         # Ceinture : `extract_metiers_patch` est la seule source du patch, mais
         # une clé de plus ici serait un effet de bord silencieux sur la prod.
         inattendues = set(patch) - set(COLONNES)

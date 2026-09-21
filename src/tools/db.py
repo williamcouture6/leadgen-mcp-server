@@ -1533,25 +1533,35 @@ async def _retenir(
     # des 1000 n'a plus son propre message interrogé, donc il est RE-RÉDIGÉ.
     # Le second est une régression par rapport à l'ancienne version, qui
     # interrogeait directement les ids de la page.
-    freres = await db.select_all(
+    # 🔴 DÉCOUPÉ, et le commentaire ci-dessus explique déjà pourquoi la
+    # troncature serait invisible — mais il parlait du plafond de 1000 LIGNES,
+    # que `select_all` referme. Il restait l'autre bout : la longueur de l'URL.
+    # Mesuré le 2026-09-20 : 392 identifiants font ~14,5 ko, au-dessus des 13 ko
+    # que ce même fichier cite comme repère de danger. Un 414 rendrait un lot
+    # VIDE, pas une erreur — et un lot vide sur une file pleine est précisément
+    # ce que l'alerte de famine appelle une panne.
+    freres = await _select_par_tranches(
         "contacts",
+        ids=list(company_ids),
+        cle="company_id",
         order="id",
-        params={
-            "select": "id,company_id",
-            "company_id": f"in.({','.join(company_ids)})",
-        },
+        params={"select": "id,company_id"},
     )
     company_par_contact = {f["id"]: f["company_id"] for f in freres}
 
     # `status=not.in.(failed)` : un message ABANDONNÉ ne gèle ni son contact ni
     # son entreprise. 'failed' est la façon PRÉVUE de retirer un brouillon à la
     # main ; bloquer dessus gèlerait toute la boîte au lieu de la libérer.
-    existing_msgs = await db.select_all(
+    # Même découpage, et l'enjeu est ici le plus grave du fichier : un
+    # `already_drafted` amputé fait RE-RÉDIGER un contact qui a déjà son
+    # message. ~490 identifiants font ~18 ko d'URL.
+    existing_msgs = await _select_par_tranches(
         "messages",
+        ids=list(company_par_contact),
+        cle="contact_id",
         order="id",
         params={
             "select": "contact_id",
-            "contact_id": f"in.({','.join(company_par_contact)})",
             "direction": "eq.outbound",
             "status": "not.in.(failed)",
         },
@@ -1919,24 +1929,38 @@ async def list_companies_to_research(
     }
     if require_website:
         params["website"] = "not.is.null"
-    rows = _saison_dabord(await db.select("companies", params=params), limit, track)
-    rows = _sans_decision_humaine_contraire(rows)
-    if require_website or not rows:
-        return rows
-
-    # Mode no-website : garder website NOT NULL OU company avec >=1 contact.
-    candidate_ids = [r["id"] for r in rows if not r.get("website")]
-    with_contact: set[str] = set()
-    if candidate_ids:
-        contacts = await db.select(
-            "contacts",
-            params={
-                "select": "company_id",
-                "company_id": f"in.({','.join(candidate_ids)})",
-            },
-        )
-        with_contact = {c["company_id"] for c in contacts}
-    return [r for r in rows if r.get("website") or r["id"] in with_contact]
+    # 🔴 L'ORDRE DES OPÉRATIONS DÉCIDE DE LA TAILLE DU LOT, ET IL ÉTAIT INVERSÉ.
+    # On tronquait à `limit` AVANT les post-filtres Python : chaque fiche
+    # écartée ensuite rétrécissait le lot, sans rien dire. Mesuré le 2026-09-20
+    # sur les 120 premiers rangs, en mode `require_website=false` : des lots de
+    # 6 à 10 au lieu de 10, et les écartées restaient en tête pour se faire
+    # relire le lendemain. Un débit quotidien qui baisse en silence est
+    # exactement ce que l'alerte de famine ne sait PAS voir — elle compte les
+    # brouillons, pas les places perdues.
+    # On filtre d'abord sur la sur-lecture, on priorise la saison, on tronque
+    # en dernier.
+    rows = _sans_decision_humaine_contraire(
+        await db.select("companies", params=params)
+    )
+    if not require_website and rows:
+        # Mode no-website : garder website NOT NULL OU company avec >=1 contact.
+        # ⚠️ `_select_par_tranches` et pas un `in.(...)` nu : la sur-lecture
+        # multiplie le nombre d'identifiants par six, et une URL trop longue
+        # revient en 414 — le lot se viderait en silence.
+        candidate_ids = [r["id"] for r in rows if not r.get("website")]
+        with_contact: set[str] = set()
+        if candidate_ids:
+            with_contact = {
+                c["company_id"]
+                for c in await _select_par_tranches(
+                    "contacts",
+                    ids=candidate_ids,
+                    cle="company_id",
+                    params={"select": "company_id"},
+                )
+            }
+        rows = [r for r in rows if r.get("website") or r["id"] in with_contact]
+    return _saison_dabord(rows, limit, track)
 
 
 async def list_companies_to_discover(
@@ -2125,7 +2149,9 @@ def extract_lead_potential_patch(research_json: Any) -> dict[str, Any]:
     return patch
 
 
-def extract_metiers_patch(research_json: Any) -> dict[str, Any]:
+def extract_metiers_patch(
+    research_json: Any, industry: str | None = None
+) -> dict[str, Any]:
     """Les colonnes de métiers à écrire, depuis le research_json.
 
     Calquée sur `extract_lead_potential_patch` pour la forme — mais elle rend
@@ -2133,11 +2159,25 @@ def extract_metiers_patch(research_json: Any) -> dict[str, Any]:
     voulu : « aucun métier reconnu » est une information (le défaut inversé, qui
     ouvre les douze mois), pas une absence. Rendre `{}` laisserait la colonne à
     NULL, ce qu'un prédicat `fenetre_mois @> array[9]` écarte EN SILENCE.
+
+    🔴 `industry` N'ÉTAIT PAS PASSÉ, ET LE VERDICT LE PASSAIT. `colonnes_metiers`
+    l'accepte depuis toujours ; cette fonction ne le fournissait pas, alors que
+    `fenetre_saisonniere_ouverte` le passe à `resoudre_metiers`. La COLONNE et le
+    VERDICT ne répondaient donc pas pareil sur les fiches dont le seul métier
+    vient du secteur de sourcing — le cas « Niwa Paysagiste », dont la fiche ne
+    porte aucun libellé où la racine `paysag` apparaît et qui n'est reconnue que
+    par le mot-clé qui l'a trouvée.
+    La divergence est INVISIBLE tant que la fenêtre du métier est fermée : les
+    deux côtés répondent « non » pour des raisons opposées. Elle se verrait en
+    janvier, en production, sur un envoi réel — c'est exactement ce que
+    `scripts/parite_fenetre_mois.py` balaie sur douze mois pour l'attraper.
     """
     services = None
     if isinstance(research_json, dict):
         services = research_json.get("services_offered")
-    patch = dict(colonnes_metiers(services if isinstance(services, list) else None))
+    patch = dict(colonnes_metiers(
+        services if isinstance(services, list) else None, industry
+    ))
     patch["metiers_calcules_le"] = datetime.now(timezone.utc).isoformat()
     return patch
 
@@ -2176,6 +2216,7 @@ async def update_company_research(
     emails_found: list[dict[str, Any]] | None = None,
     *,
     nom_usage: str | None = None,
+    industry: str | None = None,
 ) -> dict[str, Any]:
     """Patch companies.research_json (+ colonnes flat lead_potential_* et décideur)
     et pose le status selon ce qui a été TROUVÉ.
@@ -2292,7 +2333,7 @@ async def update_company_research(
     try:
         touchees = await db.update(
             "companies",
-            extract_metiers_patch(research_json),
+            extract_metiers_patch(research_json, industry),
             filters={
                 "id": f"eq.{company_id}",
                 "status": "not.in.(disqualified,suppressed)",

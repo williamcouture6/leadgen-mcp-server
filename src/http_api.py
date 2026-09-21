@@ -2057,7 +2057,11 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
     matches = await db.select(
         "companies",
         params={
-            "select": "id,google_place_id,website,name",
+            # ⚠️ `industry` est LU ICI parce qu'il doit descendre jusqu'à
+            # `colonnes_metiers` : sans lui, la colonne `fenetre_mois` et le
+            # verdict saisonnier divergent sur les fiches dont le seul métier
+            # vient du secteur de sourcing.
+            "select": "id,google_place_id,website,name,industry",
             "id": f"eq.{payload.company_id}",
             "limit": "1",
         },
@@ -2130,6 +2134,10 @@ async def research_company_by_id(payload: ResearchCompanyByIdIn) -> ResearchComp
     resultat_maj = await db_tools.update_company_research(
         payload.company_id, out.research_json, emails_found=out.emails_found,
         nom_usage=out.nom_usage,
+        # ⚠️ `industry` doit descendre jusqu'à `colonnes_metiers`, sinon la
+        # COLONNE et le VERDICT ne disent pas la même chose sur les fiches dont
+        # le seul métier vient du secteur de sourcing (cas « Niwa Paysagiste »).
+        industry=co.get("industry"),
     )
     if resultat_maj["statut_metiers"] in ("echec", "absente"):
         # Le second UPDATE de `update_company_research` ne lève jamais (il ne doit

@@ -529,4 +529,13 @@ def test_le_filtre_de_decision_reste_en_PYTHON_et_pas_dans_la_requete() -> None:
         "la colonne a disparu du select : le filtre Python lirait None partout "
         "et n'écarterait plus personne"
     )
-    assert "_sans_decision_humaine_contraire(rows)" in corps
+    # ⚠️ On vérifie que le filtre est APPELÉ, pas la forme exacte de son
+    # argument. Il recevait `rows` ; depuis le 2026-09-20 il reçoit directement
+    # le résultat du `select`, parce que les post-filtres doivent tourner AVANT
+    # la troncature à `limit` — sinon chaque fiche écartée rétrécit le lot en
+    # silence (mesuré : des lots de 6 à 10 au lieu de 10). Figer la forme de
+    # l'argument ferait rougir ce test sur un refactor qui ne touche pas à ce
+    # qu'il protège.
+    assert "_sans_decision_humaine_contraire(" in corps, (
+        "le filtre de décision humaine a disparu de la sélection"
+    )
