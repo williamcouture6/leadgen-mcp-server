@@ -193,7 +193,12 @@ async def test_la_troisieme_troncature_tranche_en_disant_technique(monkeypatch):
     )
 
     assert out.status == "no_web_presence"
-    assert updated == [{
+    # ⚠️ La PREMIÈRE écriture est l'horodatage de tentative, posé AVANT de
+    # connaître l'issue — c'est ce qui fait tourner la file de découverte. Sans
+    # lui, une fiche qui rend `a_reessayer` restait en tête et se refaisait
+    # payer 0,0933 $ deux fois par jour, indéfiniment.
+    assert list(updated[0]) == ["derniere_tentative_discover"]
+    assert updated[1:] == [{
         "status": "no_web_presence",
         "disqualified_reason": "discovery:reponse_tronquee_x3",
     }]

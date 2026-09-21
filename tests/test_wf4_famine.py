@@ -44,11 +44,20 @@ def test_pas_d_alerte_famine_quand_ca_tourne():
 # =====================================================================
 
 def _socle(monkeypatch, *, backlog=None, file_active=0, servis=0,
+           sans_matiere=0, inutilisables=0,
            comptage_leve=False, slack_ok=True, comptes=None, envois=None):
     """Rend le module http_api avec /wf4/run isolé de tout le reste.
 
-    `file_active` / `servis` alimentent les deux `count()` du calcul des
-    restants ; `restants = file_active - servis`.
+    `restants = file_active - servis - sans_matiere - inutilisables`.
+
+    🔴 LES DEUX DERNIERS TERMES ONT ÉTÉ AJOUTÉS LE 2026-09-20, et ce test les
+    porte parce que leur absence rendait l'alerte MENTEUSE. Au lendemain du
+    backfill : 486 contacts « restants » dont ZÉRO éligible — 427 sur des
+    entreprises sans `research_json` (écartées par `require_research`), 59 sur
+    des entreprises `disqualified`. L'alerte aurait crié « 0 draft alors qu'il
+    reste ~480 contacts », deux fois par jour, pendant des semaines. Le
+    docstring de `_doit_alerter_famine` redoute exactement ce zéro-là : celui
+    sur une file qu'on CROIT pleine.
     """
     from src import http_api
     from src import supabase_client as sb
@@ -64,6 +73,10 @@ def _socle(monkeypatch, *, backlog=None, file_active=0, servis=0,
             comptes.append({"table": table, "params": p})
         if comptage_leve:
             raise RuntimeError("boom PostgREST")
+        if table == "companies":
+            # Deux appels distincts sur la même table : celui des fiches sans
+            # matière filtre `research_json=is.null`, l'autre les disqualifiées.
+            return sans_matiere if p.get("research_json") == "is.null" else inutilisables
         return {"contacts": file_active, "messages": servis}[table]
 
     async def fake_notify(**kw):
@@ -172,7 +185,9 @@ async def test_le_comptage_passe_par_count_exact_et_par_track(monkeypatch):
     await _run(http_api)
 
     famine = [c for c in comptes if not _est_le_rang_du_jour(c)]
-    assert [c["table"] for c in famine] == ["contacts", "messages"]
+    assert [c["table"] for c in famine] == [
+        "contacts", "messages", "companies", "companies",
+    ], "les deux comptes de companies retirent ce qui n'est PAS éligible"
     assert all(c["params"]["track"] == "eq.agence-ia" for c in comptes)
     # Les contacts joignables et pas encore écartés d'un côté…
     assert famine[0]["params"]["email"] == "not.is.null"
@@ -181,6 +196,11 @@ async def test_le_comptage_passe_par_count_exact_et_par_track(monkeypatch):
     # sert à WF-4 pour décider qu'un contact est déjà pris.
     assert famine[1]["params"]["status"] == "not.in.(failed)"
     assert famine[1]["params"]["direction"] == "eq.outbound"
+    # …et on retranche les entreprises dont WF-4 ne peut RIEN faire : sans
+    # recherche (`require_research` les écarte) ou hors jeu.
+    assert famine[2]["params"]["research_json"] == "is.null"
+    assert famine[2]["params"]["status"] == "not.in.(disqualified,no_web_presence)"
+    assert famine[3]["params"]["status"] == "eq.disqualified"
     # Et le comptage du rang du jour est bien passé par count() lui aussi : il
     # lirait sinon les lignes, donc plafonnerait à 1000 en silence.
     rang = [c for c in comptes if _est_le_rang_du_jour(c)]

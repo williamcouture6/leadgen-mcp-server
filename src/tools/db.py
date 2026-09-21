@@ -1825,6 +1825,44 @@ def _sans_decision_humaine_contraire(
     ]
 
 
+# Combien de fois `limit` on lit avant de prioriser par saison. Six suffit pour
+# qu'un lot de 10 trouve des fiches en fenetre meme quand elles sont dispersees.
+FACTEUR_SAISON_RECHERCHE = 6
+
+
+def _saison_dabord(
+    rows: list[dict[str, Any]], limit: int, track: str
+) -> list[dict[str, Any]]:
+    """Met devant les fiches dont le metier se prepare, SANS ecarter les autres.
+
+    🔴 CETTE FILE N'AVAIT AUCUN FILTRE SAISONNIER, alors que les deux autres en
+    ont un (`list_inventaire_a_piocher` croise `secteurs_a_preparer`,
+    `fenetre_saisonniere_ouverte` garde l'envoi). Consequence mesuree le
+    2026-09-20, apres le backfill : les 20 premieres fiches de la file etaient
+    20 PAYSAGISTES crees le 2026-05-28, dont la fenetre ouvre le 1er janvier. On
+    aurait paye ~40 $ de recherche sur 33 jours, majoritairement pour janvier,
+    pendant que 224 deneigeurs -- le seul metier joignable avant avril --
+    attendaient derriere.
+
+    ⚠️ ON PRIORISE, ON N'EXCLUT PAS. Trois raisons :
+      · une fiche hors saison doit quand meme finir par etre recherchee, un mois
+        avant SA fenetre (c'est ce que `MOIS_AVANCE_PREPARATION` encode) ;
+      · `industry` peut etre NULL ou hors catalogue -- exclure sur une absence
+        d'information perdrait ces fiches pour toujours ;
+      · et si plus rien n'est en saison, la file doit continuer de tourner au
+        lieu de se vider, sinon WF-3 s'arrete quatre mois par an.
+
+    ⚠️ L'ordre de famine (`last_enriched_at` nulls first) est PRESERVE a
+    l'interieur de chaque groupe : on ne fait que remonter le bloc en saison.
+    """
+    en_saison = set(secteurs_a_preparer(track=track))
+    if not en_saison:
+        return rows[:limit]
+    devant = [r for r in rows if (r.get("industry") or "") in en_saison]
+    derriere = [r for r in rows if (r.get("industry") or "") not in en_saison]
+    return (devant + derriere)[:limit]
+
+
 async def list_companies_to_research(
     limit: int = 20,
     *,
@@ -1872,11 +1910,16 @@ async def list_companies_to_research(
         # avant les pistes neuves priorise le mauvais travail. `last_enriched_at`
         # joue ici le rôle de `last_send_attempt_at` : NULL = jamais recherchée.
         "order": "last_enriched_at.asc.nullsfirst,created_at.asc",
-        "limit": str(limit),
+        # 🔴 ON SUR-LIT POUR POUVOIR PRIORISER LA SAISON ENSUITE.
+        # Voir `_saison_dabord` : cette file n'avait AUCUN filtre saisonnier,
+        # et le backfill du 2026-09-20 l'a rendu criant en effacant
+        # `last_enriched_at` sur 724 des 734 fiches -- la rotation degenerait
+        # alors en `created_at.asc` pur.
+        "limit": str(limit * FACTEUR_SAISON_RECHERCHE),
     }
     if require_website:
         params["website"] = "not.is.null"
-    rows = await db.select("companies", params=params)
+    rows = _saison_dabord(await db.select("companies", params=params), limit, track)
     rows = _sans_decision_humaine_contraire(rows)
     if require_website or not rows:
         return rows
@@ -1924,7 +1967,15 @@ async def list_companies_to_discover(
             "website": "is.null",
             "research_json": "is.null",
             "status": "eq.sourced",
-            "order": "created_at.asc",
+            # 🔴 LA FILE TOURNE. Elle triait `created_at.asc` pur et ne lisait
+            # ni tentative ni date de tentative : une fiche qui rend
+            # `a_reessayer` (reponse tronquee) ou qui leve restait EN TETE et se
+            # refaisait payer 0,0933 $ a chaque lot, DEUX FOIS PAR JOUR,
+            # indefiniment. `reacti_discover` est l'agent le plus cher du depot.
+            # C'est le meme defaut que `next_sourcing_target` portait avant le
+            # 2026-09-14 et que `list_inventaire_a_piocher` evite par le meme
+            # moyen : jamais tentee d'abord, puis la moins recemment tentee.
+            "order": "derniere_tentative_discover.asc.nullsfirst,created_at.asc",
             "limit": str(limit * 4),
         },
     )

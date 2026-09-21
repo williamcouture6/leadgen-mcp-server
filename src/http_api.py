@@ -2513,6 +2513,24 @@ async def reacti_discover_contact(payload: ReactiDiscoverIn) -> ReactiDiscoverOu
     except Exception:  # noqa: BLE001
         pass
 
+    # 🔴 LA DATE DE TENTATIVE S'ÉCRIT AVANT DE CONNAÎTRE L'ISSUE, et c'est ce
+    # qui fait TOURNER la file. La poser seulement en cas de succès laisserait
+    # une fiche qui rend `a_reessayer` — ou qui lève — en tête de file, à se
+    # faire repayer 0,0933 $ deux fois par jour, indéfiniment.
+    # ⚠️ Ne PAS la confondre avec `last_enriched_at` : deux files, deux horloges.
+    try:
+        await sb.update(
+            "companies",
+            {"derniere_tentative_discover": datetime.now(timezone.utc).isoformat()},
+            filters={"id": f"eq.{payload.company_id}"},
+        )
+    except Exception as e:  # noqa: BLE001
+        # Une horloge non posée ne doit pas emporter une découverte réussie ;
+        # au pire la fiche repasse une fois de trop.
+        logging.getLogger("reacti_discover").error(
+            "horodatage de tentative perdu pour %s — %r", payload.company_id, e
+        )
+
     if plafond_atteint:
         # La cause reste technique et le verdict le dit : 'reponse_tronquee_x3' se
         # retrouve en base et peut être rejugé, au lieu d'un no_web_presence muet.
@@ -3289,10 +3307,42 @@ async def _compter_envoyables_restants(track: str) -> tuple[int, bool]:
                 "track": f"eq.{track}",
             },
         )
+        # 🔴 ON SOUSTRAIT CE QUI N'EST PAS ÉLIGIBLE, SINON L'ALERTE CRIE FAUX.
+        #
+        # Le compte brut des contacts ne regarde NI l'entreprise NI sa
+        # recherche. Mesuré le 2026-09-20, au lendemain du backfill : 486
+        # contacts « restants » dont **zéro** éligible — 427 sur des entreprises
+        # sans `research_json` (écartées par `require_research`) et 59 sur des
+        # entreprises `disqualified`. L'alerte aurait dit « 0 draft rédigé alors
+        # qu'il reste ~480 contacts à approcher », deux fois par jour, pendant
+        # des semaines.
+        #
+        # C'est exactement le mode d'échec que le docstring de
+        # `_doit_alerter_famine` redoute : un zéro sur une file qu'on CROIT
+        # pleine. Et une fausse alerte s'apprend à être ignorée avant d'avoir
+        # jamais servi.
+        #
+        # ⚠️ On soustrait par ENTREPRISE, pas par contact : `sb.count` ne sait
+        # pas joindre. Le chiffre reste une estimation — le message l'écrit
+        # « ~ » — mais il cesse d'être faux d'un ordre de grandeur.
+        sans_matiere = await sb.count(
+            "companies",
+            params={
+                "track": f"eq.{track}",
+                "research_json": "is.null",
+                "status": "not.in.(disqualified,no_web_presence)",
+            },
+        )
+        inutilisables = await sb.count(
+            "companies",
+            params={"track": f"eq.{track}", "status": "eq.disqualified"},
+        )
     except Exception as e:  # noqa: BLE001
         logging.getLogger("wf4").error("comptage des restants échoué — %r", e)
         return 0, False
-    return max(0, file_active - servis), True
+    # Une entreprise porte en moyenne un contact ; borner à zéro suffit à ce que
+    # l'alerte cesse de mentir sans pretendre a une precision qu'on n'a pas.
+    return max(0, file_active - servis - sans_matiere - inutilisables), True
 
 
 async def _alerter_famine_wf4(
