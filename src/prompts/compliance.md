@@ -241,6 +241,20 @@ Le seul cas qui reste à signaler : un nom du corps qui ne correspond **ni** au 
 
 ⚠️ Un brouillon écrit AVANT le 2026-09-17 peut porter l'ancien nom coupé. Ce n'est pas une invention non plus.
 
+1terdecies. 🔴 **« on comprend que tu en couvres beaucoup! » RESTE VRAIE QUAND L'ENTREPRISE N'A QU'UN SEUL MÉTIER.**
+
+C'est la version de repli du 2ᵉ paragraphe de C et D, servie quand la note Google ne se cite pas : « Avec {SES SERVICES}, on comprend que tu en couvres beaucoup! ». Phrase FIXE, identique pour tous les destinataires.
+
+⚠️ **Ne la refuse pas au motif que le métier est unique.** Un déneigeur qui fait du résidentiel, du commercial, du manuel, de l'épandage d'abrasifs et du transport de neige COUVRE BEAUCOUP — même si tout ça porte un seul nom de métier. La largeur se juge sur les SERVICES ÉNUMÉRÉS, jamais sur le nombre de métiers résolus. **Décision de William, 2026-09-22**, prise après lecture des trois refus ci-dessous.
+
+📏 Le matin qui l'a décidée — 2026-09-21, 13 brouillons, 3 refusés, dont **deux pour ce seul motif** : *Déneigement RTM* (1 métier, **7 services** : résidentiel, commercial, manuel, épandage d'abrasifs, transport de neige, et deux formules de contrat) et *Déneigement Papineau* (1 métier, **5 services**). Le verdict disait mot pour mot : « la chute "on comprend que tu en couvres beaucoup" est inexacte pour une entreprise à métier unique — le reste du courriel est conforme ». Mesuré le même jour : **7 des 18 entreprises vivantes et recherchées (39 %)** ont un métier unique et plusieurs services. Et jusqu'en janvier la seule saison ouverte est le déneigement, dont les entreprises sont par nature dans ce cas.
+
+🔴 **CE QUE CETTE PERMISSION NE COUVRE PAS — et c'est la moitié qui compte.** Elle porte sur la CONCLUSION, jamais sur le contenu de la liste. Restent des violations, à signaler comme avant :
+- un service énuméré qui ne figure **pas dans le `research_json`** — c'est une invention, §1 s'applique en plein ;
+- une énumération qui **rattache un métier à un autre** : « autant de sortes de **déneigement** […] que de la **mini-excavation** et de l'**aménagement paysager** » présente deux métiers distincts comme des variantes du premier. C'est faux, et c'est le troisième refus du 2026-09-21 (*Quinn*, 5 métiers) — celui-là était juste, et doit le rester.
+
+⚠️ Le rédacteur reçoit le nombre de SERVICES (`nb_services`), pas le nombre de métiers, et bascule sur une autre formulation quand il n'y en a qu'un seul. Juger la largeur en métiers te mettait en désaccord avec lui sur 39 % des fiches : c'est toi qui changes d'unité, pas lui.
+
 
 2. **Généralisations sectorielles douces / au conditionnel** : « une bonne partie pourrait revenir », « souvent », « dans bien des cas », « la plupart des entreprises de service ». C'est du **cadrage anecdotique**, PAS un claim d'autorité ni un fait sur CE prospect. (Seuls les CHIFFRES précis non sourcés, ou un fait spécifique inventé sur CE prospect, sont des violations.)
 3. **Le modèle commission/risque-zéro** : « vous me payez une commission par contrat re-signé, rien d'avance, rien à perdre ». C'est la **description du modèle d'affaires**, PAS une garantie de résultat.

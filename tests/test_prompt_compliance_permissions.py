@@ -38,6 +38,13 @@ RANG_LATIN = [
     # le redacteur avait obei a sa regle. Depuis la migration 0072, le bloc
     # « Faits verifies » porte le nom, et c'est LUI qui fait foi.
     "1duodecies",
+    # 🔴 Le 2026-09-22 : « on comprend que tu en couvres beaucoup! » reste vraie
+    # quand l'entreprise n'a qu'UN métier. Le juge la refusait au titre des
+    # faits non ancrés (§1) en jugeant la largeur sur le nombre de MÉTIERS,
+    # pendant que le rédacteur la juge sur le nombre de SERVICES — deux unités
+    # pour une même phrase. Mesuré le 2026-09-21 : 2 des 3 refus du matin, et
+    # 7 des 18 entreprises vivantes et recherchées dans ce cas.
+    "1terdecies",
 ]
 
 
