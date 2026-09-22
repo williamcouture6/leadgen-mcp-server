@@ -45,9 +45,30 @@ abstraite perd toujours contre un exemple littéral qui dit l'inverse.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from src.tools.compliance import _PROMPT_PATH
 
 PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
+
+# Le gabarit du rédacteur — la SOURCE de la forme que le juge doit accepter.
+GABARIT = (
+    Path(__file__).resolve().parent.parent
+    / "src" / "prompts" / "reacti" / "personalize.md"
+).read_text(encoding="utf-8")
+
+# Les mots par lesquels ce prompt condamne quelque chose. S'ils apparaissent sur
+# la même ligne qu'une forme imposée par le gabarit, le juge lira la
+# condamnation — c'est le plus littéral qui gagne.
+_CONDAMNATIONS = (
+    "c'est faux",
+    "est faux",
+    "erreur de fait",
+    "reste une erreur",
+    "violation",
+    "signale-le",
+    "à bloquer",
+)
 
 _ENTETE_LEGITIME = "## LÉGITIME — ne JAMAIS flagger ça"
 _ENTETE_A_CHERCHER = "## Ce que tu dois chercher (jugement sémantique uniquement)"
@@ -66,24 +87,33 @@ def _section_a_chercher() -> str:
 
 
 def _paragraphe_de_la_permission() -> str:
-    """Le paragraphe des permissions qui parle de la phrase fixe.
+    """Le bloc §1terdecies ENTIER, borné par ses voisins réels.
 
-    ⚠️ ASSERTION D'ANCRE OBLIGATOIRE. Une première version de ce fichier
-    calculait la fenêtre avec `section.find(...)` sans vérifier la présence :
-    `find` rend -1 quand l'ancre manque, `max(0, -1 - 2000)` rend 0, et la
-    « fenêtre » devenait la section ENTIÈRE. Le test de la réserve passait donc
-    au vert AVANT que la permission existe — un test vide, vert pour toujours.
+    ⚠️ ASSERTION D'ANCRE OBLIGATOIRE. Une première version calculait la fenêtre
+    avec `section.find(...)` sans vérifier la présence : `find` rend -1 quand
+    l'ancre manque, `max(0, -1 - 2000)` rend 0, et la « fenêtre » devenait la
+    section ENTIÈRE — le test de la réserve passait au vert AVANT que la
+    permission existe.
+
+    ⚠️ ET LES BORNES SONT RÉELLES, PLUS UN COMPTE DE CARACTÈRES. La deuxième
+    version prenait « l'ancre + 2000 caractères ». Un conseil l'a mesuré le
+    2026-09-22 : la réserve la plus importante tombait **10 caractères** hors
+    fenêtre, et n'importe quel ajout de ~350 caractères plus haut faisait
+    rougir le test sans que la réserve ait bougé. Un bloc se borne par ce qui
+    le suit, jamais par sa longueur supposée.
     """
     section = _section_legitime()
-    depart = section.find("couvres beaucoup")
+    depart = section.find("1terdecies.")
     assert depart != -1, (
-        "la phrase fixe n'est pas dans la liste des permissions : les tests de "
-        "fenêtre qui suivent n'ont aucun ancrage et ne prouveraient rien"
+        "la permission §1terdecies n'est plus dans la liste LÉGITIME : les "
+        "tests qui suivent n'ont aucun ancrage et ne prouveraient rien"
     )
-    # Du début de son paragraphe jusqu'à la fin du suivant : une permission de
-    # ce fichier tient en un bloc, réserves comprises.
-    avant = section.rfind("\n\n", 0, depart)
-    return section[avant if avant != -1 else 0:depart + 2000]
+    fin = section.find("\n2. ", depart)
+    assert fin != -1, (
+        "la permission suivante (« 2. ») a disparu : le bloc n'est plus borné, "
+        "la fenêtre déborderait sur le reste du prompt"
+    )
+    return section[depart:fin]
 
 
 def test_la_permission_est_dans_la_liste_legitime() -> None:
@@ -124,11 +154,57 @@ def test_la_permission_reserve_l_exactitude_de_la_liste() -> None:
     rester possible.
     """
     fenetre = _paragraphe_de_la_permission()
-    assert "research_json" in fenetre, (
-        "la permission ne rappelle pas que les services énumérés doivent "
-        "rester ancrés dans le research_json — elle autoriserait alors une "
-        "liste inventée, ce que le refus de Quinn attrapait à raison"
+    # 🔴 `services_offered`, PAS `research_json`. Un conseil l'a mesuré le
+    # 2026-09-22 : le `research_json` est le blob ENTIER — il porte
+    # `personalization_hooks` (dont l'exemple canonique du prompt de recherche
+    # est « mentionne le service d'urgence 24/7 »), les citations d'avis, les
+    # `pain_points`. Une réserve ancrée dessus valide littéralement tout ce que
+    # le rédacteur y pioche : elle ne filtre RIEN. L'énumération doit venir des
+    # libellés de `services_offered`, et de rien d'autre.
+    assert "services_offered" in fenetre, (
+        "la permission n'ancre pas l'énumération sur `services_offered` — "
+        "ancrée sur le `research_json` entier, elle autorise un service tiré "
+        "d'un hook ou d'une citation d'avis, donc elle ne filtre rien"
     )
+    assert "égalité littérale" in fenetre, (
+        "la permission n'interdit pas d'exiger l'égalité littérale : le juge "
+        "signalerait alors « épandage d'abrasifs » écrit pour un libellé "
+        "« sablage », alors que le rédacteur a consigne d'écrire dans SES mots"
+    )
+
+
+def test_la_forme_mixte_du_gabarit_n_est_jamais_declaree_fausse() -> None:
+    """🔴 LE DÉFAUT QUE CE FICHIER A LUI-MÊME INTRODUIT, LE 2026-09-22.
+
+    La première version de §1terdecies « réservait » le cas de Quinn en citant
+    « autant de sortes de déneigement […] que de la mini-excavation » comme une
+    erreur de fait. Or c'est l'exemple **✅ de William**, au mot près
+    (`personalize.md`, section de l'énumération courte), la forme que
+    `personalize.py` FABRIQUE, et elle était déjà permise en toutes lettres
+    dans la section « NE PAS RE-CHECKER » du juge.
+
+    C'était la troisième récidive du même défaut dans ce dépôt — citer notre
+    propre copie comme exemple canonique à refuser — après le « 78 % » du
+    2026-09-01 et le pied de page du site du 2026-09-08. Voir
+    `test_juge_autorise_le_bloc_site.py`, qui existe pour ça.
+
+    ⚠️ Ce test lit la forme depuis le GABARIT, pas depuis un souvenir d'elle :
+    si William change son exemple, c'est la nouvelle forme qui sera protégée.
+    """
+    assert "autant de sortes de" in GABARIT, (
+        "la forme de l'énumération courte a disparu du gabarit — ce test "
+        "protège désormais du vide, vérifier ce qui l'a remplacée"
+    )
+    for ligne in PROMPT.splitlines():
+        if "autant de sortes de" not in ligne:
+            continue
+        basse = ligne.lower()
+        coupable = [mot for mot in _CONDAMNATIONS if mot in basse]
+        assert not coupable, (
+            "le prompt du juge condamne une forme IMPOSÉE par le gabarit "
+            f"(mots trouvés : {coupable}). Le juge refusera alors les "
+            f"brouillons conformes : {ligne.strip()[:160]}"
+        )
 
 
 def test_aucun_contre_exemple_ne_cite_la_phrase_comme_violation() -> None:

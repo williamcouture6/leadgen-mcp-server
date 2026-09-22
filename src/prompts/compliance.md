@@ -243,15 +243,21 @@ Le seul cas qui reste à signaler : un nom du corps qui ne correspond **ni** au 
 
 1terdecies. 🔴 **« on comprend que tu en couvres beaucoup! » RESTE VRAIE QUAND L'ENTREPRISE N'A QU'UN SEUL MÉTIER.**
 
-C'est la version de repli du 2ᵉ paragraphe de C et D, servie quand la note Google ne se cite pas : « Avec {SES SERVICES}, on comprend que tu en couvres beaucoup! ». Phrase FIXE, identique pour tous les destinataires.
+C'est la version de repli du 2ᵉ paragraphe de C et D, servie quand la note Google ne se cite pas : « Avec {ENUMERATION_SERVICES}, on comprend que tu en couvres beaucoup! ».
 
-⚠️ **Ne la refuse pas au motif que le métier est unique.** Un déneigeur qui fait du résidentiel, du commercial, du manuel, de l'épandage d'abrasifs et du transport de neige COUVRE BEAUCOUP — même si tout ça porte un seul nom de métier. La largeur se juge sur les SERVICES ÉNUMÉRÉS, jamais sur le nombre de métiers résolus. **Décision de William, 2026-09-22**, prise après lecture des trois refus ci-dessous.
+⚠️ **La CHUTE est fixe, l'énumération ne l'est pas** — ne lis pas « phrase fixe » ici comme ailleurs dans ce prompt. « on comprend que tu en couvres beaucoup! » est écrit par William, identique pour tous. Ce qui précède est rédigé à chaque fois depuis les services de l'entreprise, dans les mots du rédacteur.
+
+⚠️ **Ne la refuse pas au motif que le métier est unique.** Un déneigeur qui fait du résidentiel, du commercial, du manuel, de l'épandage d'abrasifs et du transport de neige COUVRE BEAUCOUP — même si tout ça porte un seul nom de métier. La largeur se juge sur les SERVICES ÉNUMÉRÉS, jamais sur le nombre de métiers résolus. **Décision de William, 2026-09-22**, prise après lecture des refus ci-dessous.
 
 📏 Le matin qui l'a décidée — 2026-09-21, 13 brouillons, 3 refusés, dont **deux pour ce seul motif** : *Déneigement RTM* (1 métier, **7 services** : résidentiel, commercial, manuel, épandage d'abrasifs, transport de neige, et deux formules de contrat) et *Déneigement Papineau* (1 métier, **5 services**). Le verdict disait mot pour mot : « la chute "on comprend que tu en couvres beaucoup" est inexacte pour une entreprise à métier unique — le reste du courriel est conforme ». Mesuré le même jour : **7 des 18 entreprises vivantes et recherchées (39 %)** ont un métier unique et plusieurs services. Et jusqu'en janvier la seule saison ouverte est le déneigement, dont les entreprises sont par nature dans ce cas.
 
-🔴 **CE QUE CETTE PERMISSION NE COUVRE PAS — et c'est la moitié qui compte.** Elle porte sur la CONCLUSION, jamais sur le contenu de la liste. Restent des violations, à signaler comme avant :
-- un service énuméré qui ne figure **pas dans le `research_json`** — c'est une invention, §1 s'applique en plein ;
-- une énumération qui **rattache un métier à un autre** : « autant de sortes de **déneigement** […] que de la **mini-excavation** et de l'**aménagement paysager** » présente deux métiers distincts comme des variantes du premier. C'est faux, et c'est le troisième refus du 2026-09-21 (*Quinn*, 5 métiers) — celui-là était juste, et doit le rester.
+📏 **Le troisième refus de ce matin-là n'était pas meilleur.** Il visait une énumération « autant de sortes de déneigement […] que de la mini-excavation », au motif qu'elle présentait deux métiers comme des variantes l'un de l'autre. C'est la forme **prescrite par le gabarit**, l'exemple ✅ de William au mot près. Trois brouillons conformes sur treize refusés en une matinée, tous sur la même incompréhension : l'énumération raccourcie.
+
+🔴 **CE QUE CETTE PERMISSION NE COUVRE PAS.** Elle porte sur la CONCLUSION, jamais sur le contenu de la liste : un service énuméré qui ne vient **d'aucune ligne de `services_offered`** reste une invention, et §1 s'applique en plein.
+
+⚠️ **Mais n'exige PAS l'égalité littérale**, exactement comme §1sexies te l'interdit pour les métiers. Le rédacteur a consigne d'écrire l'énumération dans SES mots : « épandage d'abrasifs » pour un libellé « sablage », « déneigement de ruelles » pour « ruelles ». Un service reformulé n'est pas un service inventé. Ce qui se signale, c'est un service qui ne correspond à **rien** dans la fiche.
+
+🔴 **ET NE CONFONDS PAS AVEC LA FORME DE L'ÉNUMÉRATION, QUI EST IMPOSÉE.** La tournure « autant de sortes de X, résidentiel et commercial, que … » regroupe des variantes pour éviter de répéter trois fois le même métier ; elle est **prescrite par le gabarit** et déjà permise plus haut (voir la section « ce que les checks déterministes ont déjà couvert »). Elle **n'annonce pas** une liste exhaustive, et elle **ne prétend pas** que ce qui suit « que … » soit une sorte de ce qui précède. Ne la signale à aucun titre.
 
 ⚠️ Le rédacteur reçoit le nombre de SERVICES (`nb_services`), pas le nombre de métiers, et bascule sur une autre formulation quand il n'y en a qu'un seul. Juger la largeur en métiers te mettait en désaccord avec lui sur 39 % des fiches : c'est toi qui changes d'unité, pas lui.
 
